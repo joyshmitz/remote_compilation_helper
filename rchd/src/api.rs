@@ -289,4 +289,116 @@ mod tests {
         // Incomplete sequence at end
         assert_eq!(urlencoding_decode("foo%2"), "foo%2");
     }
+
+    // =========================================================================
+    // Selection response tests - reason field scenarios
+    // =========================================================================
+
+    use rch_common::{WorkerConfig, WorkerId, WorkerStatus};
+
+    fn make_test_worker(id: &str, total_slots: u32) -> WorkerConfig {
+        WorkerConfig {
+            id: WorkerId::new(id),
+            host: "localhost".to_string(),
+            user: "user".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots,
+            priority: 100,
+            tags: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_select_worker_no_workers_configured() {
+        let pool = WorkerPool::new();
+        let request = SelectionRequest {
+            project: "test".to_string(),
+            estimated_cores: 4,
+            preferred_workers: vec![],
+        };
+
+        let response = handle_select_worker(&pool, request).await.unwrap();
+        assert!(response.worker.is_none());
+        assert_eq!(response.reason, SelectionReason::NoWorkersConfigured);
+    }
+
+    #[tokio::test]
+    async fn test_handle_select_worker_all_unreachable() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_test_worker("worker1", 8)).await;
+        pool.add_worker(make_test_worker("worker2", 8)).await;
+
+        // Mark all workers as unreachable
+        pool.set_status(&WorkerId::new("worker1"), WorkerStatus::Unreachable)
+            .await;
+        pool.set_status(&WorkerId::new("worker2"), WorkerStatus::Unreachable)
+            .await;
+
+        let request = SelectionRequest {
+            project: "test".to_string(),
+            estimated_cores: 2,
+            preferred_workers: vec![],
+        };
+
+        let response = handle_select_worker(&pool, request).await.unwrap();
+        assert!(response.worker.is_none());
+        assert_eq!(response.reason, SelectionReason::AllWorkersUnreachable);
+    }
+
+    #[tokio::test]
+    async fn test_handle_select_worker_all_busy() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_test_worker("worker1", 4)).await;
+
+        // Reserve all slots
+        let worker = pool.get(&WorkerId::new("worker1")).await.unwrap();
+        worker.reserve_slots(4);
+
+        let request = SelectionRequest {
+            project: "test".to_string(),
+            estimated_cores: 2, // Request more than available
+            preferred_workers: vec![],
+        };
+
+        let response = handle_select_worker(&pool, request).await.unwrap();
+        assert!(response.worker.is_none());
+        assert_eq!(response.reason, SelectionReason::AllWorkersBusy);
+    }
+
+    #[tokio::test]
+    async fn test_handle_select_worker_success() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_test_worker("worker1", 16)).await;
+
+        let request = SelectionRequest {
+            project: "test".to_string(),
+            estimated_cores: 4,
+            preferred_workers: vec![],
+        };
+
+        let response = handle_select_worker(&pool, request).await.unwrap();
+        assert!(response.worker.is_some());
+        assert_eq!(response.reason, SelectionReason::Success);
+
+        let worker = response.worker.unwrap();
+        assert_eq!(worker.id.as_str(), "worker1");
+        // 16 total - 4 reserved = 12 available after reservation
+        assert_eq!(worker.slots_available, 12);
+    }
+
+    #[tokio::test]
+    async fn test_handle_select_worker_not_enough_slots() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_test_worker("worker1", 4)).await;
+
+        let request = SelectionRequest {
+            project: "test".to_string(),
+            estimated_cores: 8, // Request more than total slots
+            preferred_workers: vec![],
+        };
+
+        let response = handle_select_worker(&pool, request).await.unwrap();
+        assert!(response.worker.is_none());
+        assert_eq!(response.reason, SelectionReason::AllWorkersBusy);
+    }
 }

@@ -249,3 +249,137 @@ fn default_excludes() -> Vec<String> {
         "*.rmeta".to_string(),
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_selection_reason_serialization() {
+        // Test that all variants serialize to snake_case
+        assert_eq!(
+            serde_json::to_string(&SelectionReason::Success).unwrap(),
+            "\"success\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SelectionReason::NoWorkersConfigured).unwrap(),
+            "\"no_workers_configured\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SelectionReason::AllWorkersUnreachable).unwrap(),
+            "\"all_workers_unreachable\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SelectionReason::AllCircuitsOpen).unwrap(),
+            "\"all_circuits_open\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SelectionReason::AllWorkersBusy).unwrap(),
+            "\"all_workers_busy\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SelectionReason::NoMatchingWorkers).unwrap(),
+            "\"no_matching_workers\""
+        );
+    }
+
+    #[test]
+    fn test_selection_reason_with_error() {
+        let reason = SelectionReason::SelectionError("test error".to_string());
+        let json = serde_json::to_string(&reason).unwrap();
+        assert!(json.contains("selection_error"));
+        assert!(json.contains("test error"));
+    }
+
+    #[test]
+    fn test_selection_reason_deserialization() {
+        assert_eq!(
+            serde_json::from_str::<SelectionReason>("\"success\"").unwrap(),
+            SelectionReason::Success
+        );
+        assert_eq!(
+            serde_json::from_str::<SelectionReason>("\"all_workers_busy\"").unwrap(),
+            SelectionReason::AllWorkersBusy
+        );
+    }
+
+    #[test]
+    fn test_selection_reason_display() {
+        assert_eq!(
+            SelectionReason::Success.to_string(),
+            "worker assigned successfully"
+        );
+        assert_eq!(
+            SelectionReason::NoWorkersConfigured.to_string(),
+            "no workers configured"
+        );
+        assert_eq!(
+            SelectionReason::AllWorkersUnreachable.to_string(),
+            "all workers unreachable"
+        );
+        assert_eq!(
+            SelectionReason::AllWorkersBusy.to_string(),
+            "all workers at capacity"
+        );
+        assert_eq!(
+            SelectionReason::SelectionError("oops".to_string()).to_string(),
+            "selection error: oops"
+        );
+    }
+
+    #[test]
+    fn test_selection_response_with_worker() {
+        let response = SelectionResponse {
+            worker: Some(SelectedWorker {
+                id: WorkerId::new("test"),
+                host: "localhost".to_string(),
+                user: "user".to_string(),
+                identity_file: "~/.ssh/id_rsa".to_string(),
+                slots_available: 8,
+                speed_score: 75.0,
+            }),
+            reason: SelectionReason::Success,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"reason\":\"success\""));
+        assert!(json.contains("\"id\":\"test\""));
+    }
+
+    #[test]
+    fn test_selection_response_without_worker() {
+        let response = SelectionResponse {
+            worker: None,
+            reason: SelectionReason::AllWorkersBusy,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"worker\":null"));
+        assert!(json.contains("\"reason\":\"all_workers_busy\""));
+    }
+
+    #[test]
+    fn test_selection_response_roundtrip() {
+        let original = SelectionResponse {
+            worker: Some(SelectedWorker {
+                id: WorkerId::new("worker-1"),
+                host: "192.168.1.100".to_string(),
+                user: "ubuntu".to_string(),
+                identity_file: "/path/to/key".to_string(),
+                slots_available: 16,
+                speed_score: 90.5,
+            }),
+            reason: SelectionReason::Success,
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: SelectionResponse = serde_json::from_str(&json).unwrap();
+
+        assert!(parsed.worker.is_some());
+        let worker = parsed.worker.unwrap();
+        assert_eq!(worker.id.as_str(), "worker-1");
+        assert_eq!(worker.host, "192.168.1.100");
+        assert_eq!(worker.slots_available, 16);
+        assert_eq!(parsed.reason, SelectionReason::Success);
+    }
+}
