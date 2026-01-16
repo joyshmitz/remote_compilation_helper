@@ -5,7 +5,7 @@
 use rch_common::{WorkerConfig, WorkerId, WorkerStatus};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use tokio::sync::RwLock;
 use tracing::debug;
 
@@ -14,8 +14,8 @@ use tracing::debug;
 pub struct WorkerState {
     /// Worker configuration.
     pub config: WorkerConfig,
-    /// Current status.
-    pub status: WorkerStatus,
+    /// Current status (uses RwLock for interior mutability).
+    status: RwLock<WorkerStatus>,
     /// Number of slots currently in use.
     used_slots: AtomicU32,
     /// Speed score from benchmarking (0-100).
@@ -29,11 +29,21 @@ impl WorkerState {
     pub fn new(config: WorkerConfig) -> Self {
         Self {
             config,
-            status: WorkerStatus::Healthy,
+            status: RwLock::new(WorkerStatus::Healthy),
             used_slots: AtomicU32::new(0),
             speed_score: 50.0, // Default mid-range score
             cached_projects: Vec::new(),
         }
+    }
+
+    /// Get current worker status.
+    pub async fn status(&self) -> WorkerStatus {
+        *self.status.read().await
+    }
+
+    /// Set worker status.
+    pub async fn set_status(&self, status: WorkerStatus) {
+        *self.status.write().await = status;
     }
 
     /// Get the number of available slots.
@@ -76,6 +86,8 @@ impl WorkerState {
 #[derive(Clone)]
 pub struct WorkerPool {
     workers: Arc<RwLock<HashMap<WorkerId, Arc<WorkerState>>>>,
+    /// Track worker count atomically for sync access.
+    worker_count: Arc<AtomicUsize>,
 }
 
 impl WorkerPool {
@@ -83,6 +95,7 @@ impl WorkerPool {
     pub fn new() -> Self {
         Self {
             workers: Arc::new(RwLock::new(HashMap::new())),
+            worker_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -91,14 +104,16 @@ impl WorkerPool {
         let id = config.id.clone();
         let state = Arc::new(WorkerState::new(config));
         let mut workers = self.workers.write().await;
-        workers.insert(id.clone(), state);
+        if workers.insert(id.clone(), state).is_none() {
+            // Only increment if this is a new worker
+            self.worker_count.fetch_add(1, Ordering::SeqCst);
+        }
         debug!("Added worker: {}", id);
     }
 
     /// Get the number of workers in the pool.
     pub fn len(&self) -> usize {
-        // This is a quick check, not perfectly accurate but good enough
-        0 // TODO: Implement properly with async
+        self.worker_count.load(Ordering::SeqCst)
     }
 
     /// Check if pool is empty.
@@ -106,14 +121,22 @@ impl WorkerPool {
         self.len() == 0
     }
 
-    /// Get all healthy workers.
+    /// Get all workers (regardless of status) for health monitoring.
+    pub async fn all_workers(&self) -> Vec<Arc<WorkerState>> {
+        let workers = self.workers.read().await;
+        workers.values().cloned().collect()
+    }
+
+    /// Get all healthy workers (for job assignment).
     pub async fn healthy_workers(&self) -> Vec<Arc<WorkerState>> {
         let workers = self.workers.read().await;
-        workers
-            .values()
-            .filter(|w| w.status == WorkerStatus::Healthy)
-            .cloned()
-            .collect()
+        let mut healthy = Vec::new();
+        for worker in workers.values() {
+            if worker.status().await == WorkerStatus::Healthy {
+                healthy.push(worker.clone());
+            }
+        }
+        healthy
     }
 
     /// Get a worker by ID.
@@ -125,10 +148,9 @@ impl WorkerPool {
     /// Update worker status.
     pub async fn set_status(&self, id: &WorkerId, status: WorkerStatus) {
         let workers = self.workers.read().await;
-        if let Some(_worker) = workers.get(id) {
-            // Note: This requires interior mutability pattern
-            // For now, we'll need to restructure to allow status updates
-            debug!("Would set {} to {:?}", id, status);
+        if let Some(worker) = workers.get(id) {
+            worker.set_status(status).await;
+            debug!("Set {} status to {:?}", id, status);
         }
     }
 }

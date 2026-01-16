@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
@@ -178,30 +178,33 @@ impl SshClient {
             .await
             .with_context(|| format!("Failed to spawn command on {}", self.config.id))?;
 
-        // Read stdout and stderr
+        // Read stdout and stderr concurrently to avoid deadlock if one pipe fills.
         let stdout_handle = child.stdout().take();
         let stderr_handle = child.stderr().take();
 
-        let mut stdout = String::new();
-        let mut stderr = String::new();
-
-        if let Some(out) = stdout_handle {
-            let mut reader = BufReader::new(out);
-            let mut line = String::new();
-            while reader.read_line(&mut line).await? > 0 {
-                stdout.push_str(&line);
-                line.clear();
+        let stdout_fut = async {
+            if let Some(out) = stdout_handle {
+                let mut reader = BufReader::new(out);
+                let mut buf = String::new();
+                reader.read_to_string(&mut buf).await?;
+                Ok::<String, anyhow::Error>(buf)
+            } else {
+                Ok(String::new())
             }
-        }
+        };
 
-        if let Some(err) = stderr_handle {
-            let mut reader = BufReader::new(err);
-            let mut line = String::new();
-            while reader.read_line(&mut line).await? > 0 {
-                stderr.push_str(&line);
-                line.clear();
+        let stderr_fut = async {
+            if let Some(err) = stderr_handle {
+                let mut reader = BufReader::new(err);
+                let mut buf = String::new();
+                reader.read_to_string(&mut buf).await?;
+                Ok::<String, anyhow::Error>(buf)
+            } else {
+                Ok(String::new())
             }
-        }
+        };
+
+        let (stdout, stderr) = tokio::try_join!(stdout_fut, stderr_fut)?;
 
         let status = child
             .wait()
@@ -258,28 +261,50 @@ impl SshClient {
         let stdout_handle = child.stdout().take();
         let stderr_handle = child.stderr().take();
 
+        let mut stdout_reader = stdout_handle.map(BufReader::new);
+        let mut stderr_reader = stderr_handle.map(BufReader::new);
         let mut stdout_buf = String::new();
         let mut stderr_buf = String::new();
+        let mut stdout_done = stdout_reader.is_none();
+        let mut stderr_done = stderr_reader.is_none();
 
-        // Read stdout
-        if let Some(out) = stdout_handle {
-            let mut reader = BufReader::new(out);
-            let mut line = String::new();
-            while reader.read_line(&mut line).await? > 0 {
-                on_stdout(&line);
-                stdout_buf.push_str(&line);
-                line.clear();
-            }
-        }
+        let mut stdout_acc = String::new();
+        let mut stderr_acc = String::new();
 
-        // Read stderr
-        if let Some(err) = stderr_handle {
-            let mut reader = BufReader::new(err);
-            let mut line = String::new();
-            while reader.read_line(&mut line).await? > 0 {
-                on_stderr(&line);
-                stderr_buf.push_str(&line);
-                line.clear();
+        while !stdout_done || !stderr_done {
+            tokio::select! {
+                result = async {
+                    if let Some(reader) = stdout_reader.as_mut() {
+                        reader.read_line(&mut stdout_buf).await
+                    } else {
+                        Ok(0)
+                    }
+                }, if !stdout_done => {
+                    let n = result?;
+                    if n == 0 {
+                        stdout_done = true;
+                    } else {
+                        on_stdout(&stdout_buf);
+                        stdout_acc.push_str(&stdout_buf);
+                        stdout_buf.clear();
+                    }
+                }
+                result = async {
+                    if let Some(reader) = stderr_reader.as_mut() {
+                        reader.read_line(&mut stderr_buf).await
+                    } else {
+                        Ok(0)
+                    }
+                }, if !stderr_done => {
+                    let n = result?;
+                    if n == 0 {
+                        stderr_done = true;
+                    } else {
+                        on_stderr(&stderr_buf);
+                        stderr_acc.push_str(&stderr_buf);
+                        stderr_buf.clear();
+                    }
+                }
             }
         }
 
@@ -289,8 +314,8 @@ impl SshClient {
 
         Ok(CommandResult {
             exit_code,
-            stdout: stdout_buf,
-            stderr: stderr_buf,
+            stdout: stdout_acc,
+            stderr: stderr_acc,
             duration_ms: duration.as_millis() as u64,
         })
     }

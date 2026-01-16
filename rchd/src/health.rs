@@ -182,8 +182,8 @@ impl HealthMonitor {
                     break;
                 }
 
-                // Check all workers
-                let workers = pool.healthy_workers().await;
+                // Check ALL workers (not just healthy) so unreachable workers can recover
+                let workers = pool.all_workers().await;
                 debug!("Checking health of {} workers", workers.len());
 
                 for worker in workers {

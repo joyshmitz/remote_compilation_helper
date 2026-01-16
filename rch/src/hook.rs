@@ -3,8 +3,13 @@
 //! Handles incoming hook requests from Claude Code, classifies commands,
 //! and routes compilation commands to remote workers.
 
+use crate::transfer::{
+    compute_project_hash, default_rust_artifact_patterns, project_id_from_path, TransferPipeline,
+};
 use anyhow::Result;
-use rch_common::{classify_command, HookInput, HookOutput, SelectionResponse};
+use rch_common::{
+    classify_command, HookInput, HookOutput, SelectionResponse, TransferConfig, WorkerConfig,
+};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -100,10 +105,39 @@ async fn process_hook(input: HookInput) -> HookOutput {
                 "Selected worker: {} at {}@{} ({} slots, speed {:.1})",
                 worker.worker, worker.user, worker.host, worker.slots_available, worker.speed_score
             );
-            // TODO: Execute remote compilation pipeline with selected worker
-            // For now, allow local execution after logging worker selection
-            info!("Remote execution pipeline not yet implemented, allowing local");
-            HookOutput::allow()
+
+            // Execute remote compilation pipeline
+            match execute_remote_compilation(&worker, command).await {
+                Ok(exit_code) => {
+                    if exit_code == 0 {
+                        // Command succeeded remotely - deny local execution
+                        // The agent sees output via stderr, artifacts are local
+                        info!("Remote compilation succeeded, denying local execution");
+                        HookOutput::deny(
+                            "RCH: Command executed successfully on remote worker".to_string(),
+                        )
+                    } else {
+                        // Command failed remotely - still deny to prevent re-execution
+                        // The agent saw the error output via stderr
+                        info!(
+                            "Remote compilation failed (exit {}), denying local execution",
+                            exit_code
+                        );
+                        HookOutput::deny(format!(
+                            "RCH: Remote compilation failed with exit code {}",
+                            exit_code
+                        ))
+                    }
+                }
+                Err(e) => {
+                    // Pipeline failed - fall back to local execution
+                    warn!(
+                        "Remote execution pipeline failed: {}, falling back to local",
+                        e
+                    );
+                    HookOutput::allow()
+                }
+            }
         }
         Err(e) => {
             warn!("Failed to query daemon: {}, allowing local execution", e);
@@ -173,6 +207,111 @@ fn extract_project_name() -> String {
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Convert a SelectionResponse to a WorkerConfig.
+fn selection_to_worker_config(response: &SelectionResponse) -> WorkerConfig {
+    WorkerConfig {
+        id: response.worker.clone(),
+        host: response.host.clone(),
+        user: response.user.clone(),
+        identity_file: response.identity_file.clone(),
+        total_slots: response.slots_available,
+        priority: 100,
+        tags: vec![],
+    }
+}
+
+/// Execute a compilation command on a remote worker.
+///
+/// This function:
+/// 1. Syncs the project to the remote worker
+/// 2. Executes the command remotely with streaming output
+/// 3. Retrieves build artifacts back to local
+///
+/// Returns the exit code of the remote command.
+async fn execute_remote_compilation(
+    worker_response: &SelectionResponse,
+    command: &str,
+) -> Result<i32> {
+    let worker_config = selection_to_worker_config(worker_response);
+
+    // Get current working directory as project root
+    let project_root = std::env::current_dir()
+        .map_err(|e| anyhow::anyhow!("Failed to get current directory: {}", e))?;
+
+    let project_id = project_id_from_path(&project_root);
+    let project_hash = compute_project_hash(&project_root);
+
+    info!(
+        "Starting remote compilation pipeline for {} (hash: {})",
+        project_id, project_hash
+    );
+
+    // Create transfer pipeline
+    let transfer_config = TransferConfig::default();
+    let pipeline = TransferPipeline::new(
+        project_root,
+        project_id,
+        project_hash,
+        transfer_config,
+    );
+
+    // Step 1: Sync project to remote
+    info!("Syncing project to worker {}...", worker_config.id);
+    let sync_result = pipeline.sync_to_remote(&worker_config).await?;
+    info!(
+        "Sync complete: {} files, {} bytes in {}ms",
+        sync_result.files_transferred,
+        sync_result.bytes_transferred,
+        sync_result.duration_ms
+    );
+
+    // Step 2: Execute command remotely with streaming output
+    info!("Executing command remotely: {}", command);
+
+    // Stream stdout/stderr to our stderr so the agent sees the output
+    let result = pipeline
+        .execute_remote_streaming(
+            &worker_config,
+            command,
+            |line| {
+                // Write stdout lines to stderr (hook stdout is for protocol)
+                eprintln!("{}", line);
+            },
+            |line| {
+                // Write stderr lines to stderr
+                eprintln!("{}", line);
+            },
+        )
+        .await?;
+
+    info!(
+        "Remote command finished: exit={} in {}ms",
+        result.exit_code, result.duration_ms
+    );
+
+    // Step 3: Retrieve artifacts
+    if result.success() {
+        info!("Retrieving build artifacts...");
+        let artifact_patterns = default_rust_artifact_patterns();
+        match pipeline.retrieve_artifacts(&worker_config, &artifact_patterns).await {
+            Ok(artifact_result) => {
+                info!(
+                    "Artifacts retrieved: {} files, {} bytes in {}ms",
+                    artifact_result.files_transferred,
+                    artifact_result.bytes_transferred,
+                    artifact_result.duration_ms
+                );
+            }
+            Err(e) => {
+                warn!("Failed to retrieve artifacts: {}", e);
+                // Continue anyway - compilation succeeded
+            }
+        }
+    }
+
+    Ok(result.exit_code)
 }
 
 #[cfg(test)]
