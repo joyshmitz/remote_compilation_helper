@@ -9,7 +9,8 @@ use crate::transfer::{
 };
 use anyhow::Result;
 use rch_common::{
-    HookInput, HookOutput, SelectionResponse, TransferConfig, WorkerConfig, classify_command,
+    HookInput, HookOutput, SelectedWorker, SelectionResponse, TransferConfig, WorkerConfig,
+    classify_command,
 };
 use std::io::{self, BufRead, Write};
 use std::path::Path;
@@ -112,10 +113,20 @@ async fn process_hook(input: HookInput) -> HookOutput {
     let project = extract_project_name();
 
     match query_daemon(&config.general.socket_path, &project, 4).await {
-        Ok(worker) => {
+        Ok(response) => {
+            // Check if a worker was assigned
+            let Some(worker) = response.worker else {
+                // No worker available - graceful fallback to local execution
+                warn!(
+                    "⚠️ RCH: No remote workers available ({}), executing locally",
+                    response.reason
+                );
+                return HookOutput::allow();
+            };
+
             info!(
                 "Selected worker: {} at {}@{} ({} slots, speed {:.1})",
-                worker.worker, worker.user, worker.host, worker.slots_available, worker.speed_score
+                worker.id, worker.user, worker.host, worker.slots_available, worker.speed_score
             );
 
             // Execute remote compilation pipeline
@@ -236,14 +247,14 @@ fn extract_project_name() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-/// Convert a SelectionResponse to a WorkerConfig.
-fn selection_to_worker_config(response: &SelectionResponse) -> WorkerConfig {
+/// Convert a SelectedWorker to a WorkerConfig.
+fn selected_worker_to_config(worker: &SelectedWorker) -> WorkerConfig {
     WorkerConfig {
-        id: response.worker.clone(),
-        host: response.host.clone(),
-        user: response.user.clone(),
-        identity_file: response.identity_file.clone(),
-        total_slots: response.slots_available,
+        id: worker.id.clone(),
+        host: worker.host.clone(),
+        user: worker.user.clone(),
+        identity_file: worker.identity_file.clone(),
+        total_slots: worker.slots_available,
         priority: 100,
         tags: vec![],
     }
@@ -258,11 +269,11 @@ fn selection_to_worker_config(response: &SelectionResponse) -> WorkerConfig {
 ///
 /// Returns the exit code of the remote command.
 async fn execute_remote_compilation(
-    worker_response: &SelectionResponse,
+    worker: &SelectedWorker,
     command: &str,
     transfer_config: TransferConfig,
 ) -> Result<i32> {
-    let worker_config = selection_to_worker_config(worker_response);
+    let worker_config = selected_worker_to_config(worker);
 
     // Get current working directory as project root
     let project_root = std::env::current_dir()
@@ -340,11 +351,11 @@ async fn execute_remote_compilation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rch_common::ToolInput;
     use rch_common::mock::{
         self, MockConfig, MockRsyncConfig, Phase, clear_mock_overrides, set_mock_enabled_override,
         set_mock_rsync_config_override, set_mock_ssh_config_override,
     };
+    use rch_common::{SelectionReason, ToolInput};
     use std::sync::OnceLock;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
     use tokio::net::UnixListener;
@@ -552,9 +563,9 @@ mod tests {
     }
 
     #[test]
-    fn test_selection_response_to_worker_config() {
-        let response = SelectionResponse {
-            worker: rch_common::WorkerId::new("test-worker"),
+    fn test_selected_worker_to_config() {
+        let worker = SelectedWorker {
+            id: rch_common::WorkerId::new("test-worker"),
             host: "192.168.1.100".to_string(),
             user: "ubuntu".to_string(),
             identity_file: "~/.ssh/id_rsa".to_string(),
@@ -562,7 +573,7 @@ mod tests {
             speed_score: 75.5,
         };
 
-        let config = selection_to_worker_config(&response);
+        let config = selected_worker_to_config(&worker);
         assert_eq!(config.id.as_str(), "test-worker");
         assert_eq!(config.host, "192.168.1.100");
         assert_eq!(config.user, "ubuntu");
@@ -616,12 +627,15 @@ mod tests {
 
             // Send mock response
             let response = SelectionResponse {
-                worker: rch_common::WorkerId::new("mock-worker"),
-                host: "mock.host.local".to_string(),
-                user: "mockuser".to_string(),
-                identity_file: "~/.ssh/mock_key".to_string(),
-                slots_available: 16,
-                speed_score: 95.0,
+                worker: Some(SelectedWorker {
+                    id: rch_common::WorkerId::new("mock-worker"),
+                    host: "mock.host.local".to_string(),
+                    user: "mockuser".to_string(),
+                    identity_file: "~/.ssh/mock_key".to_string(),
+                    slots_available: 16,
+                    speed_score: 95.0,
+                }),
+                reason: SelectionReason::Success,
             };
             let body = serde_json::to_string(&response).unwrap();
             let http_response = format!(
@@ -647,9 +661,10 @@ mod tests {
 
         // Verify result
         let response = result.expect("Query should succeed");
-        assert_eq!(response.worker.as_str(), "mock-worker");
-        assert_eq!(response.host, "mock.host.local");
-        assert_eq!(response.slots_available, 16);
+        let worker = response.worker.expect("Should have worker");
+        assert_eq!(worker.id.as_str(), "mock-worker");
+        assert_eq!(worker.host, "mock.host.local");
+        assert_eq!(worker.slots_available, 16);
     }
 
     #[tokio::test]
@@ -677,12 +692,15 @@ mod tests {
 
             // Send minimal response
             let response = SelectionResponse {
-                worker: rch_common::WorkerId::new("w1"),
-                host: "h".to_string(),
-                user: "u".to_string(),
-                identity_file: "i".to_string(),
-                slots_available: 1,
-                speed_score: 1.0,
+                worker: Some(SelectedWorker {
+                    id: rch_common::WorkerId::new("w1"),
+                    host: "h".to_string(),
+                    user: "u".to_string(),
+                    identity_file: "i".to_string(),
+                    slots_available: 1,
+                    speed_score: 1.0,
+                }),
+                reason: SelectionReason::Success,
             };
             let body = serde_json::to_string(&response).unwrap();
             let http = format!("HTTP/1.1 200 OK\r\n\r\n{}", body);
@@ -763,12 +781,15 @@ mod tests {
         mock::clear_global_invocations();
 
         let response = SelectionResponse {
-            worker: rch_common::WorkerId::new("mock-worker"),
-            host: "mock.host.local".to_string(),
-            user: "mockuser".to_string(),
-            identity_file: "~/.ssh/mock_key".to_string(),
-            slots_available: 8,
-            speed_score: 90.0,
+            worker: Some(SelectedWorker {
+                id: rch_common::WorkerId::new("mock-worker"),
+                host: "mock.host.local".to_string(),
+                user: "mockuser".to_string(),
+                identity_file: "~/.ssh/mock_key".to_string(),
+                slots_available: 8,
+                speed_score: 90.0,
+            }),
+            reason: SelectionReason::Success,
         };
         spawn_mock_daemon(&socket_path, response).await;
 
@@ -816,12 +837,15 @@ mod tests {
         mock::clear_global_invocations();
 
         let response = SelectionResponse {
-            worker: rch_common::WorkerId::new("mock-worker"),
-            host: "mock.host.local".to_string(),
-            user: "mockuser".to_string(),
-            identity_file: "~/.ssh/mock_key".to_string(),
-            slots_available: 8,
-            speed_score: 90.0,
+            worker: Some(SelectedWorker {
+                id: rch_common::WorkerId::new("mock-worker"),
+                host: "mock.host.local".to_string(),
+                user: "mockuser".to_string(),
+                identity_file: "~/.ssh/mock_key".to_string(),
+                slots_available: 8,
+                speed_score: 90.0,
+            }),
+            reason: SelectionReason::Success,
         };
         spawn_mock_daemon(&socket_path, response).await;
 
@@ -870,12 +894,15 @@ mod tests {
         mock::clear_global_invocations();
 
         let response = SelectionResponse {
-            worker: rch_common::WorkerId::new("mock-worker"),
-            host: "mock.host.local".to_string(),
-            user: "mockuser".to_string(),
-            identity_file: "~/.ssh/mock_key".to_string(),
-            slots_available: 8,
-            speed_score: 90.0,
+            worker: Some(SelectedWorker {
+                id: rch_common::WorkerId::new("mock-worker"),
+                host: "mock.host.local".to_string(),
+                user: "mockuser".to_string(),
+                identity_file: "~/.ssh/mock_key".to_string(),
+                slots_available: 8,
+                speed_score: 90.0,
+            }),
+            reason: SelectionReason::Success,
         };
         spawn_mock_daemon(&socket_path, response).await;
 
@@ -905,10 +932,10 @@ mod tests {
     }
 
     #[test]
-    fn test_worker_config_from_selection() {
+    fn test_worker_config_from_selected_worker() {
         // Test the conversion preserves all fields correctly
-        let selection = SelectionResponse {
-            worker: rch_common::WorkerId::new("worker-alpha"),
+        let worker = SelectedWorker {
+            id: rch_common::WorkerId::new("worker-alpha"),
             host: "alpha.example.com".to_string(),
             user: "deploy".to_string(),
             identity_file: "/keys/deploy.pem".to_string(),
@@ -916,7 +943,7 @@ mod tests {
             speed_score: 88.8,
         };
 
-        let config = selection_to_worker_config(&selection);
+        let config = selected_worker_to_config(&worker);
 
         assert_eq!(config.id.as_str(), "worker-alpha");
         assert_eq!(config.host, "alpha.example.com");
