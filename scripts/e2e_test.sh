@@ -15,6 +15,7 @@
 #   --help                 Show this help message
 #
 # Environment (real mode):
+#   RCH_E2E_WORKERS_FILE    Path to workers.toml (preferred)
 #   RCH_E2E_WORKER_HOST     Worker host
 #   RCH_E2E_WORKER_USER     SSH user (default: ubuntu)
 #   RCH_E2E_WORKER_KEY      SSH key path (default: ~/.ssh/id_rsa)
@@ -125,6 +126,14 @@ total_slots = 64
 priority = 100
 enabled = true
 EOF
+        return
+    fi
+
+    if [[ -n "${RCH_E2E_WORKERS_FILE:-}" ]]; then
+        if [[ ! -f "$RCH_E2E_WORKERS_FILE" ]]; then
+            die "RCH_E2E_WORKERS_FILE not found: $RCH_E2E_WORKERS_FILE"
+        fi
+        WORKERS_FILE="$RCH_E2E_WORKERS_FILE"
         return
     fi
 

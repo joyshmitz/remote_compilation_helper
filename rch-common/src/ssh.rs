@@ -135,6 +135,13 @@ impl SshClient {
 
         // Enable control master for connection reuse
         if self.options.control_master {
+            let control_dir = Path::new("/tmp/rch-ssh");
+            if let Err(e) = std::fs::create_dir_all(control_dir) {
+                warn!(
+                    "Failed to create SSH control directory {:?}: {}",
+                    control_dir, e
+                );
+            }
             builder.control_directory("/tmp/rch-ssh");
         }
 

@@ -78,6 +78,16 @@ impl TransferPipeline {
             });
         }
 
+        // Ensure remote directory exists before rsync
+        let mut client = SshClient::new(worker.clone(), self.ssh_options.clone());
+        client.connect().await?;
+        let mkdir_cmd = format!("mkdir -p {}", remote_path);
+        let mkdir_result = client.execute(&mkdir_cmd).await?;
+        client.disconnect().await?;
+        if !mkdir_result.success() {
+            bail!("Failed to create remote directory: {}", mkdir_result.stderr);
+        }
+
         info!(
             "Syncing {} -> {} on {}",
             self.project_root.display(),
