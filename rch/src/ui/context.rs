@@ -117,7 +117,7 @@ impl TerminalCaps {
         }
 
         // Default to checking if stdout is a TTY
-        is_terminal::is_terminal(&std::io::stdout())
+        is_terminal::is_terminal(std::io::stdout())
     }
 
     /// Check if the terminal supports unicode.

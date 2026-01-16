@@ -168,9 +168,9 @@ pub fn detect_background() -> Background {
     if let Ok(colorfgbg) = env::var("COLORFGBG") {
         if let Some(bg) = colorfgbg.split(';').nth(1) {
             if let Ok(bg_num) = bg.parse::<u8>() {
-                // Standard terminal colors: 0-7 are dark, 8-15 are light
-                // 0 = black, 7 = white (dim), 8 = bright black, 15 = bright white
-                return if bg_num < 8 || bg_num == 8 {
+                // Standard terminal colors: 0-7 are dark, 8 is bright black (still dark)
+                // 9-15 are light colors
+                return if bg_num <= 8 {
                     Background::Dark
                 } else {
                     Background::Light
