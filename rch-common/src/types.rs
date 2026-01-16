@@ -56,21 +56,67 @@ pub struct SelectionRequest {
     pub preferred_workers: Vec<WorkerId>,
 }
 
-/// Worker selection response from daemon to hook.
+/// Reason for worker selection result.
+///
+/// Provides context when no worker is available, enabling informative
+/// fallback messages in the hook.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionReason {
+    /// Worker assigned successfully.
+    Success,
+    /// No workers configured in workers.toml.
+    NoWorkersConfigured,
+    /// All workers are unreachable (failed health checks).
+    AllWorkersUnreachable,
+    /// All workers have circuits open (after repeated failures).
+    AllCircuitsOpen,
+    /// All workers are at capacity (no available slots).
+    AllWorkersBusy,
+    /// No workers match required tags or preferences.
+    NoMatchingWorkers,
+    /// Internal error during selection.
+    SelectionError(String),
+}
+
+impl std::fmt::Display for SelectionReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Success => write!(f, "worker assigned successfully"),
+            Self::NoWorkersConfigured => write!(f, "no workers configured"),
+            Self::AllWorkersUnreachable => write!(f, "all workers unreachable"),
+            Self::AllCircuitsOpen => write!(f, "all worker circuits open"),
+            Self::AllWorkersBusy => write!(f, "all workers at capacity"),
+            Self::NoMatchingWorkers => write!(f, "no matching workers found"),
+            Self::SelectionError(e) => write!(f, "selection error: {}", e),
+        }
+    }
+}
+
+/// Details about a selected worker for remote compilation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SelectionResponse {
+pub struct SelectedWorker {
     /// Selected worker ID.
-    pub worker: WorkerId,
+    pub id: WorkerId,
     /// Host address for SSH.
     pub host: String,
     /// SSH user.
     pub user: String,
     /// Path to SSH identity file.
     pub identity_file: String,
-    /// Number of slots available on this worker.
+    /// Number of slots available on this worker after reservation.
     pub slots_available: u32,
     /// Worker's speed score (0-100).
     pub speed_score: f64,
+}
+
+/// Worker selection response from daemon to hook.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelectionResponse {
+    /// Selected worker details, if available.
+    pub worker: Option<SelectedWorker>,
+    /// Reason for the selection result.
+    pub reason: SelectionReason,
 }
 
 /// Configuration for a remote worker.
