@@ -72,7 +72,17 @@ async fn main() -> Result<()> {
         .init();
 
     match cli.command {
-        Commands::Execute { workdir, command } => executor::execute(&workdir, &command).await,
+        Commands::Execute { workdir, command } => {
+            match executor::execute(&workdir, &command).await {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    if let Some(failure) = err.downcast_ref::<executor::CommandFailed>() {
+                        std::process::exit(failure.exit_code);
+                    }
+                    Err(err)
+                }
+            }
+        }
         Commands::Health => {
             println!("OK");
             Ok(())
