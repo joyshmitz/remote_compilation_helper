@@ -1,5 +1,7 @@
 //! Project cache management.
 
+#![allow(dead_code)] // Scaffold code - functions will be used in future beads
+
 use anyhow::Result;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};

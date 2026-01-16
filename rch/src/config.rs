@@ -1,5 +1,7 @@
 //! Configuration loading for RCH.
 
+#![allow(dead_code)] // Scaffold code - functions will be used in future beads
+
 use anyhow::Result;
 use directories::ProjectDirs;
 use rch_common::RchConfig;
@@ -44,7 +46,7 @@ pub fn load_config() -> Result<RchConfig> {
 }
 
 /// Merge two configs, with the second overriding the first.
-fn merge_config(base: RchConfig, overlay: RchConfig) -> RchConfig {
+fn merge_config(_base: RchConfig, overlay: RchConfig) -> RchConfig {
     // For now, just return the overlay as it has all fields
     // TODO: Implement proper field-by-field merging
     RchConfig {

@@ -1,5 +1,7 @@
 //! Worker pool management.
 
+#![allow(dead_code)] // Scaffold code - methods will be used in future beads
+
 use rch_common::{WorkerConfig, WorkerId, WorkerStatus};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -123,7 +125,7 @@ impl WorkerPool {
     /// Update worker status.
     pub async fn set_status(&self, id: &WorkerId, status: WorkerStatus) {
         let workers = self.workers.read().await;
-        if let Some(worker) = workers.get(id) {
+        if let Some(_worker) = workers.get(id) {
             // Note: This requires interior mutability pattern
             // For now, we'll need to restructure to allow status updates
             debug!("Would set {} to {:?}", id, status);

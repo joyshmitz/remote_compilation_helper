@@ -4,8 +4,11 @@
 //! and routes compilation commands to remote workers.
 
 use anyhow::Result;
-use rch_common::{HookInput, HookOutput, classify_command};
+use rch_common::{classify_command, HookInput, HookOutput, SelectionResponse};
 use std::io::{self, BufRead, Write};
+use std::path::Path;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
 use tracing::{debug, info, warn};
 
 /// Run the hook, reading from stdin and writing to stdout.
@@ -87,10 +90,89 @@ async fn process_hook(input: HookInput) -> HookOutput {
         return HookOutput::allow();
     }
 
-    // TODO: Execute remote compilation pipeline
-    // For now, just allow local execution
-    info!("Remote execution not yet implemented, allowing local");
-    HookOutput::allow()
+    // Query daemon for a worker
+    let socket_path = "/tmp/rch.sock";
+    let project = extract_project_name();
+
+    match query_daemon(socket_path, &project, 4).await {
+        Ok(worker) => {
+            info!(
+                "Selected worker: {} at {}@{} ({} slots, speed {:.1})",
+                worker.worker, worker.user, worker.host, worker.slots_available, worker.speed_score
+            );
+            // TODO: Execute remote compilation pipeline with selected worker
+            // For now, allow local execution after logging worker selection
+            info!("Remote execution pipeline not yet implemented, allowing local");
+            HookOutput::allow()
+        }
+        Err(e) => {
+            warn!("Failed to query daemon: {}, allowing local execution", e);
+            HookOutput::allow()
+        }
+    }
+}
+
+/// Query the daemon for a worker.
+async fn query_daemon(
+    socket_path: &str,
+    project: &str,
+    cores: u32,
+) -> Result<SelectionResponse> {
+    // Check if socket exists
+    if !Path::new(socket_path).exists() {
+        return Err(anyhow::anyhow!("Daemon socket not found: {}", socket_path));
+    }
+
+    // Connect to daemon
+    let stream = UnixStream::connect(socket_path).await?;
+    let (reader, mut writer) = stream.into_split();
+
+    // Send request
+    let request = format!(
+        "GET /select-worker?project={}&cores={}\n",
+        urlencoding_encode(project),
+        cores
+    );
+    writer.write_all(request.as_bytes()).await?;
+    writer.flush().await?;
+
+    // Read response (skip HTTP headers)
+    let mut reader = BufReader::new(reader);
+    let mut line = String::new();
+    let mut body = String::new();
+    let mut in_body = false;
+
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line).await?;
+        if n == 0 {
+            break;
+        }
+        if in_body {
+            body.push_str(&line);
+        } else if line.trim().is_empty() {
+            in_body = true;
+        }
+    }
+
+    // Parse response
+    let response: SelectionResponse = serde_json::from_str(body.trim())?;
+    Ok(response)
+}
+
+/// Simple URL encoding for project names.
+fn urlencoding_encode(s: &str) -> String {
+    s.replace(' ', "%20")
+        .replace('/', "%2F")
+        .replace(':', "%3A")
+}
+
+/// Extract project name from current working directory.
+fn extract_project_name() -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 #[cfg(test)]

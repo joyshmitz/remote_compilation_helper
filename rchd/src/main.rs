@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+mod api;
 mod selection;
 mod workers;
 
@@ -73,7 +74,7 @@ async fn main() -> Result<()> {
             Ok((stream, _addr)) => {
                 let pool = worker_pool.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, pool).await {
+                    if let Err(e) = api::handle_connection(stream, pool).await {
                         warn!("Connection error: {}", e);
                     }
                 });
@@ -85,14 +86,3 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn handle_connection(
-    _stream: tokio::net::UnixStream,
-    _pool: workers::WorkerPool,
-) -> Result<()> {
-    // TODO: Implement request handling
-    // - Parse request (GET /select-worker?project=X&cores=N)
-    // - Select worker using selection algorithm
-    // - Return worker info as JSON
-    info!("Connection received");
-    Ok(())
-}
