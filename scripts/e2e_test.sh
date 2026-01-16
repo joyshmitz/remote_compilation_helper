@@ -1,285 +1,329 @@
 #!/usr/bin/env bash
 #
-# e2e_test.sh - End-to-end test script for Remote Compilation Helper (RCH)
+# e2e_test.sh - End-to-end pipeline test for Remote Compilation Helper (RCH)
 #
 # Usage:
 #   ./scripts/e2e_test.sh [OPTIONS]
 #
 # Options:
-#   --mock          Run with mock SSH/rsync (default in CI, uses RCH_MOCK_SSH=1)
-#   --real          Run with real workers (requires configured workers)
-#   --verbose       Enable verbose output
-#   --help          Show this help message
+#   --mock                 Run with mock SSH/rsync (default)
+#   --real                 Run with real workers (requires env below)
+#   --fail MODE            Inject failure: sync|exec|artifacts|worker-down|remote-exit
+#   --run-all              In mock mode, run success + failure scenarios
+#   --unit                 Also run `cargo test --workspace`
+#   --verbose              Enable verbose output
+#   --help                 Show this help message
 #
-# Environment Variables:
-#   RCH_MOCK_SSH=1              Force mock mode
-#   RCH_E2E_VERBOSE=1           Enable verbose logging
-#   RUST_LOG=debug              Enable Rust debug logging
+# Environment (real mode):
+#   RCH_E2E_WORKER_HOST     Worker host
+#   RCH_E2E_WORKER_USER     SSH user (default: ubuntu)
+#   RCH_E2E_WORKER_KEY      SSH key path (default: ~/.ssh/id_rsa)
+#   RCH_E2E_WORKER_ID       Worker id (default: e2e-worker)
+#   RCH_E2E_WORKER_SLOTS    Total slots (default: 8)
 #
-# Exit codes:
-#   0  All tests passed
-#   1  Test failure
-#   2  Setup failure (missing dependencies, build failure)
-#   3  Invalid arguments
+# Notes:
+# - Mock mode uses RCH_MOCK_SSH=1 and does NOT create real artifacts.
+# - For mock runs we validate that the artifact phase executed via hook logs.
 #
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-VERBOSE="${RCH_E2E_VERBOSE:-0}"
 MODE="mock"
+FAIL_MODE=""
+RUN_ALL="0"
+RUN_UNIT="0"
+VERBOSE="${RCH_E2E_VERBOSE:-0}"
 
-# Colors
-if [[ -t 1 ]]; then
-    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
-    BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
-else
-    RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; BOLD=''; RESET=''
-fi
-
-timestamp() { date '+%Y-%m-%dT%H:%M:%S.%3N'; }
+timestamp() { date -u '+%Y-%m-%dT%H:%M:%S.%3NZ'; }
 
 log() {
     local level="$1" phase="$2"; shift 2
     local ts; ts="$(timestamp)"
-    case "$level" in
-        INFO)  echo -e "${CYAN}[$ts]${RESET} ${BLUE}[$phase]${RESET} $*" ;;
-        PASS)  echo -e "${CYAN}[$ts]${RESET} ${GREEN}[$phase]${RESET} ${GREEN}$*${RESET}" ;;
-        FAIL)  echo -e "${CYAN}[$ts]${RESET} ${RED}[$phase]${RESET} ${RED}$*${RESET}" ;;
-        WARN)  echo -e "${CYAN}[$ts]${RESET} ${YELLOW}[$phase]${RESET} ${YELLOW}$*${RESET}" ;;
-        DEBUG) [[ "$VERBOSE" == "1" ]] && echo -e "${CYAN}[$ts]${RESET} [DEBUG] $*" || true ;;
-    esac
+    echo "[$ts] [$level] [$phase] $*"
 }
 
-log_header() {
-    echo ""; echo -e "${BOLD}============================================================${RESET}"
-    echo -e "${BOLD}  $1${RESET}"; echo -e "${BOLD}============================================================${RESET}"; echo ""
-}
+die() { log "FAIL" "SETUP" "$*"; exit 2; }
 
-die() { log FAIL SETUP "$*"; exit 2; }
+usage() {
+    sed -n '1,40p' "$0" | sed 's/^# \{0,1\}//'
+}
 
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --mock) MODE="mock"; shift ;;
             --real) MODE="real"; shift ;;
+            --fail) FAIL_MODE="${2:-}"; shift 2 ;;
+            --run-all) RUN_ALL="1"; shift ;;
+            --unit) RUN_UNIT="1"; shift ;;
             --verbose|-v) VERBOSE="1"; shift ;;
-            --help|-h) head -n 25 "$0" | tail -n +2 | sed 's/^# //'; exit 0 ;;
-            *) log FAIL ARGS "Unknown option: $1"; exit 3 ;;
+            --help|-h) usage; exit 0 ;;
+            *) log "FAIL" "ARGS" "Unknown option: $1"; exit 3 ;;
         esac
     done
     [[ "${RCH_MOCK_SSH:-}" == "1" ]] && MODE="mock" || true
+    if [[ "$MODE" == "mock" && "$RUN_ALL" == "0" ]]; then
+        RUN_ALL="1"
+    fi
 }
 
 check_dependencies() {
-    log INFO SETUP "Checking dependencies..."
+    log "INFO" "SETUP" "Checking dependencies..."
     for cmd in cargo rustc; do
-        command -v "$cmd" &>/dev/null || die "Missing: $cmd"
+        command -v "$cmd" >/dev/null 2>&1 || die "Missing: $cmd"
     done
-    log PASS SETUP "All dependencies present"
+    log "INFO" "SETUP" "Dependencies OK"
 }
 
-build_project() {
-    log INFO BUILD "Building RCH components..."
+build_binaries() {
+    log "INFO" "BUILD" "Building rch + rchd (debug)..."
     cd "$PROJECT_ROOT"
-    cargo build --release >/dev/null 2>&1 || die "Build failed"
-    for bin in rch rchd rch-wkr; do
-        [[ -x "target/release/$bin" ]] || die "Binary not found: $bin"
+    cargo build -p rch -p rchd >/dev/null 2>&1 || die "Build failed"
+    [[ -x "$PROJECT_ROOT/target/debug/rch" ]] || die "Binary missing: rch"
+    [[ -x "$PROJECT_ROOT/target/debug/rchd" ]] || die "Binary missing: rchd"
+    log "INFO" "BUILD" "Build OK"
+}
+
+make_test_project() {
+    TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/rch-e2e-XXXXXX")"
+    PROJECT_DIR="$TEST_ROOT/project"
+    LOG_DIR="$TEST_ROOT/logs"
+    mkdir -p "$PROJECT_DIR/src" "$LOG_DIR"
+
+    cat >"$PROJECT_DIR/Cargo.toml" <<'EOF'
+[package]
+name = "rch_e2e_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+EOF
+
+    cat >"$PROJECT_DIR/src/main.rs" <<'EOF'
+fn main() {
+    println!("rch e2e ok");
+}
+EOF
+
+    log "INFO" "SETUP" "Test project: $PROJECT_DIR"
+    log "INFO" "SETUP" "Logs: $LOG_DIR"
+}
+
+write_workers_config() {
+    WORKERS_FILE="$TEST_ROOT/workers.toml"
+
+    if [[ "$MODE" == "mock" ]]; then
+        cat >"$WORKERS_FILE" <<'EOF'
+[[workers]]
+id = "mock-worker"
+host = "mock.host"
+user = "mockuser"
+identity_file = "~/.ssh/mock"
+total_slots = 8
+priority = 100
+enabled = true
+EOF
+        return
+    fi
+
+    local host="${RCH_E2E_WORKER_HOST:-}"
+    local user="${RCH_E2E_WORKER_USER:-ubuntu}"
+    local key="${RCH_E2E_WORKER_KEY:-~/.ssh/id_rsa}"
+    local wid="${RCH_E2E_WORKER_ID:-e2e-worker}"
+    local slots="${RCH_E2E_WORKER_SLOTS:-8}"
+
+    [[ -n "$host" ]] || die "RCH_E2E_WORKER_HOST is required for --real"
+
+    cat >"$WORKERS_FILE" <<EOF
+[[workers]]
+id = "$wid"
+host = "$host"
+user = "$user"
+identity_file = "$key"
+total_slots = $slots
+priority = 100
+enabled = true
+EOF
+}
+
+start_daemon() {
+    SOCKET_PATH="$TEST_ROOT/rch.sock"
+    DAEMON_LOG="$LOG_DIR/rchd.log"
+
+    log "INFO" "DAEMON" "Starting rchd (socket: $SOCKET_PATH)"
+    "$PROJECT_ROOT/target/debug/rchd" \
+        --socket "$SOCKET_PATH" \
+        --workers-config "$WORKERS_FILE" \
+        --foreground \
+        >>"$DAEMON_LOG" 2>&1 &
+    RCHD_PID=$!
+
+    local waited=0
+    while [[ ! -S "$SOCKET_PATH" && $waited -lt 50 ]]; do
+        sleep 0.1
+        waited=$((waited + 1))
     done
-    log PASS BUILD "Build successful"
+
+    if [[ ! -S "$SOCKET_PATH" ]]; then
+        die "Daemon socket not found after startup (log: $DAEMON_LOG)"
+    fi
+    log "INFO" "DAEMON" "Daemon ready (pid: $RCHD_PID)"
 }
 
-setup_mock_environment() {
-    log INFO SETUP "Setting up mock environment..."
-    export RCH_MOCK_SSH=1
-    export RUST_LOG="${RUST_LOG:-info}"
-    log PASS SETUP "Mock environment configured"
-}
-
-TESTS_RUN=0; TESTS_PASSED=0; TESTS_FAILED=0
-
-run_test() {
-    local name="$1" func="$2"
-    ((TESTS_RUN++))
-    log INFO TEST "Running: $name"
-    local start; start=$(date +%s%3N)
-    if "$func"; then
-        local dur=$(($(date +%s%3N) - start))
-        log PASS TEST "PASS: $name (${dur}ms)"; ((TESTS_PASSED++))
-    else
-        local dur=$(($(date +%s%3N) - start))
-        log FAIL TEST "FAIL: $name (${dur}ms)"; ((TESTS_FAILED++))
+stop_daemon() {
+    if [[ -n "${RCHD_PID:-}" ]]; then
+        log "INFO" "DAEMON" "Stopping rchd (pid: $RCHD_PID)"
+        kill "$RCHD_PID" >/dev/null 2>&1 || true
     fi
 }
 
-test_mock_ssh_connect() {
-    cd "$PROJECT_ROOT"
-    local output
-    output=$(cargo test -p rch-common test_mock_ssh_client_connect -- --nocapture 2>&1)
-    echo "$output" | /bin/grep -q "test.*ok"
+hook_json() {
+    cat <<'JSON'
+{
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cargo build",
+    "description": "rch e2e build"
+  }
+}
+JSON
 }
 
-test_mock_ssh_execute() {
-    cd "$PROJECT_ROOT"
-    cargo test -p rch-common test_mock_ssh_client_execute -- --nocapture 2>&1 | /bin/grep -q "test.*ok"
-}
+run_hook() {
+    local scenario="$1"; shift
+    local hook_out="$LOG_DIR/hook_${scenario}.out"
+    local hook_err="$LOG_DIR/hook_${scenario}.err"
+    local env_args=("$@")
 
-test_mock_rsync_sync() {
-    cd "$PROJECT_ROOT"
-    cargo test -p rch-common test_mock_rsync_sync -- --nocapture 2>&1 | /bin/grep -q "test.*ok"
-}
+    log "INFO" "HOOK" "Running hook ($scenario)"
+    (
+        cd "$PROJECT_DIR"
+        printf '%s\n' "$(hook_json)" | \
+            env RCH_SOCKET_PATH="$SOCKET_PATH" "${env_args[@]}" \
+            "$PROJECT_ROOT/target/debug/rch" >"$hook_out" 2>"$hook_err"
+    )
 
-test_mock_connection_failure() {
-    cd "$PROJECT_ROOT"
-    cargo test -p rch-common test_mock_ssh_client_connection_failure -- --nocapture 2>&1 | /bin/grep -q "test.*ok"
-}
-
-test_mock_rsync_failure() {
-    cd "$PROJECT_ROOT"
-    cargo test -p rch-common test_mock_rsync_failure -- --nocapture 2>&1 | /bin/grep -q "test.*ok"
-}
-
-test_hook_non_bash_allowed() {
-    cd "$PROJECT_ROOT"
-    cargo test -p rch test_non_bash_allowed -- --nocapture 2>&1 | /bin/grep -q "test.*ok"
-}
-
-test_hook_daemon_query_protocol() {
-    cd "$PROJECT_ROOT"
-    cargo test -p rch test_daemon_query_protocol -- --nocapture 2>&1 | /bin/grep -q "test.*ok"
-}
-
-test_hook_remote_success_mocked() {
-    cd "$PROJECT_ROOT"
-    cargo test -p rch test_process_hook_remote_success_mocked -- --nocapture 2>&1 | /bin/grep -q "test.*ok"
-}
-
-test_hook_sync_failure_allows() {
-    cd "$PROJECT_ROOT"
-    cargo test -p rch test_process_hook_remote_sync_failure_allows -- --nocapture 2>&1 | /bin/grep -q "test.*ok"
-}
-
-test_hook_nonzero_exit_denies() {
-    cd "$PROJECT_ROOT"
-    cargo test -p rch test_process_hook_remote_nonzero_exit_denies -- --nocapture 2>&1 | /bin/grep -q "test.*ok"
-}
-
-test_selection_score() {
-    cd "$PROJECT_ROOT"
-    cargo test -p rchd test_selection_score -- --nocapture 2>&1 | /bin/grep -q "test.*ok"
-}
-
-test_health_update_success() {
-    cd "$PROJECT_ROOT"
-    cargo test -p rchd test_worker_health_update_success -- --nocapture 2>&1 | /bin/grep -q "test.*ok"
-}
-
-test_health_recovery() {
-    cd "$PROJECT_ROOT"
-    cargo test -p rchd test_worker_health_recovery -- --nocapture 2>&1 | /bin/grep -q "test.*ok"
-}
-
-test_fail_open_daemon_unavailable() {
-    cd "$PROJECT_ROOT"
-    cargo test -p rch test_daemon_query_missing_socket -- --nocapture 2>&1 | /bin/grep -q "test.*ok"
-}
-
-test_fail_open_config_error() {
-    cd "$PROJECT_ROOT"
-    cargo test -p rch test_fail_open_on_config_error -- --nocapture 2>&1 | /bin/grep -q "test.*ok"
-}
-
-run_mock_transport_tests() {
-    log_header "Mock Transport Tests"
-    run_test "Mock SSH connect" test_mock_ssh_connect || true
-    run_test "Mock SSH execute" test_mock_ssh_execute || true
-    run_test "Mock rsync sync" test_mock_rsync_sync || true
-    run_test "Mock connection failure" test_mock_connection_failure || true
-    run_test "Mock rsync failure" test_mock_rsync_failure || true
-}
-
-run_hook_pipeline_tests() {
-    log_header "Hook Pipeline Tests"
-    run_test "Non-Bash tool allowed" test_hook_non_bash_allowed || true
-    run_test "Daemon query protocol" test_hook_daemon_query_protocol || true
-    run_test "Remote success (mocked)" test_hook_remote_success_mocked || true
-    run_test "Sync failure allows local" test_hook_sync_failure_allows || true
-    run_test "Non-zero exit denies" test_hook_nonzero_exit_denies || true
-}
-
-run_selection_tests() {
-    log_header "Worker Selection Tests"
-    run_test "Selection scoring" test_selection_score || true
-}
-
-run_health_tests() {
-    log_header "Health Monitoring Tests"
-    run_test "Health update success" test_health_update_success || true
-    run_test "Health recovery" test_health_recovery || true
-}
-
-run_failure_mode_tests() {
-    log_header "Failure Mode Tests"
-    run_test "Fail-open daemon unavailable" test_fail_open_daemon_unavailable || true
-    run_test "Fail-open config error" test_fail_open_config_error || true
-}
-
-run_all_unit_tests() {
-    log_header "Running All Unit Tests"
-    log INFO TEST "Running cargo test --workspace..."
-    cd "$PROJECT_ROOT"
-    local start; start=$(date +%s%3N)
-    local output exit_code=0
-    output=$(cargo test --workspace 2>&1) || exit_code=$?
-    echo "$output"
-    local dur=$(($(date +%s%3N) - start))
-    if [[ $exit_code -eq 0 ]]; then
-        log PASS TEST "All unit tests passed (${dur}ms)"
-        return 0
+    if /bin/grep -q '"permissionDecision":"deny"' "$hook_out"; then
+        echo "deny"
     else
-        log FAIL TEST "Some unit tests failed (${dur}ms)"
+        echo "allow"
+    fi
+}
+
+check_artifacts_real() {
+    local bin_path="$PROJECT_DIR/target/debug/rch_e2e_app"
+    [[ -x "$bin_path" ]]
+}
+
+check_artifacts_mock() {
+    local hook_err="$1"
+    /bin/grep -q "Artifacts retrieved" "$hook_err"
+}
+
+run_scenario() {
+    local scenario="$1"
+    local expect="$2"
+    local fail="$3"
+    local envs=()
+
+    if [[ "$MODE" == "mock" ]]; then
+        envs+=("RCH_MOCK_SSH=1")
+    fi
+
+    case "$fail" in
+        sync) envs+=("RCH_MOCK_RSYNC_FAIL_SYNC=1") ;;
+        exec) envs+=("RCH_MOCK_SSH_FAIL_EXECUTE=1") ;;
+        artifacts) envs+=("RCH_MOCK_RSYNC_FAIL_ARTIFACTS=1") ;;
+        worker-down) envs+=("RCH_MOCK_SSH_FAIL_CONNECT=1") ;;
+        remote-exit) envs+=("RCH_MOCK_SSH_EXIT_CODE=2") ;;
+        "") ;;
+        *) die "Unknown failure mode: $fail" ;;
+    esac
+
+    local result
+    result="$(run_hook "$scenario" "${envs[@]}")"
+
+    if [[ "$result" != "$expect" ]]; then
+        log "FAIL" "SCENARIO" "$scenario expected $expect, got $result"
         return 1
     fi
+
+    if [[ "$MODE" == "real" && "$expect" == "deny" && "$fail" != "artifacts" ]]; then
+        if check_artifacts_real; then
+            log "INFO" "ARTIFACTS" "$scenario artifacts present"
+        else
+            log "FAIL" "ARTIFACTS" "$scenario artifacts missing"
+            return 1
+        fi
+    fi
+
+    if [[ "$MODE" == "mock" && "$expect" == "deny" && "$fail" != "sync" && "$fail" != "exec" && "$fail" != "worker-down" ]]; then
+        if check_artifacts_mock "$LOG_DIR/hook_${scenario}.err"; then
+            log "INFO" "ARTIFACTS" "$scenario artifact phase logged"
+        else
+            log "FAIL" "ARTIFACTS" "$scenario artifact phase missing"
+            return 1
+        fi
+    fi
+
+    log "INFO" "SCENARIO" "$scenario OK"
+}
+
+run_e2e() {
+    log "INFO" "E2E" "Mode: $MODE"
+    log "INFO" "E2E" "Scenario: ${FAIL_MODE:-success}"
+
+    if [[ "$RUN_ALL" == "1" && "$MODE" == "mock" ]]; then
+        run_scenario "success" "deny" ""
+        run_scenario "sync_fail" "allow" "sync"
+        run_scenario "exec_fail" "allow" "exec"
+        run_scenario "worker_down" "allow" "worker-down"
+        run_scenario "artifact_fail" "deny" "artifacts"
+        run_scenario "remote_exit" "deny" "remote-exit"
+        return
+    fi
+
+    if [[ -n "$FAIL_MODE" ]]; then
+        case "$FAIL_MODE" in
+            sync|exec|worker-down) run_scenario "$FAIL_MODE" "allow" "$FAIL_MODE" ;;
+            artifacts|remote-exit) run_scenario "$FAIL_MODE" "deny" "$FAIL_MODE" ;;
+            *) die "Unknown failure mode: $FAIL_MODE" ;;
+        esac
+    else
+        run_scenario "success" "deny" ""
+    fi
+}
+
+run_unit_tests() {
+    log "INFO" "UNIT" "Running cargo test --workspace"
+    cd "$PROJECT_ROOT"
+    cargo test --workspace
 }
 
 main() {
     parse_args "$@"
-
-    log_header "RCH End-to-End Test Suite"
-    log INFO MAIN "Mode: $MODE"
-    log INFO MAIN "Verbose: $VERBOSE"
-    log INFO MAIN "Project root: $PROJECT_ROOT"
-
-    log_header "Setup Phase"
     check_dependencies
-    build_project
-    setup_mock_environment
+    build_binaries
+    make_test_project
+    write_workers_config
+    start_daemon
 
-    run_mock_transport_tests
-    run_hook_pipeline_tests
-    run_selection_tests
-    run_health_tests
-    run_failure_mode_tests
-    run_all_unit_tests || true
+    trap stop_daemon EXIT
 
-    log_header "Test Summary"
-    local pass_rate=0
-    [[ $TESTS_RUN -gt 0 ]] && pass_rate=$((TESTS_PASSED * 100 / TESTS_RUN))
-    echo ""
-    echo -e "  ${BOLD}Total:${RESET}   $TESTS_RUN"
-    echo -e "  ${GREEN}Passed:${RESET}  $TESTS_PASSED"
-    echo -e "  ${RED}Failed:${RESET}  $TESTS_FAILED"
-    echo -e "  ${BOLD}Rate:${RESET}    ${pass_rate}%"
-    echo ""
-
-    if [[ $TESTS_FAILED -gt 0 ]]; then
-        log FAIL MAIN "E2E tests completed with $TESTS_FAILED failures"
-        exit 1
-    else
-        log PASS MAIN "All E2E tests passed"
-        exit 0
+    if [[ "$MODE" == "mock" ]]; then
+        export RUST_LOG="${RUST_LOG:-info}"
     fi
+
+    run_e2e
+
+    if [[ "$RUN_UNIT" == "1" ]]; then
+        run_unit_tests
+    fi
+
+    log "INFO" "DONE" "E2E complete. Logs in $LOG_DIR"
+    log "INFO" "DONE" "Temp project kept at $TEST_ROOT"
 }
 
 main "$@"
