@@ -194,11 +194,30 @@ async fn query_daemon(
     Ok(response)
 }
 
-/// Simple URL encoding for project names.
+/// URL percent-encoding for query parameters.
+///
+/// Encodes characters that are not URL-safe (RFC 3986 unreserved characters).
 fn urlencoding_encode(s: &str) -> String {
-    s.replace(' ', "%20")
-        .replace('/', "%2F")
-        .replace(':', "%3A")
+    let mut result = String::with_capacity(s.len() * 3); // Worst case: all encoded
+
+    for c in s.chars() {
+        match c {
+            // Unreserved characters (RFC 3986) - don't encode
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => {
+                result.push(c);
+            }
+            // Everything else needs encoding
+            _ => {
+                // Encode as UTF-8 bytes
+                for byte in c.to_string().as_bytes() {
+                    result.push('%');
+                    result.push_str(&format!("{:02X}", byte));
+                }
+            }
+        }
+    }
+
+    result
 }
 
 /// Extract project name from current working directory.
@@ -363,5 +382,34 @@ mod tests {
         // Currently allows because remote execution not implemented
         let output = process_hook(input).await;
         assert!(output.is_allow());
+    }
+
+    #[test]
+    fn test_urlencoding_encode_basic() {
+        assert_eq!(urlencoding_encode("hello world"), "hello%20world");
+        assert_eq!(urlencoding_encode("path/to/file"), "path%2Fto%2Ffile");
+        assert_eq!(urlencoding_encode("foo:bar"), "foo%3Abar");
+    }
+
+    #[test]
+    fn test_urlencoding_encode_special_chars() {
+        assert_eq!(urlencoding_encode("a&b=c"), "a%26b%3Dc");
+        assert_eq!(urlencoding_encode("100%"), "100%25");
+        assert_eq!(urlencoding_encode("hello+world"), "hello%2Bworld");
+    }
+
+    #[test]
+    fn test_urlencoding_encode_no_encoding_needed() {
+        assert_eq!(urlencoding_encode("simple"), "simple");
+        assert_eq!(urlencoding_encode("with-dash_underscore.dot~tilde"), "with-dash_underscore.dot~tilde");
+        assert_eq!(urlencoding_encode("ABC123"), "ABC123");
+    }
+
+    #[test]
+    fn test_urlencoding_encode_unicode() {
+        // Unicode characters should be encoded as UTF-8 bytes
+        let encoded = urlencoding_encode("café");
+        assert!(encoded.contains("%")); // 'é' should be encoded
+        assert!(encoded.starts_with("caf")); // ASCII part preserved
     }
 }

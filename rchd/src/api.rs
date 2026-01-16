@@ -105,11 +105,35 @@ fn parse_request(line: &str) -> Result<SelectionRequest> {
     })
 }
 
-/// Simple URL decoding (just handles %20 for now).
+/// URL percent-decoding.
+///
+/// Decodes %XX hex sequences to their original characters.
 fn urlencoding_decode(s: &str) -> String {
-    s.replace("%20", " ")
-        .replace("%2F", "/")
-        .replace("%3A", ":")
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            // Try to read two hex digits
+            let hex: String = chars.by_ref().take(2).collect();
+            if hex.len() == 2 {
+                if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                    result.push(byte as char);
+                    continue;
+                }
+            }
+            // Invalid encoding, keep original
+            result.push('%');
+            result.push_str(&hex);
+        } else if c == '+' {
+            // + is space in application/x-www-form-urlencoded
+            result.push(' ');
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
 }
 
 /// Handle a select-worker request.
@@ -187,5 +211,38 @@ mod tests {
     fn test_parse_request_unknown_endpoint() {
         let result = parse_request("GET /unknown?project=test");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_urlencoding_decode_basic() {
+        assert_eq!(urlencoding_decode("hello%20world"), "hello world");
+        assert_eq!(urlencoding_decode("path%2Fto%2Ffile"), "path/to/file");
+        assert_eq!(urlencoding_decode("foo%3Abar"), "foo:bar");
+    }
+
+    #[test]
+    fn test_urlencoding_decode_special_chars() {
+        assert_eq!(urlencoding_decode("a%26b%3Dc"), "a&b=c");
+        assert_eq!(urlencoding_decode("100%25"), "100%");
+        assert_eq!(urlencoding_decode("hello%2Bworld"), "hello+world");
+    }
+
+    #[test]
+    fn test_urlencoding_decode_plus_as_space() {
+        assert_eq!(urlencoding_decode("hello+world"), "hello world");
+    }
+
+    #[test]
+    fn test_urlencoding_decode_no_encoding() {
+        assert_eq!(urlencoding_decode("simple"), "simple");
+        assert_eq!(urlencoding_decode("with-dash_underscore"), "with-dash_underscore");
+    }
+
+    #[test]
+    fn test_urlencoding_decode_invalid() {
+        // Invalid hex should be preserved
+        assert_eq!(urlencoding_decode("foo%GGbar"), "foo%GGbar");
+        // Incomplete sequence at end
+        assert_eq!(urlencoding_decode("foo%2"), "foo%2");
     }
 }

@@ -1,29 +1,34 @@
 //! Command execution on worker.
 
 use anyhow::Result;
+use thiserror::Error;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tracing::{debug, error, info};
 
+/// Error returned when a command exits with a non-zero status.
+#[derive(Debug, Error)]
+#[error("Command failed with exit code: {exit_code}")]
+pub struct CommandFailed {
+    pub exit_code: i32,
+}
+
 /// Execute a command in the specified working directory.
 ///
-/// Streams stdout/stderr in real-time and returns the exit code.
+/// Streams stdout/stderr in real-time and returns Ok on success.
 pub async fn execute(workdir: &str, command: &str) -> Result<()> {
     info!("Executing in {}: {}", workdir, command);
 
-    // Parse command into program and arguments
-    let parts: Vec<&str> = command.split_whitespace().collect();
-    if parts.is_empty() {
+    if command.trim().is_empty() {
         anyhow::bail!("Empty command");
     }
 
-    let program = parts[0];
-    let args = &parts[1..];
-
-    // Spawn the process
-    let mut child = Command::new(program)
-        .args(args)
+    // Use shell execution to properly handle quoted arguments and shell features
+    // This matches how the SSH client executes commands (sh -c "...")
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(command)
         .current_dir(workdir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -62,7 +67,7 @@ pub async fn execute(workdir: &str, command: &str) -> Result<()> {
     } else {
         let code = status.code().unwrap_or(-1);
         error!("Command failed with exit code: {}", code);
-        std::process::exit(code);
+        Err(CommandFailed { exit_code: code }.into())
     }
 }
 
