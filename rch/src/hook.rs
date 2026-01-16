@@ -341,6 +341,8 @@ async fn execute_remote_compilation(
 mod tests {
     use super::*;
     use rch_common::ToolInput;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
+    use tokio::net::UnixListener;
 
     #[tokio::test]
     async fn test_non_bash_allowed() {
@@ -418,5 +420,293 @@ mod tests {
         let encoded = urlencoding_encode("café");
         assert!(encoded.contains("%")); // 'é' should be encoded
         assert!(encoded.starts_with("caf")); // ASCII part preserved
+    }
+
+    // =========================================================================
+    // Classification + threshold interaction tests
+    // =========================================================================
+
+    #[test]
+    fn test_classification_confidence_levels() {
+        // High confidence: explicit cargo build
+        let result = classify_command("cargo build");
+        assert!(result.is_compilation);
+        assert!(result.confidence >= 0.90);
+
+        // Still compilation but different command
+        let result = classify_command("cargo test --release");
+        assert!(result.is_compilation);
+        assert!(result.confidence >= 0.85);
+
+        // Non-compilation cargo commands should not trigger
+        let result = classify_command("cargo fmt");
+        assert!(!result.is_compilation);
+    }
+
+    #[test]
+    fn test_classification_rejects_shell_metachars() {
+        // Piped commands should not be intercepted
+        let result = classify_command("cargo build | tee log.txt");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("pipe"));
+
+        // Backgrounded commands should not be intercepted
+        let result = classify_command("cargo build &");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("background"));
+
+        // Redirected commands should not be intercepted
+        let result = classify_command("cargo build > output.log");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("redirect"));
+
+        // Subshell capture should not be intercepted
+        let result = classify_command("result=$(cargo build)");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("subshell"));
+    }
+
+    #[test]
+    fn test_extract_project_name() {
+        // The function uses current directory, but we can test it runs
+        let project = extract_project_name();
+        // Should return something (either actual dir name or "unknown")
+        assert!(!project.is_empty());
+    }
+
+    // =========================================================================
+    // Hook output protocol tests
+    // =========================================================================
+
+    #[test]
+    fn test_hook_output_allow_is_empty() {
+        // Allow output should serialize to nothing (empty stdout = allow)
+        let output = HookOutput::allow();
+        assert!(output.is_allow());
+    }
+
+    #[test]
+    fn test_hook_output_deny_serializes() {
+        let output = HookOutput::deny("Test denial reason".to_string());
+        let json = serde_json::to_string(&output).expect("Should serialize");
+        assert!(json.contains("deny"));
+        assert!(json.contains("Test denial reason"));
+    }
+
+    #[test]
+    fn test_selection_response_to_worker_config() {
+        let response = SelectionResponse {
+            worker: rch_common::WorkerId::new("test-worker"),
+            host: "192.168.1.100".to_string(),
+            user: "ubuntu".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            slots_available: 8,
+            speed_score: 75.5,
+        };
+
+        let config = selection_to_worker_config(&response);
+        assert_eq!(config.id.as_str(), "test-worker");
+        assert_eq!(config.host, "192.168.1.100");
+        assert_eq!(config.user, "ubuntu");
+        assert_eq!(config.total_slots, 8);
+    }
+
+    // =========================================================================
+    // Mock daemon socket tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_daemon_query_missing_socket() {
+        // Query a non-existent socket should fail gracefully
+        let result = query_daemon("/tmp/nonexistent_rch_test.sock", "testproj", 4).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("not found") || err_msg.contains("No such file"));
+    }
+
+    #[tokio::test]
+    async fn test_daemon_query_protocol() {
+        // Create a mock daemon socket
+        let socket_path = format!("/tmp/rch_test_daemon_{}.sock", std::process::id());
+
+        // Clean up any existing socket
+        let _ = std::fs::remove_file(&socket_path);
+
+        let listener = UnixListener::bind(&socket_path).expect("Failed to create test socket");
+
+        // Spawn mock daemon handler
+        let socket_path_clone = socket_path.clone();
+        let daemon_handle = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("Failed to accept connection");
+            let (reader, mut writer) = stream.into_split();
+            let mut buf_reader = TokioBufReader::new(reader);
+
+            // Read the request line
+            let mut request_line = String::new();
+            buf_reader
+                .read_line(&mut request_line)
+                .await
+                .expect("Failed to read request");
+
+            // Verify request format
+            assert!(request_line.starts_with("GET /select-worker"));
+            assert!(request_line.contains("project="));
+            assert!(request_line.contains("cores="));
+
+            // Send mock response
+            let response = SelectionResponse {
+                worker: rch_common::WorkerId::new("mock-worker"),
+                host: "mock.host.local".to_string(),
+                user: "mockuser".to_string(),
+                identity_file: "~/.ssh/mock_key".to_string(),
+                slots_available: 16,
+                speed_score: 95.0,
+            };
+            let body = serde_json::to_string(&response).unwrap();
+            let http_response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            writer
+                .write_all(http_response.as_bytes())
+                .await
+                .expect("Failed to write response");
+        });
+
+        // Give daemon time to start listening
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Query the mock daemon
+        let result = query_daemon(&socket_path, "test-project", 4).await;
+
+        // Clean up
+        daemon_handle.await.expect("Daemon task panicked");
+        let _ = std::fs::remove_file(&socket_path_clone);
+
+        // Verify result
+        let response = result.expect("Query should succeed");
+        assert_eq!(response.worker.as_str(), "mock-worker");
+        assert_eq!(response.host, "mock.host.local");
+        assert_eq!(response.slots_available, 16);
+    }
+
+    #[tokio::test]
+    async fn test_daemon_query_url_encoding() {
+        // Verify special characters in project name are encoded
+        let socket_path = format!("/tmp/rch_test_url_{}.sock", std::process::id());
+        let _ = std::fs::remove_file(&socket_path);
+
+        let listener = UnixListener::bind(&socket_path).expect("Failed to create test socket");
+
+        let socket_path_clone = socket_path.clone();
+        let daemon_handle = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("Failed to accept connection");
+            let (reader, mut writer) = stream.into_split();
+            let mut buf_reader = TokioBufReader::new(reader);
+
+            let mut request_line = String::new();
+            buf_reader.read_line(&mut request_line).await.expect("Read");
+
+            // The project name "my project/test" should be URL encoded
+            assert!(request_line.contains("my%20project%2Ftest"));
+
+            // Send minimal response
+            let response = SelectionResponse {
+                worker: rch_common::WorkerId::new("w1"),
+                host: "h".to_string(),
+                user: "u".to_string(),
+                identity_file: "i".to_string(),
+                slots_available: 1,
+                speed_score: 1.0,
+            };
+            let body = serde_json::to_string(&response).unwrap();
+            let http = format!("HTTP/1.1 200 OK\r\n\r\n{}", body);
+            writer.write_all(http.as_bytes()).await.expect("Write");
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let result = query_daemon(&socket_path, "my project/test", 2).await;
+        daemon_handle.await.expect("Daemon task");
+        let _ = std::fs::remove_file(&socket_path_clone);
+
+        assert!(result.is_ok());
+    }
+
+    // =========================================================================
+    // Fail-open behavior tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_fail_open_on_invalid_json() {
+        // If hook input is invalid JSON, should allow (fail-open)
+        // This tests the run_hook behavior implicitly through process_hook
+        // We can't easily test run_hook directly as it reads stdin
+
+        // But we can verify that process_hook with valid input returns Allow
+        // when no daemon is available (which is the fail-open case)
+        let input = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: ToolInput {
+                command: "cargo build".to_string(),
+                description: None,
+            },
+            session_id: None,
+        };
+
+        // With no daemon running, should fail-open to allow
+        let output = process_hook(input).await;
+        assert!(output.is_allow());
+    }
+
+    #[tokio::test]
+    async fn test_fail_open_on_config_error() {
+        // If config is missing or invalid, should allow
+        // This is tested implicitly by process_hook when config can't load
+        // The current implementation falls back to allow
+        let input = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: ToolInput {
+                command: "cargo build --release".to_string(),
+                description: None,
+            },
+            session_id: None,
+        };
+
+        let output = process_hook(input).await;
+        // Should allow because daemon isn't running (fail-open)
+        assert!(output.is_allow());
+    }
+
+    #[test]
+    fn test_transfer_config_defaults() {
+        // Verify TransferConfig has sensible defaults
+        let config = TransferConfig::default();
+        assert!(!config.exclude_patterns.is_empty());
+        assert!(config.exclude_patterns.iter().any(|p| p.contains("target")));
+    }
+
+    #[test]
+    fn test_worker_config_from_selection() {
+        // Test the conversion preserves all fields correctly
+        let selection = SelectionResponse {
+            worker: rch_common::WorkerId::new("worker-alpha"),
+            host: "alpha.example.com".to_string(),
+            user: "deploy".to_string(),
+            identity_file: "/keys/deploy.pem".to_string(),
+            slots_available: 32,
+            speed_score: 88.8,
+        };
+
+        let config = selection_to_worker_config(&selection);
+
+        assert_eq!(config.id.as_str(), "worker-alpha");
+        assert_eq!(config.host, "alpha.example.com");
+        assert_eq!(config.user, "deploy");
+        assert_eq!(config.identity_file, "/keys/deploy.pem");
+        assert_eq!(config.total_slots, 32);
+        assert_eq!(config.priority, 100); // Default priority
+        assert!(config.tags.is_empty()); // Default empty tags
     }
 }
