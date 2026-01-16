@@ -82,6 +82,7 @@ mod tests {
     use super::*;
     use crate::workers::WorkerState;
     use rch_common::{WorkerConfig, WorkerId};
+    use rch_common::WorkerStatus;
 
     fn make_worker(id: &str, total_slots: u32, speed: f64) -> WorkerState {
         let config = WorkerConfig {
@@ -111,5 +112,54 @@ mod tests {
         let score = compute_score(&worker, &request, &weights);
         assert!(score > 0.0);
         assert!(score <= 1.0);
+    }
+
+    #[tokio::test]
+    async fn test_select_worker_ignores_unhealthy() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_worker("healthy", 8, 50.0).config)
+            .await;
+        pool.add_worker(make_worker("unreachable", 16, 90.0).config)
+            .await;
+
+        // Mark the second worker unreachable
+        pool.set_status(&WorkerId::new("unreachable"), WorkerStatus::Unreachable)
+            .await;
+
+        let request = SelectionRequest {
+            project: "myproject".to_string(),
+            estimated_cores: 2,
+            preferred_workers: vec![],
+        };
+        let weights = SelectionWeights::default();
+
+        let selected = select_worker(&pool, &request, &weights).await;
+        let selected = selected.expect("Expected a healthy worker to be selected");
+        assert_eq!(selected.config.id.as_str(), "healthy");
+    }
+
+    #[tokio::test]
+    async fn test_select_worker_respects_slot_availability() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_worker("full", 4, 70.0).config)
+            .await;
+        pool.add_worker(make_worker("available", 8, 50.0).config)
+            .await;
+
+        // Reserve all slots on the first worker
+        let full_worker = pool.get(&WorkerId::new("full")).await.unwrap();
+        assert!(full_worker.reserve_slots(4));
+        assert_eq!(full_worker.available_slots(), 0);
+
+        let request = SelectionRequest {
+            project: "myproject".to_string(),
+            estimated_cores: 2,
+            preferred_workers: vec![],
+        };
+        let weights = SelectionWeights::default();
+
+        let selected = select_worker(&pool, &request, &weights).await;
+        let selected = selected.expect("Expected a worker with available slots");
+        assert_eq!(selected.config.id.as_str(), "available");
     }
 }

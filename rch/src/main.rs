@@ -6,9 +6,9 @@
 
 #![forbid(unsafe_code)]
 
+mod commands;
 mod config;
 mod hook;
-#[allow(dead_code)] // TODO: Remove once integrated into hook pipeline
 mod transfer;
 
 use anyhow::Result;
@@ -170,28 +170,19 @@ async fn main() -> Result<()> {
 async fn handle_daemon(action: DaemonAction) -> Result<()> {
     match action {
         DaemonAction::Start => {
-            tracing::info!("Starting RCH daemon...");
-            // TODO: Implement daemon start
-            println!("Daemon start not yet implemented");
+            commands::daemon_start().await?;
         }
         DaemonAction::Stop => {
-            tracing::info!("Stopping RCH daemon...");
-            // TODO: Implement daemon stop
-            println!("Daemon stop not yet implemented");
+            commands::daemon_stop().await?;
         }
         DaemonAction::Restart => {
-            tracing::info!("Restarting RCH daemon...");
-            // TODO: Implement daemon restart
-            println!("Daemon restart not yet implemented");
+            commands::daemon_restart().await?;
         }
         DaemonAction::Status => {
-            // TODO: Check if daemon is running
-            println!("Daemon status not yet implemented");
+            commands::daemon_status()?;
         }
         DaemonAction::Logs { lines } => {
-            tracing::info!("Showing last {} log lines...", lines);
-            // TODO: Show daemon logs
-            println!("Daemon logs not yet implemented");
+            commands::daemon_logs(lines)?;
         }
     }
     Ok(())
@@ -200,75 +191,42 @@ async fn handle_daemon(action: DaemonAction) -> Result<()> {
 async fn handle_workers(action: WorkersAction) -> Result<()> {
     match action {
         WorkersAction::List => {
-            // TODO: List workers from config
-            println!("Workers list not yet implemented");
+            commands::workers_list()?;
         }
         WorkersAction::Probe { worker, all } => {
-            if all {
-                tracing::info!("Probing all workers...");
-            } else if let Some(w) = worker {
-                tracing::info!("Probing worker: {}", w);
-            }
-            // TODO: Probe worker connectivity
-            println!("Worker probe not yet implemented");
+            commands::workers_probe(worker, all).await?;
         }
         WorkersAction::Benchmark => {
-            tracing::info!("Running benchmarks...");
-            // TODO: Run speed benchmarks
-            println!("Benchmark not yet implemented");
+            commands::workers_benchmark().await?;
         }
         WorkersAction::Drain { worker } => {
-            tracing::info!("Draining worker: {}", worker);
-            // TODO: Drain worker
-            println!("Worker drain not yet implemented");
+            commands::workers_drain(&worker).await?;
         }
         WorkersAction::Enable { worker } => {
-            tracing::info!("Enabling worker: {}", worker);
-            // TODO: Enable worker
-            println!("Worker enable not yet implemented");
+            commands::workers_enable(&worker).await?;
         }
     }
     Ok(())
 }
 
 async fn handle_status(workers: bool, jobs: bool) -> Result<()> {
-    println!("RCH Status");
-    println!("==========");
-    // TODO: Show daemon status
-
-    if workers {
-        println!("\nWorkers:");
-        // TODO: Show worker status
-        println!("  (not yet implemented)");
-    }
-
-    if jobs {
-        println!("\nActive Jobs:");
-        // TODO: Show active jobs
-        println!("  (not yet implemented)");
-    }
-
+    commands::status_overview(workers, jobs).await?;
     Ok(())
 }
 
 async fn handle_config(action: ConfigAction) -> Result<()> {
     match action {
         ConfigAction::Show => {
-            // TODO: Show effective config
-            println!("Config show not yet implemented");
+            commands::config_show()?;
         }
         ConfigAction::Init => {
-            // TODO: Initialize project config
-            println!("Config init not yet implemented");
+            commands::config_init()?;
         }
         ConfigAction::Validate => {
-            // TODO: Validate config
-            println!("Config validate not yet implemented");
+            commands::config_validate()?;
         }
         ConfigAction::Set { key, value } => {
-            tracing::info!("Setting {} = {}", key, value);
-            // TODO: Set config value
-            println!("Config set not yet implemented");
+            commands::config_set(&key, &value)?;
         }
     }
     Ok(())
@@ -277,19 +235,13 @@ async fn handle_config(action: ConfigAction) -> Result<()> {
 async fn handle_hook(action: HookAction) -> Result<()> {
     match action {
         HookAction::Install => {
-            tracing::info!("Installing Claude Code hook...");
-            // TODO: Install hook
-            println!("Hook install not yet implemented");
+            commands::hook_install()?;
         }
         HookAction::Uninstall => {
-            tracing::info!("Uninstalling Claude Code hook...");
-            // TODO: Uninstall hook
-            println!("Hook uninstall not yet implemented");
+            commands::hook_uninstall()?;
         }
         HookAction::Test => {
-            tracing::info!("Testing hook...");
-            // TODO: Test hook
-            println!("Hook test not yet implemented");
+            commands::hook_test().await?;
         }
     }
     Ok(())
