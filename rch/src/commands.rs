@@ -711,7 +711,7 @@ pub fn daemon_logs(lines: usize) -> Result<()> {
 
     println!(
         "{} No log file found.",
-        style.warning(style.symbols.warning)
+        StatusIndicator::Warning.display(&style)
     );
     println!("\n{}", style.key("Checked locations:"));
     for path in &log_paths {
@@ -723,7 +723,7 @@ pub fn daemon_logs(lines: usize) -> Result<()> {
     }
     println!(
         "\n{} The daemon may log to stderr. Try running in foreground: {}",
-        style.info(style.symbols.info),
+        StatusIndicator::Info.display(&style),
         style.highlight("rchd")
     );
 
