@@ -953,4 +953,370 @@ mod tests {
         assert_eq!(config.priority, 100); // Default priority
         assert!(config.tags.is_empty()); // Default empty tags
     }
+
+    // =========================================================================
+    // Local fallback scenario tests (remote_compilation_helper-od4)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_fallback_no_workers_configured() {
+        let _lock = test_lock().lock().await;
+        let socket_path = format!(
+            "/tmp/rch_test_no_workers_{}_{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        let _overrides = TestOverridesGuard::set(
+            &socket_path,
+            MockConfig::default(),
+            MockRsyncConfig::success(),
+        );
+
+        // Daemon returns no workers configured
+        let response = SelectionResponse {
+            worker: None,
+            reason: SelectionReason::NoWorkersConfigured,
+        };
+        spawn_mock_daemon(&socket_path, response).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
+        let input = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: ToolInput {
+                command: "cargo build".to_string(),
+                description: None,
+            },
+            session_id: None,
+        };
+
+        let output = process_hook(input).await;
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Should fall back to local execution
+        assert!(output.is_allow());
+    }
+
+    #[tokio::test]
+    async fn test_fallback_all_workers_unreachable() {
+        let _lock = test_lock().lock().await;
+        let socket_path = format!(
+            "/tmp/rch_test_unreachable_{}_{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        let _overrides = TestOverridesGuard::set(
+            &socket_path,
+            MockConfig::default(),
+            MockRsyncConfig::success(),
+        );
+
+        // Daemon returns all workers unreachable
+        let response = SelectionResponse {
+            worker: None,
+            reason: SelectionReason::AllWorkersUnreachable,
+        };
+        spawn_mock_daemon(&socket_path, response).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
+        let input = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: ToolInput {
+                command: "cargo build --release".to_string(),
+                description: None,
+            },
+            session_id: None,
+        };
+
+        let output = process_hook(input).await;
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Should fall back to local execution
+        assert!(output.is_allow());
+    }
+
+    #[tokio::test]
+    async fn test_fallback_all_workers_busy() {
+        let _lock = test_lock().lock().await;
+        let socket_path = format!(
+            "/tmp/rch_test_busy_{}_{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        let _overrides = TestOverridesGuard::set(
+            &socket_path,
+            MockConfig::default(),
+            MockRsyncConfig::success(),
+        );
+
+        // Daemon returns all workers busy
+        let response = SelectionResponse {
+            worker: None,
+            reason: SelectionReason::AllWorkersBusy,
+        };
+        spawn_mock_daemon(&socket_path, response).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
+        let input = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: ToolInput {
+                command: "cargo test".to_string(),
+                description: None,
+            },
+            session_id: None,
+        };
+
+        let output = process_hook(input).await;
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Should fall back to local execution
+        assert!(output.is_allow());
+    }
+
+    #[tokio::test]
+    async fn test_fallback_all_circuits_open() {
+        let _lock = test_lock().lock().await;
+        let socket_path = format!(
+            "/tmp/rch_test_circuits_{}_{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        let _overrides = TestOverridesGuard::set(
+            &socket_path,
+            MockConfig::default(),
+            MockRsyncConfig::success(),
+        );
+
+        // Daemon returns all circuits open (circuit breaker tripped)
+        let response = SelectionResponse {
+            worker: None,
+            reason: SelectionReason::AllCircuitsOpen,
+        };
+        spawn_mock_daemon(&socket_path, response).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
+        let input = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: ToolInput {
+                command: "cargo check".to_string(),
+                description: None,
+            },
+            session_id: None,
+        };
+
+        let output = process_hook(input).await;
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Should fall back to local execution
+        assert!(output.is_allow());
+    }
+
+    #[tokio::test]
+    async fn test_fallback_selection_error() {
+        let _lock = test_lock().lock().await;
+        let socket_path = format!(
+            "/tmp/rch_test_sel_err_{}_{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        let _overrides = TestOverridesGuard::set(
+            &socket_path,
+            MockConfig::default(),
+            MockRsyncConfig::success(),
+        );
+
+        // Daemon returns a selection error
+        let response = SelectionResponse {
+            worker: None,
+            reason: SelectionReason::SelectionError("Internal error".to_string()),
+        };
+        spawn_mock_daemon(&socket_path, response).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
+        let input = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: ToolInput {
+                command: "cargo build".to_string(),
+                description: None,
+            },
+            session_id: None,
+        };
+
+        let output = process_hook(input).await;
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Should fall back to local execution
+        assert!(output.is_allow());
+    }
+
+    #[tokio::test]
+    async fn test_fallback_daemon_error_response() {
+        let _lock = test_lock().lock().await;
+        let socket_path = format!(
+            "/tmp/rch_test_daemon_err_{}_{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        let _overrides = TestOverridesGuard::set(
+            &socket_path,
+            MockConfig::default(),
+            MockRsyncConfig::success(),
+        );
+
+        // Spawn a daemon that returns HTTP 500 error
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).expect("bind");
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let (reader, mut writer) = stream.into_split();
+            let mut buf_reader = TokioBufReader::new(reader);
+
+            let mut request_line = String::new();
+            buf_reader.read_line(&mut request_line).await.expect("read");
+
+            // Return HTTP 500 error
+            let http = "HTTP/1.1 500 Internal Server Error\r\n\r\n{\"error\": \"internal\"}";
+            writer.write_all(http.as_bytes()).await.expect("write");
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
+        let input = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: ToolInput {
+                command: "cargo build".to_string(),
+                description: None,
+            },
+            session_id: None,
+        };
+
+        let output = process_hook(input).await;
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Should fall back to local execution (fail-open)
+        assert!(output.is_allow());
+    }
+
+    #[tokio::test]
+    async fn test_fallback_daemon_malformed_json() {
+        let _lock = test_lock().lock().await;
+        let socket_path = format!(
+            "/tmp/rch_test_malformed_{}_{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        let _overrides = TestOverridesGuard::set(
+            &socket_path,
+            MockConfig::default(),
+            MockRsyncConfig::success(),
+        );
+
+        // Spawn a daemon that returns malformed JSON
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).expect("bind");
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let (reader, mut writer) = stream.into_split();
+            let mut buf_reader = TokioBufReader::new(reader);
+
+            let mut request_line = String::new();
+            buf_reader.read_line(&mut request_line).await.expect("read");
+
+            // Return malformed JSON
+            let http = "HTTP/1.1 200 OK\r\n\r\n{invalid json}";
+            writer.write_all(http.as_bytes()).await.expect("write");
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
+        let input = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: ToolInput {
+                command: "cargo build".to_string(),
+                description: None,
+            },
+            session_id: None,
+        };
+
+        let output = process_hook(input).await;
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Should fall back to local execution (fail-open on parse error)
+        assert!(output.is_allow());
+    }
+
+    #[tokio::test]
+    async fn test_fallback_daemon_connection_reset() {
+        let _lock = test_lock().lock().await;
+        let socket_path = format!(
+            "/tmp/rch_test_reset_{}_{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        let _overrides = TestOverridesGuard::set(
+            &socket_path,
+            MockConfig::default(),
+            MockRsyncConfig::success(),
+        );
+
+        // Spawn a daemon that immediately closes connection
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).expect("bind");
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            // Immediately drop the stream to simulate connection reset
+            drop(stream);
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
+        let input = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: ToolInput {
+                command: "cargo build".to_string(),
+                description: None,
+            },
+            session_id: None,
+        };
+
+        let output = process_hook(input).await;
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Should fall back to local execution (fail-open on connection error)
+        assert!(output.is_allow());
+    }
 }
