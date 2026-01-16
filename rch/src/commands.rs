@@ -845,7 +845,7 @@ exclude_patterns = [
         std::fs::write(&config_path, config_content)?;
         println!(
             "{} {} {}",
-            style.success(style.symbols.success),
+            StatusIndicator::Success.display(&style),
             style.muted("Created:"),
             style.value(&config_path.display().to_string())
         );
@@ -883,7 +883,7 @@ enabled = true
         std::fs::write(&workers_path, workers_content)?;
         println!(
             "{} {} {}",
-            style.success(style.symbols.success),
+            StatusIndicator::Success.display(&style),
             style.muted("Created:"),
             style.value(&workers_path.display().to_string())
         );
@@ -932,7 +932,7 @@ pub fn config_validate() -> Result<()> {
         None => {
             println!(
                 "{} Could not determine config directory",
-                style.error(style.symbols.failure)
+                StatusIndicator::Error.display(&style)
             );
             return Ok(());
         }
@@ -946,7 +946,7 @@ pub fn config_validate() -> Result<()> {
                 Ok(config) => {
                     println!(
                         "{} {}: {}",
-                        style.success(style.symbols.success),
+                        StatusIndicator::Success.display(&style),
                         style.highlight("config.toml"),
                         style.success("Valid")
                     );
@@ -957,7 +957,7 @@ pub fn config_validate() -> Result<()> {
                     {
                         println!(
                             "  {} {} should be between 0.0 and 1.0",
-                            style.warning(style.symbols.warning),
+                            StatusIndicator::Warning.display(&style),
                             style.key("confidence_threshold")
                         );
                         warnings += 1;
@@ -965,7 +965,7 @@ pub fn config_validate() -> Result<()> {
                     if config.transfer.compression_level > 19 {
                         println!(
                             "  {} {} should be 1-19",
-                            style.warning(style.symbols.warning),
+                            StatusIndicator::Warning.display(&style),
                             style.key("compression_level")
                         );
                         warnings += 1;
@@ -974,7 +974,7 @@ pub fn config_validate() -> Result<()> {
                 Err(e) => {
                     println!(
                         "{} {}: {} - {}",
-                        style.error(style.symbols.failure),
+                        StatusIndicator::Error.display(&style),
                         style.highlight("config.toml"),
                         style.error("Parse error"),
                         style.muted(&e.to_string())
@@ -985,7 +985,7 @@ pub fn config_validate() -> Result<()> {
             Err(e) => {
                 println!(
                     "{} {}: {} - {}",
-                    style.error(style.symbols.failure),
+                    StatusIndicator::Error.display(&style),
                     style.highlight("config.toml"),
                     style.error("Read error"),
                     style.muted(&e.to_string())
@@ -1016,7 +1016,7 @@ pub fn config_validate() -> Result<()> {
                         .unwrap_or(0);
                     println!(
                         "{} {}: {} ({} workers)",
-                        style.success(style.symbols.success),
+                        StatusIndicator::Success.display(&style),
                         style.highlight("workers.toml"),
                         style.success("Valid"),
                         workers
@@ -1025,7 +1025,7 @@ pub fn config_validate() -> Result<()> {
                     if workers == 0 {
                         println!(
                             "  {} No workers defined",
-                            style.warning(style.symbols.warning)
+                            StatusIndicator::Warning.display(&style)
                         );
                         warnings += 1;
                     }
@@ -1033,7 +1033,7 @@ pub fn config_validate() -> Result<()> {
                 Err(e) => {
                     println!(
                         "{} {}: {} - {}",
-                        style.error(style.symbols.failure),
+                        StatusIndicator::Error.display(&style),
                         style.highlight("workers.toml"),
                         style.error("Parse error"),
                         style.muted(&e.to_string())
@@ -1044,7 +1044,7 @@ pub fn config_validate() -> Result<()> {
             Err(e) => {
                 println!(
                     "{} {}: {} - {}",
-                    style.error(style.symbols.failure),
+                    StatusIndicator::Error.display(&style),
                     style.highlight("workers.toml"),
                     style.error("Read error"),
                     style.muted(&e.to_string())
@@ -1055,13 +1055,13 @@ pub fn config_validate() -> Result<()> {
     } else {
         println!(
             "{} {}: {}",
-            style.error(style.symbols.failure),
+            StatusIndicator::Error.display(&style),
             style.highlight("workers.toml"),
             style.error("Not found")
         );
         println!(
             "  {} Run {} to create it",
-            style.info(style.symbols.info),
+            StatusIndicator::Info.display(&style),
             style.highlight("rch config init")
         );
         errors += 1;
@@ -1074,14 +1074,14 @@ pub fn config_validate() -> Result<()> {
             Ok(content) => match toml::from_str::<RchConfig>(&content) {
                 Ok(_) => println!(
                     "{} {}: {}",
-                    style.success(style.symbols.success),
+                    StatusIndicator::Success.display(&style),
                     style.highlight(".rch/config.toml"),
                     style.success("Valid")
                 ),
                 Err(e) => {
                     println!(
                         "{} {}: {} - {}",
-                        style.error(style.symbols.failure),
+                        StatusIndicator::Error.display(&style),
                         style.highlight(".rch/config.toml"),
                         style.error("Parse error"),
                         style.muted(&e.to_string())
@@ -1092,7 +1092,7 @@ pub fn config_validate() -> Result<()> {
             Err(e) => {
                 println!(
                     "{} {}: {} - {}",
-                    style.error(style.symbols.failure),
+                    StatusIndicator::Error.display(&style),
                     style.highlight(".rch/config.toml"),
                     style.error("Read error"),
                     style.muted(&e.to_string())
@@ -1347,7 +1347,7 @@ pub fn hook_uninstall() -> Result<()> {
     if !settings_path.exists() {
         println!(
             "{} No Claude Code settings found.",
-            style.info(style.symbols.info)
+            StatusIndicator::Info.display(&style)
         );
         return Ok(());
     }
@@ -1360,9 +1360,8 @@ pub fn hook_uninstall() -> Result<()> {
         if let Some(hooks_obj) = hooks.as_object_mut() {
             hooks_obj.remove("PreToolUse");
             println!(
-                "{} {}",
-                style.success(style.symbols.success),
-                style.success("Hook removed!")
+                "{}",
+                StatusIndicator::Success.with_label(&style, "Hook removed!")
             );
         }
     }
@@ -1372,8 +1371,8 @@ pub fn hook_uninstall() -> Result<()> {
     std::fs::write(&settings_path, formatted)?;
 
     println!(
-        "\n{} RCH hook has been uninstalled.",
-        style.success(style.symbols.success)
+        "\n{}",
+        StatusIndicator::Success.with_label(&style, "RCH hook has been uninstalled.")
     );
     println!(
         "  {} Claude Code will now run all commands locally.",
@@ -1412,9 +1411,9 @@ pub async fn hook_test() -> Result<()> {
     for (cmd, expect_intercept) in &test_commands {
         let class = classify_command(cmd);
         let status = if class.is_compilation == *expect_intercept {
-            style.success(style.symbols.success)
+            StatusIndicator::Success.display(&style)
         } else {
-            style.error(style.symbols.failure)
+            StatusIndicator::Error.display(&style)
         };
         let action = if class.is_compilation {
             style.warning("INTERCEPT")
@@ -1445,7 +1444,7 @@ pub async fn hook_test() -> Result<()> {
             Ok(response) => {
                 println!(
                     "   {} Daemon responding",
-                    style.success(style.symbols.success)
+                    StatusIndicator::Success.display(&style)
                 );
                 if !response.is_empty() {
                     println!(
@@ -1458,7 +1457,7 @@ pub async fn hook_test() -> Result<()> {
             Err(e) => {
                 println!(
                     "   {} Daemon not responding: {}",
-                    style.error(style.symbols.failure),
+                    StatusIndicator::Error.display(&style),
                     style.muted(&e.to_string())
                 );
             }
@@ -1471,7 +1470,7 @@ pub async fn hook_test() -> Result<()> {
         );
         println!(
             "     {} Start with: {}",
-            style.info(style.symbols.info),
+            StatusIndicator::Info.display(&style),
             style.highlight("rch daemon start")
         );
     }
@@ -1488,7 +1487,7 @@ pub async fn hook_test() -> Result<()> {
         Ok(workers) if !workers.is_empty() => {
             println!(
                 "   {} {} worker(s) configured",
-                style.success(style.symbols.success),
+                StatusIndicator::Success.display(&style),
                 style.highlight(&workers.len().to_string())
             );
             for w in &workers {
@@ -1505,14 +1504,14 @@ pub async fn hook_test() -> Result<()> {
             println!("   {} No workers configured", style.muted("-"));
             println!(
                 "     {} Run: {}",
-                style.info(style.symbols.info),
+                StatusIndicator::Info.display(&style),
                 style.highlight("rch config init")
             );
         }
         Err(e) => {
             println!(
                 "   {} Error loading workers: {}",
-                style.error(style.symbols.failure),
+                StatusIndicator::Error.display(&style),
                 style.muted(&e.to_string())
             );
         }
