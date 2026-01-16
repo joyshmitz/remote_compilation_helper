@@ -2,7 +2,7 @@
 //!
 //! This module contains the actual business logic for each CLI subcommand.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use directories::ProjectDirs;
 use rch_common::{RchConfig, SshClient, SshOptions, WorkerConfig, WorkerId};
 use std::path::{Path, PathBuf};
@@ -723,13 +723,134 @@ pub fn config_validate() -> Result<()> {
 
 /// Set a configuration value.
 pub fn config_set(key: &str, value: &str) -> Result<()> {
-    println!("Setting {} = {}", key, value);
-    println!("\nNote: config set is not fully implemented yet.");
-    println!("Please edit the config file directly:");
-    if let Some(dir) = config_dir() {
-        println!("  {:?}", dir.join("config.toml"));
+    let config_dir = config_dir().context("Could not determine config directory")?;
+    std::fs::create_dir_all(&config_dir)
+        .with_context(|| format!("Failed to create config directory: {:?}", config_dir))?;
+    let config_path = config_dir.join("config.toml");
+    config_set_at(&config_path, key, value)
+}
+
+fn config_set_at(config_path: &Path, key: &str, value: &str) -> Result<()> {
+    let mut config = if config_path.exists() {
+        let contents = std::fs::read_to_string(config_path)
+            .with_context(|| format!("Failed to read {:?}", config_path))?;
+        toml::from_str::<RchConfig>(&contents)
+            .with_context(|| format!("Failed to parse {:?}", config_path))?
+    } else {
+        RchConfig::default()
+    };
+
+    match key {
+        "general.enabled" => {
+            config.general.enabled = parse_bool(value, key)?;
+        }
+        "general.log_level" => {
+            config.general.log_level = value.trim().trim_matches('"').to_string();
+        }
+        "general.socket_path" => {
+            config.general.socket_path = value.trim().trim_matches('"').to_string();
+        }
+        "compilation.confidence_threshold" => {
+            let threshold = parse_f64(value, key)?;
+            if !(0.0..=1.0).contains(&threshold) {
+                bail!("compilation.confidence_threshold must be between 0.0 and 1.0");
+            }
+            config.compilation.confidence_threshold = threshold;
+        }
+        "compilation.min_local_time_ms" => {
+            config.compilation.min_local_time_ms = parse_u64(value, key)?;
+        }
+        "transfer.compression_level" => {
+            let level = parse_u32(value, key)?;
+            if level > 19 {
+                bail!("transfer.compression_level must be between 0 and 19");
+            }
+            config.transfer.compression_level = level;
+        }
+        "transfer.exclude_patterns" => {
+            config.transfer.exclude_patterns = parse_string_list(value, key)?;
+        }
+        _ => {
+            bail!(
+                "Unknown config key: {}. Supported keys: general.enabled, general.log_level, general.socket_path, compilation.confidence_threshold, compilation.min_local_time_ms, transfer.compression_level, transfer.exclude_patterns",
+                key
+            );
+        }
     }
+
+    let contents = toml::to_string_pretty(&config)?;
+    std::fs::write(config_path, format!("{contents}\n"))
+        .with_context(|| format!("Failed to write {:?}", config_path))?;
+
+    println!("Updated {:?}: {} = {}", config_path, key, value);
     Ok(())
+}
+
+fn parse_bool(value: &str, key: &str) -> Result<bool> {
+    value
+        .trim()
+        .parse::<bool>()
+        .map_err(|_| anyhow::anyhow!("Invalid boolean for {}: {}", key, value))
+}
+
+fn parse_u32(value: &str, key: &str) -> Result<u32> {
+    value
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| anyhow::anyhow!("Invalid u32 for {}: {}", key, value))
+}
+
+fn parse_u64(value: &str, key: &str) -> Result<u64> {
+    value
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| anyhow::anyhow!("Invalid u64 for {}: {}", key, value))
+}
+
+fn parse_f64(value: &str, key: &str) -> Result<f64> {
+    value
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| anyhow::anyhow!("Invalid float for {}: {}", key, value))
+}
+
+fn parse_string_list(value: &str, key: &str) -> Result<Vec<String>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    if trimmed.starts_with('[') {
+        let wrapped = format!("value = {}", trimmed);
+        let parsed: toml::Value =
+            toml::from_str(&wrapped).with_context(|| format!("Invalid array for {}", key))?;
+        let array = parsed
+            .get("value")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Invalid array for {}", key))?;
+        let mut result = Vec::with_capacity(array.len());
+        for item in array {
+            let item_str = item
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Array items must be strings for {}", key))?;
+            result.push(item_str.to_string());
+        }
+        return Ok(result);
+    }
+
+    if trimmed.contains(',') {
+        let parts: Vec<String> = trimmed
+            .split(',')
+            .map(|part| part.trim())
+            .filter(|part| !part.is_empty())
+            .map(String::from)
+            .collect();
+        if !parts.is_empty() {
+            return Ok(parts);
+        }
+    }
+
+    Ok(vec![trimmed.to_string()])
 }
 
 // =============================================================================
@@ -1063,6 +1184,7 @@ async fn send_daemon_command(command: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn test_parse_workers_toml_single_worker() {
@@ -1160,6 +1282,59 @@ host = "example.com"
         let workers_array = parsed.get("workers").and_then(|w| w.as_array());
 
         assert!(workers_array.is_none());
+    }
+
+    #[test]
+    fn test_config_set_writes_new_file() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_path = temp_dir.path().join("config.toml");
+
+        config_set_at(&config_path, "general.enabled", "false").expect("config set failed");
+
+        let contents = std::fs::read_to_string(&config_path).expect("read config");
+        let parsed: RchConfig = toml::from_str(&contents).expect("parse config");
+        assert!(!parsed.general.enabled);
+    }
+
+    #[test]
+    fn test_config_set_updates_existing_file() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_path = temp_dir.path().join("config.toml");
+
+        let initial = RchConfig::default();
+        let initial_contents = toml::to_string_pretty(&initial).expect("serialize");
+        std::fs::write(&config_path, initial_contents).expect("write initial");
+
+        config_set_at(&config_path, "compilation.confidence_threshold", "0.9")
+            .expect("config set failed");
+
+        let contents = std::fs::read_to_string(&config_path).expect("read config");
+        let parsed: RchConfig = toml::from_str(&contents).expect("parse config");
+        assert!(
+            (parsed.compilation.confidence_threshold - 0.9).abs() < f64::EPSILON,
+            "confidence_threshold not updated"
+        );
+        assert_eq!(parsed.general.enabled, initial.general.enabled);
+    }
+
+    #[test]
+    fn test_config_set_exclude_patterns_array() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_path = temp_dir.path().join("config.toml");
+
+        config_set_at(
+            &config_path,
+            "transfer.exclude_patterns",
+            "[\"target/\", \"node_modules/\"]",
+        )
+        .expect("config set failed");
+
+        let contents = std::fs::read_to_string(&config_path).expect("read config");
+        let parsed: RchConfig = toml::from_str(&contents).expect("parse config");
+        assert_eq!(parsed.transfer.exclude_patterns, vec![
+            "target/".to_string(),
+            "node_modules/".to_string()
+        ]);
     }
 
     #[test]
