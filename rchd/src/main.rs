@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod api;
+mod config;
 mod selection;
 mod workers;
 
@@ -55,6 +56,18 @@ async fn main() -> Result<()> {
 
     info!("Starting RCH daemon...");
 
+    // Load worker configuration
+    let workers = config::load_workers(cli.workers_config.as_deref())?;
+    info!("Loaded {} workers from configuration", workers.len());
+
+    // Initialize worker pool
+    let worker_pool = workers::WorkerPool::new();
+    for worker_config in workers {
+        info!("Adding worker: {} ({}@{}, {} slots)",
+              worker_config.id, worker_config.user, worker_config.host, worker_config.total_slots);
+        worker_pool.add_worker(worker_config).await;
+    }
+
     // Remove existing socket if present
     if cli.socket.exists() {
         std::fs::remove_file(&cli.socket)?;
@@ -63,10 +76,6 @@ async fn main() -> Result<()> {
     // Create Unix socket listener
     let listener = UnixListener::bind(&cli.socket)?;
     info!("Listening on {:?}", cli.socket);
-
-    // Load worker configuration
-    let worker_pool = workers::WorkerPool::new();
-    info!("Worker pool initialized with {} workers", worker_pool.len());
 
     // Main accept loop
     loop {
