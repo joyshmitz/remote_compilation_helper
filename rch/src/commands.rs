@@ -2,8 +2,8 @@
 //!
 //! This module contains the actual business logic for each CLI subcommand.
 
-use crate::ui::style::Style;
-use anyhow::{bail, Context, Result};
+use crate::ui::style::{StatusIndicator, Style};
+use anyhow::{Context, Result, bail};
 use directories::ProjectDirs;
 use rch_common::{RchConfig, SshClient, SshOptions, WorkerConfig, WorkerId};
 use std::path::{Path, PathBuf};
@@ -18,7 +18,10 @@ use tracing::debug;
 /// Detects terminal capabilities and creates appropriate styling.
 fn terminal_style() -> Style {
     let is_tty = is_terminal::is_terminal(std::io::stdout());
-    let supports_unicode = is_tty && std::env::var("LANG").map(|l| l.contains("UTF")).unwrap_or(true);
+    let supports_unicode = is_tty
+        && std::env::var("LANG")
+            .map(|l| l.contains("UTF"))
+            .unwrap_or(true);
     Style::new(is_tty, supports_unicode)
 }
 
@@ -182,7 +185,7 @@ pub async fn workers_probe(worker_id: Option<String>, all: bool) -> Result<()> {
     } else {
         println!(
             "{} Specify a worker ID or use {} to probe all workers.",
-            style.info(style.symbols.info),
+            StatusIndicator::Info.display(&style),
             style.highlight("--all")
         );
         return Ok(());
@@ -192,7 +195,7 @@ pub async fn workers_probe(worker_id: Option<String>, all: bool) -> Result<()> {
         if let Some(id) = worker_id {
             println!(
                 "{} Worker '{}' not found in configuration.",
-                style.warning(style.symbols.warning),
+                StatusIndicator::Warning.display(&style),
                 style.highlight(&id)
             );
         }
@@ -222,15 +225,22 @@ pub async fn workers_probe(worker_id: Option<String>, all: bool) -> Result<()> {
                         let latency = start.elapsed().as_millis();
                         println!(
                             "{} ({}ms)",
-                            style.format_success("OK"),
+                            StatusIndicator::Success.with_label(&style, "OK"),
                             style.muted(&latency.to_string())
                         );
                     }
                     Ok(false) => {
-                        println!("{}", style.format_error("Health check failed"));
+                        println!(
+                            "{}",
+                            StatusIndicator::Error.with_label(&style, "Health check failed")
+                        );
                     }
                     Err(e) => {
-                        println!("{} {}", style.error(style.symbols.failure), style.error(&e.to_string()));
+                        println!(
+                            "{} {}",
+                            StatusIndicator::Error.display(&style),
+                            style.error(&e.to_string())
+                        );
                     }
                 }
                 let _ = client.disconnect().await;
@@ -238,7 +248,7 @@ pub async fn workers_probe(worker_id: Option<String>, all: bool) -> Result<()> {
             Err(e) => {
                 println!(
                     "{} Connection failed: {}",
-                    style.error(style.symbols.failure),
+                    StatusIndicator::Error.display(&style),
                     style.muted(&e.to_string())
                 );
             }
@@ -251,15 +261,24 @@ pub async fn workers_probe(worker_id: Option<String>, all: bool) -> Result<()> {
 /// Run worker benchmarks.
 pub async fn workers_benchmark() -> Result<()> {
     let workers = load_workers_from_config()?;
+    let style = terminal_style();
 
     if workers.is_empty() {
         return Ok(());
     }
 
-    println!("Running benchmarks on {} worker(s)...\n", workers.len());
+    println!(
+        "Running benchmarks on {} worker(s)...\n",
+        style.highlight(&workers.len().to_string())
+    );
 
     for worker in &workers {
-        print!("  {} ... ", worker.id);
+        print!(
+            "  {} {}@{}... ",
+            style.highlight(worker.id.as_str()),
+            style.muted(&worker.user),
+            style.info(&worker.host)
+        );
 
         let mut client = SshClient::new(worker.clone(), SshOptions::default());
 
@@ -280,33 +299,62 @@ pub async fn workers_benchmark() -> Result<()> {
 
                 match result {
                     Ok(r) if r.success() => {
-                        println!("✓ {}ms total, exit={}", duration.as_millis(), r.exit_code);
+                        println!(
+                            "{} {}ms {}",
+                            StatusIndicator::Success.display(&style),
+                            style.highlight(&duration.as_millis().to_string()),
+                            style.muted("total")
+                        );
                     }
                     Ok(r) => {
-                        println!("✗ Failed (exit={})", r.exit_code);
+                        println!(
+                            "{} (exit={})",
+                            StatusIndicator::Error.with_label(&style, "Failed"),
+                            style.muted(&r.exit_code.to_string())
+                        );
                     }
                     Err(e) => {
-                        println!("✗ Error: {}", e);
+                        println!(
+                            "{} {}",
+                            StatusIndicator::Error.display(&style),
+                            style.muted(&e.to_string())
+                        );
                     }
                 }
                 let _ = client.disconnect().await;
             }
             Err(e) => {
-                println!("✗ Connection failed: {}", e);
+                println!(
+                    "{} {}",
+                    StatusIndicator::Error.with_label(&style, "Connection failed:"),
+                    style.muted(&e.to_string())
+                );
             }
         }
     }
 
-    println!("\nNote: For accurate speed scores, use longer benchmark runs.");
+    println!(
+        "\n{} For accurate speed scores, use longer benchmark runs.",
+        StatusIndicator::Info.display(&style)
+    );
     Ok(())
 }
 
 /// Drain a worker (requires daemon).
 pub async fn workers_drain(worker_id: &str) -> Result<()> {
+    let style = terminal_style();
+
     // Check if daemon is running
     if !Path::new(DEFAULT_SOCKET_PATH).exists() {
-        println!("Daemon is not running. Start it with `rch daemon start`.");
-        println!("\nDraining requires the daemon to track worker state.");
+        println!(
+            "{} Daemon is not running. Start it with {}",
+            StatusIndicator::Error.display(&style),
+            style.highlight("rch daemon start")
+        );
+        println!(
+            "\n{} Draining requires the daemon to track worker state.",
+            StatusIndicator::Info.display(&style)
+        );
         return Ok(());
     }
 
@@ -314,15 +362,33 @@ pub async fn workers_drain(worker_id: &str) -> Result<()> {
     match send_daemon_command(&format!("POST /workers/{}/drain\n", worker_id)).await {
         Ok(response) => {
             if response.contains("error") || response.contains("Error") {
-                println!("Failed to drain worker: {}", response);
+                println!(
+                    "{} Failed to drain worker: {}",
+                    StatusIndicator::Error.display(&style),
+                    style.muted(&response)
+                );
             } else {
-                println!("Worker '{}' is now draining.", worker_id);
-                println!("No new jobs will be sent. Existing jobs will complete.");
+                println!(
+                    "{} Worker {} is now draining.",
+                    StatusIndicator::Success.display(&style),
+                    style.highlight(worker_id)
+                );
+                println!(
+                    "  {} No new jobs will be sent. Existing jobs will complete.",
+                    StatusIndicator::Info.display(&style)
+                );
             }
         }
         Err(e) => {
-            println!("Failed to communicate with daemon: {}", e);
-            println!("\nNote: Drain/enable commands require the daemon to be running.");
+            println!(
+                "{} Failed to communicate with daemon: {}",
+                StatusIndicator::Error.display(&style),
+                style.muted(&e.to_string())
+            );
+            println!(
+                "\n{} Drain/enable commands require the daemon to be running.",
+                StatusIndicator::Info.display(&style)
+            );
         }
     }
 
@@ -331,21 +397,39 @@ pub async fn workers_drain(worker_id: &str) -> Result<()> {
 
 /// Enable a worker (requires daemon).
 pub async fn workers_enable(worker_id: &str) -> Result<()> {
+    let style = terminal_style();
+
     if !Path::new(DEFAULT_SOCKET_PATH).exists() {
-        println!("Daemon is not running. Start it with `rch daemon start`.");
+        println!(
+            "{} Daemon is not running. Start it with {}",
+            StatusIndicator::Error.display(&style),
+            style.highlight("rch daemon start")
+        );
         return Ok(());
     }
 
     match send_daemon_command(&format!("POST /workers/{}/enable\n", worker_id)).await {
         Ok(response) => {
             if response.contains("error") || response.contains("Error") {
-                println!("Failed to enable worker: {}", response);
+                println!(
+                    "{} Failed to enable worker: {}",
+                    StatusIndicator::Error.display(&style),
+                    style.muted(&response)
+                );
             } else {
-                println!("Worker '{}' is now enabled.", worker_id);
+                println!(
+                    "{} Worker {} is now enabled.",
+                    StatusIndicator::Success.display(&style),
+                    style.highlight(worker_id)
+                );
             }
         }
         Err(e) => {
-            println!("Failed to communicate with daemon: {}", e);
+            println!(
+                "{} Failed to communicate with daemon: {}",
+                StatusIndicator::Error.display(&style),
+                style.muted(&e.to_string())
+            );
         }
     }
 
@@ -369,7 +453,7 @@ pub fn daemon_status() -> Result<()> {
             "  {} {} {}",
             style.key("Status"),
             style.muted(":"),
-            style.success("Running")
+            StatusIndicator::Success.with_label(&style, "Running")
         );
         println!(
             "  {} {} {}",
@@ -399,7 +483,7 @@ pub fn daemon_status() -> Result<()> {
             "  {} {} {}",
             style.key("Status"),
             style.muted(":"),
-            style.error("Not running")
+            StatusIndicator::Error.with_label(&style, "Not running")
         );
         println!(
             "  {} {} {} {}",
@@ -411,7 +495,7 @@ pub fn daemon_status() -> Result<()> {
         println!();
         println!(
             "  {} Start with: {}",
-            style.info(style.symbols.info),
+            StatusIndicator::Info.display(&style),
             style.highlight("rch daemon start")
         );
     }
@@ -421,12 +505,25 @@ pub fn daemon_status() -> Result<()> {
 
 /// Start the daemon.
 pub async fn daemon_start() -> Result<()> {
+    let style = terminal_style();
     let socket_path = Path::new(DEFAULT_SOCKET_PATH);
 
     if socket_path.exists() {
-        println!("Daemon appears to already be running.");
-        println!("Socket exists at: {}", DEFAULT_SOCKET_PATH);
-        println!("\nUse `rch daemon restart` to restart it.");
+        println!(
+            "{} Daemon appears to already be running.",
+            StatusIndicator::Warning.display(&style)
+        );
+        println!(
+            "  {} {} {}",
+            style.key("Socket"),
+            style.muted(":"),
+            style.value(DEFAULT_SOCKET_PATH)
+        );
+        println!(
+            "\n{} Use {} to restart it.",
+            StatusIndicator::Info.display(&style),
+            style.highlight("rch daemon restart")
+        );
         return Ok(());
     }
 
@@ -451,16 +548,39 @@ pub async fn daemon_start() -> Result<()> {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
             if socket_path.exists() {
-                println!("Daemon started successfully.");
-                println!("Socket: {}", DEFAULT_SOCKET_PATH);
+                println!(
+                    "{}",
+                    StatusIndicator::Success.with_label(&style, "Daemon started successfully.")
+                );
+                println!(
+                    "  {} {} {}",
+                    style.key("Socket"),
+                    style.muted(":"),
+                    style.value(DEFAULT_SOCKET_PATH)
+                );
             } else {
-                println!("Daemon process started but socket not found.");
-                println!("Check logs with: rch daemon logs");
+                println!(
+                    "{} Daemon process started but socket not found.",
+                    StatusIndicator::Warning.display(&style)
+                );
+                println!(
+                    "  {} Check logs with: {}",
+                    StatusIndicator::Info.display(&style),
+                    style.highlight("rch daemon logs")
+                );
             }
         }
         Err(e) => {
-            println!("Failed to start daemon: {}", e);
-            println!("\nMake sure 'rchd' is in your PATH or installed.");
+            println!(
+                "{} Failed to start daemon: {}",
+                StatusIndicator::Error.display(&style),
+                style.muted(&e.to_string())
+            );
+            println!(
+                "\n{} Make sure {} is in your PATH or installed.",
+                StatusIndicator::Info.display(&style),
+                style.highlight("rchd")
+            );
         }
     }
 
@@ -469,10 +589,15 @@ pub async fn daemon_start() -> Result<()> {
 
 /// Stop the daemon.
 pub async fn daemon_stop() -> Result<()> {
+    let style = terminal_style();
     let socket_path = Path::new(DEFAULT_SOCKET_PATH);
 
     if !socket_path.exists() {
-        println!("Daemon is not running (socket not found).");
+        println!(
+            "{} Daemon is not running {}",
+            StatusIndicator::Pending.display(&style),
+            style.muted("(socket not found)")
+        );
         return Ok(());
     }
 
@@ -485,15 +610,24 @@ pub async fn daemon_stop() -> Result<()> {
             for _ in 0..10 {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 if !socket_path.exists() {
-                    println!("Daemon stopped.");
+                    println!(
+                        "{}",
+                        StatusIndicator::Success.with_label(&style, "Daemon stopped.")
+                    );
                     return Ok(());
                 }
             }
-            println!("Daemon may still be shutting down...");
+            println!(
+                "{} Daemon may still be shutting down...",
+                StatusIndicator::Warning.display(&style)
+            );
         }
         Err(_) => {
             // Try to kill by finding the process
-            println!("Could not send shutdown command.");
+            println!(
+                "{} Could not send shutdown command.",
+                StatusIndicator::Warning.display(&style)
+            );
             println!("Attempting to find and kill daemon process...");
 
             // Try pkill
@@ -503,11 +637,21 @@ pub async fn daemon_stop() -> Result<()> {
                 Ok(o) if o.status.success() => {
                     // Remove stale socket
                     let _ = std::fs::remove_file(socket_path);
-                    println!("Daemon stopped.");
+                    println!(
+                        "{}",
+                        StatusIndicator::Success.with_label(&style, "Daemon stopped.")
+                    );
                 }
                 _ => {
-                    println!("Could not stop daemon. You may need to kill it manually.");
-                    println!("Try: pkill -9 rchd");
+                    println!(
+                        "{} Could not stop daemon. You may need to kill it manually.",
+                        StatusIndicator::Error.display(&style)
+                    );
+                    println!(
+                        "  {} Try: {}",
+                        StatusIndicator::Info.display(&style),
+                        style.highlight("pkill -9 rchd")
+                    );
                 }
             }
         }
@@ -518,7 +662,11 @@ pub async fn daemon_stop() -> Result<()> {
 
 /// Restart the daemon.
 pub async fn daemon_restart() -> Result<()> {
-    println!("Restarting RCH daemon...\n");
+    let style = terminal_style();
+    println!(
+        "{} Restarting RCH daemon...\n",
+        StatusIndicator::Info.display(&style)
+    );
     daemon_stop().await?;
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     daemon_start().await?;
@@ -527,6 +675,8 @@ pub async fn daemon_restart() -> Result<()> {
 
 /// Show daemon logs.
 pub fn daemon_logs(lines: usize) -> Result<()> {
+    let style = terminal_style();
+
     // Try common log locations
     let log_paths = vec![
         PathBuf::from("/tmp/rchd.log"),
@@ -540,7 +690,12 @@ pub fn daemon_logs(lines: usize) -> Result<()> {
 
     for path in &log_paths {
         if path.exists() {
-            println!("Log file: {:?}\n", path);
+            println!(
+                "{} {} {}\n",
+                style.key("Log file"),
+                style.muted(":"),
+                style.value(&path.display().to_string())
+            );
 
             let content = std::fs::read_to_string(path)?;
             let all_lines: Vec<&str> = content.lines().collect();
@@ -554,12 +709,23 @@ pub fn daemon_logs(lines: usize) -> Result<()> {
         }
     }
 
-    println!("No log file found.");
-    println!("\nChecked locations:");
+    println!(
+        "{} No log file found.",
+        style.warning(style.symbols.warning)
+    );
+    println!("\n{}", style.key("Checked locations:"));
     for path in &log_paths {
-        println!("  - {:?}", path);
+        println!(
+            "  {} {}",
+            style.muted("-"),
+            style.muted(&path.display().to_string())
+        );
     }
-    println!("\nThe daemon may log to stderr. Try running in foreground: rchd");
+    println!(
+        "\n{} The daemon may log to stderr. Try running in foreground: {}",
+        style.info(style.symbols.info),
+        style.highlight("rchd")
+    );
 
     Ok(())
 }
@@ -570,52 +736,79 @@ pub fn daemon_logs(lines: usize) -> Result<()> {
 
 /// Show effective configuration.
 pub fn config_show() -> Result<()> {
+    let style = terminal_style();
+
     // Load user config
     let config = crate::config::load_config()?;
 
-    println!("Effective RCH Configuration");
-    println!("============================\n");
+    println!("{}", style.format_header("Effective RCH Configuration"));
+    println!();
 
-    println!("[general]");
-    println!("  enabled = {}", config.general.enabled);
-    println!("  log_level = \"{}\"", config.general.log_level);
-    println!("  socket_path = \"{}\"", config.general.socket_path);
-
-    println!("\n[compilation]");
+    println!("{}", style.highlight("[general]"));
     println!(
-        "  confidence_threshold = {}",
-        config.compilation.confidence_threshold
+        "  {} = {}",
+        style.key("enabled"),
+        style.value(&config.general.enabled.to_string())
     );
     println!(
-        "  min_local_time_ms = {}",
-        config.compilation.min_local_time_ms
+        "  {} = {}",
+        style.key("log_level"),
+        style.value(&format!("\"{}\"", config.general.log_level))
+    );
+    println!(
+        "  {} = {}",
+        style.key("socket_path"),
+        style.value(&format!("\"{}\"", config.general.socket_path))
     );
 
-    println!("\n[transfer]");
+    println!("\n{}", style.highlight("[compilation]"));
     println!(
-        "  compression_level = {}",
-        config.transfer.compression_level
+        "  {} = {}",
+        style.key("confidence_threshold"),
+        style.value(&config.compilation.confidence_threshold.to_string())
     );
-    println!("  exclude_patterns = [");
+    println!(
+        "  {} = {}",
+        style.key("min_local_time_ms"),
+        style.value(&config.compilation.min_local_time_ms.to_string())
+    );
+
+    println!("\n{}", style.highlight("[transfer]"));
+    println!(
+        "  {} = {}",
+        style.key("compression_level"),
+        style.value(&config.transfer.compression_level.to_string())
+    );
+    println!("  {} = [", style.key("exclude_patterns"));
     for pattern in &config.transfer.exclude_patterns {
-        println!("    \"{}\",", pattern);
+        println!("    {},", style.value(&format!("\"{}\"", pattern)));
     }
     println!("  ]");
 
     // Show config file locations
-    println!("\n# Configuration sources (in priority order):");
-    println!("# 1. Environment variables (RCH_*)");
-    println!("# 2. Project config: .rch/config.toml");
+    println!(
+        "\n{}",
+        style.muted("# Configuration sources (in priority order):")
+    );
+    println!("{}", style.muted("# 1. Environment variables (RCH_*)"));
+    println!("{}", style.muted("# 2. Project config: .rch/config.toml"));
     if let Some(dir) = config_dir() {
-        println!("# 3. User config: {:?}", dir.join("config.toml"));
+        println!(
+            "{}",
+            style.muted(&format!(
+                "# 3. User config: {}",
+                dir.join("config.toml").display()
+            ))
+        );
     }
-    println!("# 4. Built-in defaults");
+    println!("{}", style.muted("# 4. Built-in defaults"));
 
     Ok(())
 }
 
 /// Initialize configuration files.
 pub fn config_init() -> Result<()> {
+    let style = terminal_style();
     let config_dir = config_dir().context("Could not determine config directory")?;
 
     // Create config directory
@@ -650,9 +843,19 @@ exclude_patterns = [
 ]
 "#;
         std::fs::write(&config_path, config_content)?;
-        println!("Created: {:?}", config_path);
+        println!(
+            "{} {} {}",
+            style.success(style.symbols.success),
+            style.muted("Created:"),
+            style.value(&config_path.display().to_string())
+        );
     } else {
-        println!("Exists:  {:?}", config_path);
+        println!(
+            "{} {} {}",
+            style.muted("-"),
+            style.muted("Exists:"),
+            style.muted(&config_path.display().to_string())
+        );
     }
 
     // Write example workers.toml
@@ -678,16 +881,38 @@ enabled = true
 # ...
 "#;
         std::fs::write(&workers_path, workers_content)?;
-        println!("Created: {:?}", workers_path);
+        println!(
+            "{} {} {}",
+            style.success(style.symbols.success),
+            style.muted("Created:"),
+            style.value(&workers_path.display().to_string())
+        );
     } else {
-        println!("Exists:  {:?}", workers_path);
+        println!(
+            "{} {} {}",
+            style.muted("-"),
+            style.muted("Exists:"),
+            style.muted(&workers_path.display().to_string())
+        );
     }
 
-    println!("\nConfiguration initialized!");
-    println!("\nNext steps:");
-    println!("  1. Edit {:?} with your worker details", workers_path);
-    println!("  2. Test connectivity: rch workers probe --all");
-    println!("  3. Start the daemon: rch daemon start");
+    println!("\n{}", style.format_success("Configuration initialized!"));
+    println!("\n{}", style.highlight("Next steps:"));
+    println!(
+        "  {}. Edit {} with your worker details",
+        style.muted("1"),
+        style.info(&workers_path.display().to_string())
+    );
+    println!(
+        "  {}. Test connectivity: {}",
+        style.muted("2"),
+        style.highlight("rch workers probe --all")
+    );
+    println!(
+        "  {}. Start the daemon: {}",
+        style.muted("3"),
+        style.highlight("rch daemon start")
+    );
 
     Ok(())
 }
@@ -696,9 +921,7 @@ enabled = true
 pub fn config_validate() -> Result<()> {
     let style = terminal_style();
 
-    println!(
-        "Validating RCH configuration...\n"
-    );
+    println!("Validating RCH configuration...\n");
 
     let mut errors = 0;
     let mut warnings = 0;
@@ -1038,6 +1261,8 @@ fn parse_string_list(value: &str, key: &str) -> Result<Vec<String>> {
 
 /// Install the Claude Code hook.
 pub fn hook_install() -> Result<()> {
+    let style = terminal_style();
+
     // Claude Code hooks are configured in ~/.claude/settings.json
     let claude_config_dir = dirs::home_dir()
         .map(|h| h.join(".claude"))
@@ -1084,26 +1309,46 @@ pub fn hook_install() -> Result<()> {
     let formatted = serde_json::to_string_pretty(&settings)?;
     std::fs::write(&settings_path, formatted)?;
 
-    println!("✓ Hook installed!");
-    println!("\nConfiguration written to: {:?}", settings_path);
+    println!("{}", style.format_success("Hook installed!"));
+    println!(
+        "\n{} {} {:?}",
+        style.key("Configuration written to"),
+        style.muted(":"),
+        settings_path
+    );
     println!("\nThe hook will intercept Bash commands and route compilations");
     println!("to remote workers when the daemon is running.");
-    println!("\nNext steps:");
-    println!("  1. Configure workers: rch config init && edit workers.toml");
-    println!("  2. Start daemon: rch daemon start");
-    println!("  3. Use Claude Code normally - compilations will be offloaded");
+    println!("\n{}", style.highlight("Next steps:"));
+    println!(
+        "  {}. Configure workers: {} && edit workers.toml",
+        style.muted("1"),
+        style.info("rch config init")
+    );
+    println!(
+        "  {}. Start daemon: {}",
+        style.muted("2"),
+        style.info("rch daemon start")
+    );
+    println!(
+        "  {}. Use Claude Code normally - compilations will be offloaded",
+        style.muted("3")
+    );
 
     Ok(())
 }
 
 /// Uninstall the Claude Code hook.
 pub fn hook_uninstall() -> Result<()> {
+    let style = terminal_style();
     let settings_path = dirs::home_dir()
         .map(|h| h.join(".claude").join("settings.json"))
         .context("Could not find home directory")?;
 
     if !settings_path.exists() {
-        println!("No Claude Code settings found.");
+        println!(
+            "{} No Claude Code settings found.",
+            style.info(style.symbols.info)
+        );
         return Ok(());
     }
 
@@ -1114,7 +1359,11 @@ pub fn hook_uninstall() -> Result<()> {
     if let Some(hooks) = settings.get_mut("hooks") {
         if let Some(hooks_obj) = hooks.as_object_mut() {
             hooks_obj.remove("PreToolUse");
-            println!("✓ Hook removed!");
+            println!(
+                "{} {}",
+                style.success(style.symbols.success),
+                style.success("Hook removed!")
+            );
         }
     }
 
@@ -1122,8 +1371,14 @@ pub fn hook_uninstall() -> Result<()> {
     let formatted = serde_json::to_string_pretty(&settings)?;
     std::fs::write(&settings_path, formatted)?;
 
-    println!("\nRCH hook has been uninstalled.");
-    println!("Claude Code will now run all commands locally.");
+    println!(
+        "\n{} RCH hook has been uninstalled.",
+        style.success(style.symbols.success)
+    );
+    println!(
+        "  {} Claude Code will now run all commands locally.",
+        style.muted(style.symbols.arrow_right)
+    );
 
     Ok(())
 }
@@ -1132,11 +1387,17 @@ pub fn hook_uninstall() -> Result<()> {
 pub async fn hook_test() -> Result<()> {
     use rch_common::classify_command;
 
+    let style = terminal_style();
+
     println!("Testing RCH hook functionality...\n");
 
     // Test 1: Classification
-    println!("1. Command Classification");
-    println!("   ----------------------");
+    println!(
+        "{}. {}",
+        style.highlight("1"),
+        style.highlight("Command Classification")
+    );
+    println!("   {}", style.muted(&"─".repeat(22)));
 
     let test_commands = vec![
         ("cargo build --release", true),
@@ -1151,65 +1412,113 @@ pub async fn hook_test() -> Result<()> {
     for (cmd, expect_intercept) in &test_commands {
         let class = classify_command(cmd);
         let status = if class.is_compilation == *expect_intercept {
-            "✓"
+            style.success(style.symbols.success)
         } else {
-            "✗"
+            style.error(style.symbols.failure)
+        };
+        let action = if class.is_compilation {
+            style.warning("INTERCEPT")
+        } else {
+            style.success("ALLOW")
         };
         println!(
-            "   {} \"{}\" -> {} (confidence: {:.2})",
+            "   {} {} {} {} (confidence: {})",
             status,
-            cmd,
-            if class.is_compilation {
-                "INTERCEPT"
-            } else {
-                "ALLOW"
-            },
-            class.confidence
+            style.muted("\""),
+            style.value(cmd),
+            style.muted("\""),
+            action
         );
+        println!("      {}", style.muted(&format!("{:.2}", class.confidence)));
     }
 
     // Test 2: Daemon connectivity
-    println!("\n2. Daemon Connectivity");
-    println!("   -------------------");
+    println!(
+        "\n{}. {}",
+        style.highlight("2"),
+        style.highlight("Daemon Connectivity")
+    );
+    println!("   {}", style.muted(&"─".repeat(19)));
 
     if Path::new(DEFAULT_SOCKET_PATH).exists() {
         match send_daemon_command("GET /status\n").await {
             Ok(response) => {
-                println!("   ✓ Daemon responding");
+                println!(
+                    "   {} Daemon responding",
+                    style.success(style.symbols.success)
+                );
                 if !response.is_empty() {
-                    println!("   Response: {}", response.trim());
+                    println!(
+                        "   {} {}",
+                        style.key("Response"),
+                        style.muted(response.trim())
+                    );
                 }
             }
             Err(e) => {
-                println!("   ✗ Daemon not responding: {}", e);
+                println!(
+                    "   {} Daemon not responding: {}",
+                    style.error(style.symbols.failure),
+                    style.muted(&e.to_string())
+                );
             }
         }
     } else {
-        println!("   - Daemon not running (socket not found)");
-        println!("     Start with: rch daemon start");
+        println!(
+            "   {} Daemon not running {}",
+            style.muted("-"),
+            style.muted("(socket not found)")
+        );
+        println!(
+            "     {} Start with: {}",
+            style.info(style.symbols.info),
+            style.highlight("rch daemon start")
+        );
     }
 
     // Test 3: Worker configuration
-    println!("\n3. Worker Configuration");
-    println!("   --------------------");
+    println!(
+        "\n{}. {}",
+        style.highlight("3"),
+        style.highlight("Worker Configuration")
+    );
+    println!("   {}", style.muted(&"─".repeat(20)));
 
     match load_workers_from_config() {
         Ok(workers) if !workers.is_empty() => {
-            println!("   ✓ {} worker(s) configured", workers.len());
+            println!(
+                "   {} {} worker(s) configured",
+                style.success(style.symbols.success),
+                style.highlight(&workers.len().to_string())
+            );
             for w in &workers {
-                println!("     - {} ({}@{})", w.id, w.user, w.host);
+                println!(
+                    "     {} {} {}@{}",
+                    style.muted("-"),
+                    style.highlight(w.id.as_str()),
+                    style.muted(&w.user),
+                    style.info(&w.host)
+                );
             }
         }
         Ok(_) => {
-            println!("   - No workers configured");
-            println!("     Run: rch config init");
+            println!("   {} No workers configured", style.muted("-"));
+            println!(
+                "     {} Run: {}",
+                style.info(style.symbols.info),
+                style.highlight("rch config init")
+            );
         }
         Err(e) => {
-            println!("   ✗ Error loading workers: {}", e);
+            println!(
+                "   {} Error loading workers: {}",
+                style.error(style.symbols.failure),
+                style.muted(&e.to_string())
+            );
         }
     }
 
-    println!("\nHook test complete!");
+    println!("\n{}", style.format_success("Hook test complete!"));
     Ok(())
 }
 

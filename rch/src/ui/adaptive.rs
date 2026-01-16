@@ -100,11 +100,7 @@ pub mod palette {
 
     /// Success status indicators.
     pub const SUCCESS: AdaptiveColor = AdaptiveColor::new(
-        Color::TrueColor {
-            r: 0,
-            g: 135,
-            b: 0,
-        }, // Dark green on light
+        Color::TrueColor { r: 0, g: 135, b: 0 }, // Dark green on light
         Color::TrueColor {
             r: 95,
             g: 255,
@@ -114,11 +110,7 @@ pub mod palette {
 
     /// Error status indicators.
     pub const ERROR: AdaptiveColor = AdaptiveColor::new(
-        Color::TrueColor {
-            r: 175,
-            g: 0,
-            b: 0,
-        }, // Dark red on light
+        Color::TrueColor { r: 175, g: 0, b: 0 }, // Dark red on light
         Color::TrueColor {
             r: 255,
             g: 95,

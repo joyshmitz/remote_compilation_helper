@@ -302,10 +302,12 @@ async fn execute_remote_compilation(
     info!("Executing command remotely: {}", command);
 
     // Stream stdout/stderr to our stderr so the agent sees the output
+    // TODO: Integrate toolchain detection here once fully wired up
     let result = pipeline
         .execute_remote_streaming(
             &worker_config,
             command,
+            None, // Toolchain - will be integrated with detect_toolchain
             |line| {
                 // Write stdout lines to stderr (hook stdout is for protocol)
                 eprintln!("{}", line);

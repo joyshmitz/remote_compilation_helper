@@ -9,6 +9,7 @@
 mod commands;
 mod config;
 mod hook;
+mod toolchain;
 mod transfer;
 pub mod ui;
 

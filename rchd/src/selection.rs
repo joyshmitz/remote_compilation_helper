@@ -106,6 +106,7 @@ mod tests {
             project: "myproject".to_string(),
             estimated_cores: 4,
             preferred_workers: vec![],
+            toolchain: None,
         };
         let weights = SelectionWeights::default();
 
@@ -130,6 +131,7 @@ mod tests {
             project: "myproject".to_string(),
             estimated_cores: 2,
             preferred_workers: vec![],
+            toolchain: None,
         };
         let weights = SelectionWeights::default();
 
@@ -154,6 +156,7 @@ mod tests {
             project: "myproject".to_string(),
             estimated_cores: 2,
             preferred_workers: vec![],
+            toolchain: None,
         };
         let weights = SelectionWeights::default();
 

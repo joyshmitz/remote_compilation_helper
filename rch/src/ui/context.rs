@@ -5,8 +5,8 @@
 //! adaptive colors for light/dark terminal backgrounds.
 
 use super::adaptive::{
-    detect_background, detect_color_level, detect_hyperlink_support, AdaptiveColor, Background,
-    ColorLevel,
+    AdaptiveColor, Background, ColorLevel, detect_background, detect_color_level,
+    detect_hyperlink_support,
 };
 use super::style::Style;
 use super::writer::OutputWriter;
@@ -256,7 +256,11 @@ impl OutputContext {
     /// 7. `TERM=dumb` → Plain mode
     /// 8. stdout not TTY → Plain mode for stdout
     /// 9. Otherwise → Human mode
-    fn detect_mode(config: &OutputConfig, stdout: &OutputWriter, caps: &TerminalCaps) -> OutputMode {
+    fn detect_mode(
+        config: &OutputConfig,
+        stdout: &OutputWriter,
+        caps: &TerminalCaps,
+    ) -> OutputMode {
         // 1. Force mode if specified
         if let Some(mode) = config.force_mode {
             return mode;
@@ -560,7 +564,9 @@ mod tests {
     use super::*;
     use crate::ui::writer::SharedOutputBuffer;
 
-    fn make_test_context(config: OutputConfig) -> (OutputContext, SharedOutputBuffer, SharedOutputBuffer) {
+    fn make_test_context(
+        config: OutputConfig,
+    ) -> (OutputContext, SharedOutputBuffer, SharedOutputBuffer) {
         let stdout_buf = SharedOutputBuffer::new();
         let stderr_buf = SharedOutputBuffer::new();
         let stdout = stdout_buf.as_writer(true);
@@ -683,13 +689,10 @@ mod tests {
         let config = OutputConfig::default();
         let (ctx, stdout_buf, _) = make_test_context(config);
 
-        ctx.table(
-            &["Name", "Status"],
-            &[
-                vec!["worker-1".to_string(), "healthy".to_string()],
-                vec!["worker-2".to_string(), "degraded".to_string()],
-            ],
-        );
+        ctx.table(&["Name", "Status"], &[
+            vec!["worker-1".to_string(), "healthy".to_string()],
+            vec!["worker-2".to_string(), "degraded".to_string()],
+        ]);
 
         let output = stdout_buf.to_string_lossy();
         assert!(output.contains("Name"));

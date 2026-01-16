@@ -15,6 +15,7 @@ pub struct Symbols {
     pub bullet_filled: &'static str,
     pub bullet_empty: &'static str,
     pub bullet_half: &'static str,
+    pub disabled: &'static str,
     pub arrow_right: &'static str,
     pub spinner_frames: &'static [&'static str],
 }
@@ -29,6 +30,7 @@ impl Symbols {
         bullet_filled: "●",
         bullet_empty: "○",
         bullet_half: "◐",
+        disabled: "⊘",
         arrow_right: "→",
         spinner_frames: &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
     };
@@ -42,6 +44,7 @@ impl Symbols {
         bullet_filled: "[*]",
         bullet_empty: "[ ]",
         bullet_half: "[~]",
+        disabled: "[-]",
         arrow_right: "->",
         spinner_frames: &["|", "/", "-", "\\"],
     };
@@ -53,6 +56,76 @@ impl Symbols {
         } else {
             Self::ASCII
         }
+    }
+}
+
+/// Standardized status indicators for consistent visual feedback.
+///
+/// Each indicator has a defined symbol and color for immediate visual recognition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusIndicator {
+    /// Operation succeeded, healthy state (✓ green)
+    Success,
+    /// Operation failed, error state (✗ red)
+    Error,
+    /// Degraded state, needs attention (⚠ yellow)
+    Warning,
+    /// Neutral information (● cyan)
+    Info,
+    /// Waiting, not started (○ gray)
+    Pending,
+    /// Currently running (◐ blue)
+    InProgress,
+    /// Intentionally disabled (⊘ gray)
+    Disabled,
+}
+
+impl StatusIndicator {
+    /// Get the symbol for this indicator.
+    pub fn symbol(&self, symbols: &Symbols) -> &'static str {
+        match self {
+            StatusIndicator::Success => symbols.success,
+            StatusIndicator::Error => symbols.failure,
+            StatusIndicator::Warning => symbols.warning,
+            StatusIndicator::Info => symbols.bullet_filled,
+            StatusIndicator::Pending => symbols.bullet_empty,
+            StatusIndicator::InProgress => symbols.bullet_half,
+            StatusIndicator::Disabled => symbols.disabled,
+        }
+    }
+
+    /// Get the color for this indicator.
+    pub fn color(&self, colors: &SemanticColors) -> Color {
+        match self {
+            StatusIndicator::Success => colors.success,
+            StatusIndicator::Error => colors.error,
+            StatusIndicator::Warning => colors.warning,
+            StatusIndicator::Info => colors.info,
+            StatusIndicator::Pending => colors.muted,
+            StatusIndicator::InProgress => colors.info,
+            StatusIndicator::Disabled => colors.muted,
+        }
+    }
+
+    /// Format the indicator with its symbol and optional label.
+    pub fn display(&self, style: &Style) -> ColoredString {
+        let symbol = self.symbol(&style.symbols);
+        if style.colors_enabled {
+            symbol.color(self.color(&style.colors))
+        } else {
+            symbol.normal()
+        }
+    }
+
+    /// Format the indicator with a label.
+    pub fn with_label(&self, style: &Style, label: &str) -> String {
+        let symbol = self.display(style);
+        let styled_label = if style.colors_enabled {
+            label.color(self.color(&style.colors))
+        } else {
+            label.normal()
+        };
+        format!("{} {}", symbol, styled_label)
     }
 }
 
@@ -176,7 +249,11 @@ impl Style {
 
     /// Format a success message with symbol and styling.
     pub fn format_success(&self, msg: &str) -> String {
-        format!("{} {}", self.success(self.symbols.success), self.success(msg))
+        format!(
+            "{} {}",
+            self.success(self.symbols.success),
+            self.success(msg)
+        )
     }
 
     /// Format an error message with symbol and styling.
@@ -186,7 +263,11 @@ impl Style {
 
     /// Format a warning message with symbol and styling.
     pub fn format_warning(&self, msg: &str) -> String {
-        format!("{} {}", self.warning(self.symbols.warning), self.warning(msg))
+        format!(
+            "{} {}",
+            self.warning(self.symbols.warning),
+            self.warning(msg)
+        )
     }
 
     /// Format an info message with symbol and styling.
@@ -208,7 +289,11 @@ impl Style {
     /// Format a section header.
     pub fn format_header(&self, title: &str) -> String {
         if self.colors_enabled {
-            format!("\n{}\n{}", self.highlight(title), self.muted(&"─".repeat(title.len())))
+            format!(
+                "\n{}\n{}",
+                self.highlight(title),
+                self.muted(&"─".repeat(title.len()))
+            )
         } else {
             format!("\n{}\n{}", title, "-".repeat(title.len()))
         }
@@ -266,5 +351,67 @@ mod tests {
         let header = style.format_header("Workers");
         assert!(header.contains("Workers"));
         assert!(header.contains("-------"));
+    }
+
+    #[test]
+    fn test_status_indicator_symbols_unicode() {
+        let symbols = Symbols::UNICODE;
+        assert_eq!(StatusIndicator::Success.symbol(&symbols), "✓");
+        assert_eq!(StatusIndicator::Error.symbol(&symbols), "✗");
+        assert_eq!(StatusIndicator::Warning.symbol(&symbols), "⚠");
+        assert_eq!(StatusIndicator::Info.symbol(&symbols), "●");
+        assert_eq!(StatusIndicator::Pending.symbol(&symbols), "○");
+        assert_eq!(StatusIndicator::InProgress.symbol(&symbols), "◐");
+        assert_eq!(StatusIndicator::Disabled.symbol(&symbols), "⊘");
+    }
+
+    #[test]
+    fn test_status_indicator_symbols_ascii() {
+        let symbols = Symbols::ASCII;
+        assert_eq!(StatusIndicator::Success.symbol(&symbols), "[OK]");
+        assert_eq!(StatusIndicator::Error.symbol(&symbols), "[FAIL]");
+        assert_eq!(StatusIndicator::Warning.symbol(&symbols), "[WARN]");
+        assert_eq!(StatusIndicator::Info.symbol(&symbols), "[*]");
+        assert_eq!(StatusIndicator::Pending.symbol(&symbols), "[ ]");
+        assert_eq!(StatusIndicator::InProgress.symbol(&symbols), "[~]");
+        assert_eq!(StatusIndicator::Disabled.symbol(&symbols), "[-]");
+    }
+
+    #[test]
+    fn test_status_indicator_colors() {
+        let colors = SemanticColors::default();
+        assert_eq!(StatusIndicator::Success.color(&colors), Color::Green);
+        assert_eq!(StatusIndicator::Error.color(&colors), Color::Red);
+        assert_eq!(StatusIndicator::Warning.color(&colors), Color::Yellow);
+        assert_eq!(StatusIndicator::Info.color(&colors), Color::Cyan);
+        assert_eq!(StatusIndicator::Pending.color(&colors), Color::BrightBlack);
+        assert_eq!(StatusIndicator::InProgress.color(&colors), Color::Cyan);
+        assert_eq!(StatusIndicator::Disabled.color(&colors), Color::BrightBlack);
+    }
+
+    #[test]
+    fn test_status_indicator_display_no_color() {
+        let style = Style::new(false, true);
+        let display = StatusIndicator::Success.display(&style);
+        let output = display.to_string();
+        assert_eq!(output, "✓");
+        assert!(!output.contains("\x1b[")); // No ANSI codes
+    }
+
+    #[test]
+    fn test_status_indicator_with_label() {
+        let style = Style::new(false, true);
+        let output = StatusIndicator::Success.with_label(&style, "Running");
+        assert!(output.contains("✓"));
+        assert!(output.contains("Running"));
+    }
+
+    #[test]
+    fn test_disabled_symbol() {
+        let unicode_sym = Symbols::UNICODE;
+        assert_eq!(unicode_sym.disabled, "⊘");
+
+        let ascii_sym = Symbols::ASCII;
+        assert_eq!(ascii_sym.disabled, "[-]");
     }
 }

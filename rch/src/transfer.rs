@@ -5,7 +5,10 @@
 
 use anyhow::{Context, Result, bail};
 use rch_common::mock::{self, MockConfig, MockRsync, MockRsyncConfig, MockSshClient};
-use rch_common::{CommandResult, SshClient, SshOptions, TransferConfig, WorkerConfig};
+use rch_common::{
+    CommandResult, SshClient, SshOptions, ToolchainInfo, TransferConfig, WorkerConfig,
+    wrap_command_with_toolchain,
+};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
@@ -156,16 +159,22 @@ impl TransferPipeline {
     }
 
     /// Execute a compilation command on the remote worker.
+    ///
+    /// If `toolchain` is provided, the command will be wrapped with `rustup run <toolchain>`.
     #[allow(dead_code)] // Reserved for future usage
     pub async fn execute_remote(
         &self,
         worker: &WorkerConfig,
         command: &str,
+        toolchain: Option<&ToolchainInfo>,
     ) -> Result<CommandResult> {
         let remote_path = self.remote_path();
 
+        // Wrap command with toolchain if provided
+        let toolchain_command = wrap_command_with_toolchain(command, toolchain);
+
         // Wrap command to run in project directory
-        let wrapped_command = format!("cd {} && {}", remote_path, command);
+        let wrapped_command = format!("cd {} && {}", remote_path, toolchain_command);
 
         if mock::is_mock_enabled() {
             let mut client = MockSshClient::new(worker.clone(), MockConfig::from_env());
@@ -197,10 +206,13 @@ impl TransferPipeline {
     }
 
     /// Execute a command and stream output in real-time.
+    ///
+    /// If `toolchain` is provided, the command will be wrapped with `rustup run <toolchain>`.
     pub async fn execute_remote_streaming<F, G>(
         &self,
         worker: &WorkerConfig,
         command: &str,
+        toolchain: Option<&ToolchainInfo>,
         on_stdout: F,
         on_stderr: G,
     ) -> Result<CommandResult>
@@ -209,7 +221,8 @@ impl TransferPipeline {
         G: FnMut(&str),
     {
         let remote_path = self.remote_path();
-        let wrapped_command = format!("cd {} && {}", remote_path, command);
+        let toolchain_command = wrap_command_with_toolchain(command, toolchain);
+        let wrapped_command = format!("cd {} && {}", remote_path, toolchain_command);
 
         if mock::is_mock_enabled() {
             let mut client = MockSshClient::new(worker.clone(), MockConfig::from_env());

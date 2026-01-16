@@ -8,12 +8,14 @@ pub mod mock;
 pub mod patterns;
 pub mod protocol;
 pub mod ssh;
+pub mod toolchain;
 pub mod types;
 
 pub use patterns::{Classification, CompilationKind, classify_command};
 pub use protocol::{HookInput, HookOutput, ToolInput};
 pub use ssh::{CommandResult, KnownHostsPolicy, SshClient, SshOptions, SshPool};
+pub use toolchain::{ToolchainInfo, wrap_command_with_toolchain};
 pub use types::{
-    CompilationConfig, GeneralConfig, RchConfig, SelectedWorker, SelectionReason,
-    SelectionRequest, SelectionResponse, TransferConfig, WorkerConfig, WorkerId, WorkerStatus,
+    CompilationConfig, GeneralConfig, RchConfig, SelectedWorker, SelectionReason, SelectionRequest,
+    SelectionResponse, TransferConfig, WorkerConfig, WorkerId, WorkerStatus,
 };

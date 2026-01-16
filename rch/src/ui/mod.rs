@@ -57,18 +57,18 @@ pub mod writer;
 
 // Re-export main types for convenience
 pub use adaptive::{
-    detect_background, detect_color_level, detect_hyperlink_support, palette, AdaptiveColor,
-    Background, ColorLevel,
+    AdaptiveColor, Background, ColorLevel, detect_background, detect_color_level,
+    detect_hyperlink_support, palette,
 };
 pub use context::{
-    default_context, ColorChoice, OutputConfig, OutputContext, OutputMode, TerminalCaps, Verbosity,
+    ColorChoice, OutputConfig, OutputContext, OutputMode, TerminalCaps, Verbosity, default_context,
 };
-pub use style::{SemanticColors, Style, Symbols};
+pub use style::{SemanticColors, StatusIndicator, Style, Symbols};
 pub use writer::{OutputBuffer, OutputWriter, SharedOutputBuffer};
 
 // Test utilities are public for integration tests
 pub use test_utils::{
-    assert_has_ansi, assert_no_ansi, assert_stderr_contains, assert_stderr_not_contains,
-    assert_stdout_contains, assert_stdout_not_contains, assert_valid_json, strip_ansi,
-    OutputCapture, OutputContextBuilder,
+    OutputCapture, OutputContextBuilder, assert_has_ansi, assert_no_ansi, assert_stderr_contains,
+    assert_stderr_not_contains, assert_stdout_contains, assert_stdout_not_contains,
+    assert_valid_json, strip_ansi,
 };

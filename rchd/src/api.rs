@@ -105,6 +105,7 @@ fn parse_request(line: &str) -> Result<SelectionRequest> {
         project,
         estimated_cores,
         preferred_workers: vec![],
+        toolchain: None,
     })
 }
 
@@ -315,6 +316,7 @@ mod tests {
             project: "test".to_string(),
             estimated_cores: 4,
             preferred_workers: vec![],
+            toolchain: None,
         };
 
         let response = handle_select_worker(&pool, request).await.unwrap();
@@ -338,6 +340,7 @@ mod tests {
             project: "test".to_string(),
             estimated_cores: 2,
             preferred_workers: vec![],
+            toolchain: None,
         };
 
         let response = handle_select_worker(&pool, request).await.unwrap();
@@ -358,6 +361,7 @@ mod tests {
             project: "test".to_string(),
             estimated_cores: 2, // Request more than available
             preferred_workers: vec![],
+            toolchain: None,
         };
 
         let response = handle_select_worker(&pool, request).await.unwrap();
@@ -374,6 +378,7 @@ mod tests {
             project: "test".to_string(),
             estimated_cores: 4,
             preferred_workers: vec![],
+            toolchain: None,
         };
 
         let response = handle_select_worker(&pool, request).await.unwrap();
@@ -395,6 +400,7 @@ mod tests {
             project: "test".to_string(),
             estimated_cores: 8, // Request more than total slots
             preferred_workers: vec![],
+            toolchain: None,
         };
 
         let response = handle_select_worker(&pool, request).await.unwrap();

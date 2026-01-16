@@ -1,5 +1,6 @@
 //! Common types used across RCH components.
 
+use crate::toolchain::ToolchainInfo;
 use serde::{Deserialize, Serialize};
 
 /// Unique identifier for a worker in the fleet.
@@ -54,6 +55,9 @@ pub struct SelectionRequest {
     /// Preferred worker IDs (e.g., from project config).
     #[serde(default)]
     pub preferred_workers: Vec<WorkerId>,
+    /// Rust toolchain information for the project.
+    #[serde(default)]
+    pub toolchain: Option<ToolchainInfo>,
 }
 
 /// Reason for worker selection result.
