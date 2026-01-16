@@ -8,6 +8,8 @@
 
 mod config;
 mod hook;
+#[allow(dead_code)] // TODO: Remove once integrated into hook pipeline
+mod transfer;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

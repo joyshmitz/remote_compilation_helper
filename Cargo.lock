@@ -192,6 +192,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dirs"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
 name = "dirs-sys"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -461,6 +470,7 @@ dependencies = [
  "rch-common",
  "serde",
  "serde_json",
+ "shellexpand",
  "thiserror",
  "tokio",
  "toml",
@@ -472,11 +482,15 @@ dependencies = [
 name = "rch-common"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "memchr",
+ "openssh",
  "regex",
  "serde",
  "serde_json",
+ "shellexpand",
  "thiserror",
+ "tokio",
  "tracing",
 ]
 
@@ -648,6 +662,15 @@ name = "shell-escape"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "45bb67a18fa91266cc7807181f62f9178a6873bfad7dc788c42e6430db40184f"
+
+[[package]]
+name = "shellexpand"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b1fdf65dd6331831494dd616b30351c38e96e45921a27745cf98490458b90bb"
+dependencies = [
+ "dirs",
+]
 
 [[package]]
 name = "shlex"
