@@ -139,7 +139,7 @@ mkdir -p ~/.config/rch
 cat > ~/.config/rch/workers.toml << 'EOF'
 [[workers]]
 id = "worker1"
-host = "192.168.1.100"
+host = "203.0.113.10"
 user = "ubuntu"
 identity_file = "~/.ssh/id_rsa"
 total_slots = 16
@@ -147,7 +147,7 @@ priority = 100
 
 [[workers]]
 id = "worker2"
-host = "192.168.1.101"
+host = "203.0.113.11"
 user = "ubuntu"
 identity_file = "~/.ssh/id_rsa"
 total_slots = 32
@@ -306,7 +306,7 @@ max_latency_ms = 50
 ```toml
 [[workers]]
 id = "css"                       # Unique identifier
-host = "203.0.113.20"         # SSH hostname or IP
+host = "203.0.113.20"           # SSH hostname or IP (example)
 user = "ubuntu"                  # SSH user
 identity_file = "~/.ssh/key.pem" # SSH private key
 total_slots = 32                 # CPU cores available
@@ -574,7 +574,7 @@ vim ~/.config/rch/workers.toml
 # Add new worker block
 [[workers]]
 id = "new-worker"
-host = "192.168.1.102"
+host = "203.0.113.12"
 ...
 
 # Install on new worker

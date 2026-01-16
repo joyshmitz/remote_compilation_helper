@@ -5266,7 +5266,7 @@ rch status
 #     └── fmd (192.0.2.40): degraded, 0/8 slots, score 65.2
 
 # Add new worker
-rch workers add --id newbox --host 192.168.1.100 --user ubuntu
+rch workers add --id newbox --host 203.0.113.50 --user ubuntu
 
 # Benchmark all workers
 rch workers benchmark --all
