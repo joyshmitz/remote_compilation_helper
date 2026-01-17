@@ -120,7 +120,9 @@ impl LogConfig {
     /// Build the effective EnvFilter, honoring RUST_LOG if set.
     pub fn env_filter(&self) -> EnvFilter {
         if std::env::var_os("RUST_LOG").is_some() {
-            return EnvFilter::from_default_env();
+            if let Ok(filter) = EnvFilter::try_from_default_env() {
+                return filter;
+            }
         }
 
         let mut filter = self.level.clone();

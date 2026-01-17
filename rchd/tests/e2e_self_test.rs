@@ -12,6 +12,7 @@ use tempfile::TempDir;
 use tokio::process::Command;
 use tokio::time::sleep;
 use tracing::info;
+use chrono::Utc;
 
 fn init_test_logging() {
     let _ = tracing_subscriber::fmt()
@@ -96,13 +97,17 @@ async fn test_code_change_produces_different_hash() {
     init_test_logging();
     info!("[e2e::self_test] TEST START: code_change_hash_diff");
 
+    let suffix = Utc::now().timestamp_nanos_opt().unwrap_or(0);
+    let project_name = format!("change_test_{}", suffix);
+
     let temp_dir = TempDir::new().expect("temp dir");
-    let project = RustProjectFixture::minimal("change_test");
+    let project = RustProjectFixture::minimal(&project_name);
     project.create_in(temp_dir.path()).expect("create project");
 
+    info!("Building project {} in {:?}", project_name, temp_dir.path());
     build_release(temp_dir.path()).await.expect("initial build");
 
-    let bin_path = binary_path(temp_dir.path(), "change_test");
+    let bin_path = binary_path(temp_dir.path(), &project_name);
     let hash1 = compute_binary_hash(&bin_path).expect("hash 1");
 
     let change = TestCodeChange::for_main_rs(temp_dir.path()).expect("test change");
@@ -111,6 +116,16 @@ async fn test_code_change_produces_different_hash() {
     // Ensure filesystem timestamp advances so cargo detects the change.
     sleep(Duration::from_millis(1100)).await;
 
+    // Touch the file to guarantee mtime update
+    let main_rs = temp_dir.path().join("src/main.rs");
+    let status = Command::new("touch")
+        .arg(&main_rs)
+        .status()
+        .await
+        .expect("touch command");
+    assert!(status.success(), "touch failed");
+
+    info!("Rebuilding project after change...");
     build_release(temp_dir.path())
         .await
         .expect("rebuild after change");

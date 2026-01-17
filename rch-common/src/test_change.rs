@@ -55,14 +55,27 @@ impl TestCodeChange {
         // Generate a unique change ID based on timestamp
         let change_id = format!("RCH_TEST_{}", Utc::now().timestamp_millis());
 
-        // Modify: add a const that will be compiled into the binary
-        let modified = format!(
-            "{}\n\n// RCH Self-Test Marker (auto-generated, safe to remove)\n\
-             #[used]\n\
-             #[allow(dead_code)]\n\
-             static {}: &str = \"{}\";\n",
-            original, change_id, change_id
-        );
+        // Modify: prefer modifying main function to prevent LTO elimination
+        let modified = if original.contains("println!(\"Hello, world!\");") {
+            original.replace(
+                "println!(\"Hello, world!\");",
+                &format!("println!(\"Hello, world! {}\");", change_id),
+            )
+        } else if original.contains("println!(\"Hello from test project!\");") {
+            original.replace(
+                "println!(\"Hello from test project!\");",
+                &format!("println!(\"Hello from test project! {}\");", change_id),
+            )
+        } else {
+            // Fallback: append a function
+            format!(
+                "{}\n\n// RCH Self-Test Marker (auto-generated, safe to remove)\n\
+                 #[unsafe(no_mangle)]\n\
+                 #[allow(dead_code)]\n\
+                 pub fn {}() -> &'static str {{ \"{}\" }}\n",
+                original, change_id, change_id
+            )
+        };
 
         Ok(TestCodeChange {
             file_path: file_path.to_path_buf(),
