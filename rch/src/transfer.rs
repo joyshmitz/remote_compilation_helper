@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
 use tracing::{debug, info, warn};
+use shell_escape::escape;
+use std::borrow::Cow;
 
 /// Remote project path prefix.
 const REMOTE_BASE: &str = "/tmp/rch";
@@ -63,7 +65,8 @@ impl TransferPipeline {
     /// Synchronize local project to remote worker.
     pub async fn sync_to_remote(&self, worker: &WorkerConfig) -> Result<SyncResult> {
         let remote_path = self.remote_path();
-        let destination = format!("{}@{}:{}", worker.user, worker.host, remote_path);
+        let escaped_remote_path = escape(Cow::from(&remote_path));
+        let destination = format!("{}@{}:{}", worker.user, worker.host, escaped_remote_path);
 
         if mock::is_mock_enabled() {
             let rsync = MockRsync::new(MockRsyncConfig::from_env());
@@ -84,7 +87,7 @@ impl TransferPipeline {
         // Ensure remote directory exists before rsync
         let mut client = SshClient::new(worker.clone(), self.ssh_options.clone());
         client.connect().await?;
-        let mkdir_cmd = format!("mkdir -p {}", remote_path);
+        let mkdir_cmd = format!("mkdir -p {}", escaped_remote_path);
         let mkdir_result = client.execute(&mkdir_cmd).await?;
         client.disconnect().await?;
         if !mkdir_result.success() {
@@ -100,12 +103,16 @@ impl TransferPipeline {
 
         // Build rsync command with excludes
         let mut cmd = Command::new("rsync");
+        
+        let identity_file = shellexpand::tilde(&worker.identity_file);
+        let escaped_identity = escape(Cow::from(identity_file.as_ref()));
+
         cmd.arg("-az") // Archive mode + compression
             .arg("--delete") // Remove extraneous files from destination
             .arg("-e")
             .arg(format!(
                 "ssh -i {} -o StrictHostKeyChecking=no -o BatchMode=yes",
-                shellexpand::tilde(&worker.identity_file)
+                escaped_identity
             ));
 
         // Add exclude patterns
@@ -169,12 +176,13 @@ impl TransferPipeline {
         toolchain: Option<&ToolchainInfo>,
     ) -> Result<CommandResult> {
         let remote_path = self.remote_path();
+        let escaped_remote_path = escape(Cow::from(&remote_path));
 
         // Wrap command with toolchain if provided
         let toolchain_command = wrap_command_with_toolchain(command, toolchain);
 
         // Wrap command to run in project directory
-        let wrapped_command = format!("cd {} && {}", remote_path, toolchain_command);
+        let wrapped_command = format!("cd {} && {}", escaped_remote_path, toolchain_command);
 
         if mock::is_mock_enabled() {
             let mut client = MockSshClient::new(worker.clone(), MockConfig::from_env());
@@ -221,8 +229,9 @@ impl TransferPipeline {
         G: FnMut(&str),
     {
         let remote_path = self.remote_path();
+        let escaped_remote_path = escape(Cow::from(&remote_path));
         let toolchain_command = wrap_command_with_toolchain(command, toolchain);
-        let wrapped_command = format!("cd {} && {}", remote_path, toolchain_command);
+        let wrapped_command = format!("cd {} && {}", escaped_remote_path, toolchain_command);
 
         if mock::is_mock_enabled() {
             let mut client = MockSshClient::new(worker.clone(), MockConfig::from_env());
@@ -253,12 +262,13 @@ impl TransferPipeline {
         artifact_patterns: &[String],
     ) -> Result<SyncResult> {
         let remote_path = self.remote_path();
+        let escaped_remote_path = escape(Cow::from(&remote_path));
 
         if mock::is_mock_enabled() {
             let rsync = MockRsync::new(MockRsyncConfig::from_env());
             let result = rsync
                 .retrieve_artifacts(
-                    &format!("{}@{}:{}/", worker.user, worker.host, remote_path),
+                    &format!("{}@{}:{}/", worker.user, worker.host, escaped_remote_path),
                     &self.project_root.display().to_string(),
                     artifact_patterns,
                 )
@@ -273,9 +283,13 @@ impl TransferPipeline {
         info!("Retrieving artifacts from {} on {}", remote_path, worker.id);
 
         let mut cmd = Command::new("rsync");
+        
+        let identity_file = shellexpand::tilde(&worker.identity_file);
+        let escaped_identity = escape(Cow::from(identity_file.as_ref()));
+
         cmd.arg("-az").arg("-e").arg(format!(
             "ssh -i {} -o StrictHostKeyChecking=no -o BatchMode=yes",
-            shellexpand::tilde(&worker.identity_file)
+            escaped_identity
         ));
 
         // Add zstd compression
@@ -293,7 +307,7 @@ impl TransferPipeline {
         }
         cmd.arg("--exclude").arg("*"); // Exclude everything else
 
-        let source = format!("{}@{}:{}/", worker.user, worker.host, remote_path);
+        let source = format!("{}@{}:{}/", worker.user, worker.host, escaped_remote_path);
         cmd.arg(&source)
             .arg(format!("{}/", self.project_root.display()));
 
@@ -333,6 +347,7 @@ impl TransferPipeline {
     #[allow(dead_code)] // Reserved for future cleanup routines
     pub async fn cleanup_remote(&self, worker: &WorkerConfig) -> Result<()> {
         let remote_path = self.remote_path();
+        let escaped_remote_path = escape(Cow::from(&remote_path));
 
         if mock::is_mock_enabled() {
             debug!("Mock cleanup of {} on {}", remote_path, worker.id);
@@ -344,7 +359,7 @@ impl TransferPipeline {
         let mut client = SshClient::new(worker.clone(), self.ssh_options.clone());
         client.connect().await?;
 
-        let result = client.execute(&format!("rm -rf {}", remote_path)).await?;
+        let result = client.execute(&format!("rm -rf {}", escaped_remote_path)).await?;
 
         client.disconnect().await?;
 
