@@ -356,7 +356,13 @@ pub struct CircuitStats {
     last_state_change: u64,
     /// Current active probes in half-open state.
     active_probes: u32,
+    /// Recent health check results (true=success, false=failure).
+    /// Used for history visualization in status display.
+    recent_results: Vec<bool>,
 }
+
+/// Maximum number of recent results to keep for history visualization.
+const CIRCUIT_HISTORY_SIZE: usize = 10;
 
 impl CircuitStats {
     /// Create new circuit stats in the closed state.
@@ -370,6 +376,7 @@ impl CircuitStats {
             opened_at: None,
             last_state_change: Self::now_millis(),
             active_probes: 0,
+            recent_results: Vec::with_capacity(CIRCUIT_HISTORY_SIZE),
         }
     }
 
@@ -409,6 +416,7 @@ impl CircuitStats {
     pub fn record_success(&mut self) {
         self.window_successes += 1;
         self.consecutive_failures = 0;
+        self.push_result(true);
 
         if self.state == CircuitState::HalfOpen {
             self.consecutive_successes += 1;
@@ -425,6 +433,7 @@ impl CircuitStats {
     pub fn record_failure(&mut self) {
         self.window_failures += 1;
         self.consecutive_failures += 1;
+        self.push_result(false);
 
         if self.state == CircuitState::HalfOpen {
             self.consecutive_successes = 0;
@@ -552,6 +561,42 @@ impl CircuitStats {
     pub fn reset_window(&mut self) {
         self.window_successes = 0;
         self.window_failures = 0;
+    }
+
+    /// Get recent health check results for history visualization.
+    ///
+    /// Returns a slice of recent results (true=success, false=failure),
+    /// with the most recent result at the end.
+    pub fn recent_results(&self) -> &[bool] {
+        &self.recent_results
+    }
+
+    /// Calculate seconds remaining until circuit auto-transitions to half-open.
+    ///
+    /// Returns None if circuit is not open or cooldown has already elapsed.
+    pub fn recovery_remaining_secs(&self, config: &CircuitBreakerConfig) -> Option<u64> {
+        if self.state != CircuitState::Open {
+            return None;
+        }
+
+        let now = Self::now_millis();
+        let cooldown_ms = config.open_cooldown_secs * 1000;
+
+        if let Some(opened_at) = self.opened_at {
+            let elapsed_ms = now.saturating_sub(opened_at);
+            if elapsed_ms < cooldown_ms {
+                return Some((cooldown_ms - elapsed_ms) / 1000);
+            }
+        }
+        None
+    }
+
+    /// Push a result to the history, maintaining the maximum size.
+    fn push_result(&mut self, success: bool) {
+        if self.recent_results.len() >= CIRCUIT_HISTORY_SIZE {
+            self.recent_results.remove(0);
+        }
+        self.recent_results.push(success);
     }
 
     fn now_millis() -> u64 {

@@ -41,6 +41,15 @@ pub struct WorkerStatusFromApi {
     pub total_slots: u32,
     pub speed_score: f64,
     pub last_error: Option<String>,
+    /// Consecutive failure count.
+    #[serde(default)]
+    pub consecutive_failures: u32,
+    /// Seconds until circuit auto-recovers (None if not open or cooldown elapsed).
+    #[serde(default)]
+    pub recovery_in_secs: Option<u64>,
+    /// Recent health check results (true=success, false=failure).
+    #[serde(default)]
+    pub failure_history: Vec<bool>,
 }
 
 /// Active build information from API.

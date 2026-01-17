@@ -447,7 +447,7 @@ mod tests {
         info!("RESULT: serialized={}", &json[..json.len().min(100)]);
 
         let restored: VerificationResult = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.success, true);
+        assert!(restored.success);
         assert_eq!(restored.rsync_up_ms, 100);
         assert_eq!(restored.compilation_ms, 5000);
         assert_eq!(restored.test_marker, "RCH_TEST_12345");

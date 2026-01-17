@@ -197,6 +197,18 @@ For more control, use the individual commands:
         action: ConfigAction,
     },
 
+    /// Explain why a command would or wouldn't be offloaded
+    #[command(after_help = r#"EXAMPLES:
+    rch diagnose "cargo build --release"
+    rch diagnose cargo build --release
+    rch diagnose "bun test"
+    rch diagnose "ls -la""#)]
+    Diagnose {
+        /// Command to analyze (quote or pass as multiple args)
+        #[arg(required = true, num_args = 1.., trailing_var_arg = true)]
+        command: Vec<String>,
+    },
+
     /// Install and manage the Claude Code PreToolUse hook
     #[command(after_help = r#"EXAMPLES:
     rch hook install    # Register RCH as PreToolUse hook
@@ -817,6 +829,7 @@ async fn main() -> Result<()> {
             Commands::Workers { action } => handle_workers(action, &ctx).await,
             Commands::Status { workers, jobs } => handle_status(workers, jobs, &ctx).await,
             Commands::Config { action } => handle_config(action, &ctx).await,
+            Commands::Diagnose { command } => handle_diagnose(command, &ctx).await,
             Commands::Hook { action } => handle_hook(action, &ctx).await,
             Commands::Agents { action } => handle_agents(action, &ctx).await,
             Commands::Completions { action } => handle_completions(action, &ctx),
@@ -972,6 +985,12 @@ async fn handle_config(action: ConfigAction, ctx: &OutputContext) -> Result<()> 
             commands::config_export(&format, ctx)?;
         }
     }
+    Ok(())
+}
+
+async fn handle_diagnose(command: Vec<String>, ctx: &OutputContext) -> Result<()> {
+    let joined = command.join(" ");
+    commands::diagnose(&joined, ctx).await?;
     Ok(())
 }
 
@@ -1649,6 +1668,32 @@ mod tests {
                 assert!(sources);
             }
             _ => panic!("Expected config show command"),
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Diagnose Subcommand Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn cli_parses_diagnose_single_arg() {
+        let cli = Cli::try_parse_from(["rch", "diagnose", "cargo build --release"]).unwrap();
+        match cli.command {
+            Some(Commands::Diagnose { command }) => {
+                assert_eq!(command, vec!["cargo build --release"]);
+            }
+            _ => panic!("Expected diagnose command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_diagnose_multi_arg() {
+        let cli = Cli::try_parse_from(["rch", "diagnose", "cargo", "build", "--release"]).unwrap();
+        match cli.command {
+            Some(Commands::Diagnose { command }) => {
+                assert_eq!(command, vec!["cargo", "build", "--release"]);
+            }
+            _ => panic!("Expected diagnose command"),
         }
     }
 

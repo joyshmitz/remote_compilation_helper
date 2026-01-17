@@ -436,10 +436,12 @@ mod tests {
     fn test_selection_bounds_for_workers() {
         init_test_logging();
         info!("TEST START: test_selection_bounds_for_workers");
-        let mut state = TuiState::default();
-        state.workers = vec![make_worker("w1"), make_worker("w2")];
-        state.selected_panel = Panel::Workers;
-        state.selected_index = 0;
+        let mut state = TuiState {
+            workers: vec![make_worker("w1"), make_worker("w2")],
+            selected_panel: Panel::Workers,
+            selected_index: 0,
+            ..Default::default()
+        };
         state.select_up();
         assert_eq!(state.selected_index, 0);
         state.select_down();
@@ -453,9 +455,11 @@ mod tests {
     fn test_handle_select_active_build_opens_logs() {
         init_test_logging();
         info!("TEST START: test_handle_select_active_build_opens_logs");
-        let mut state = TuiState::default();
-        state.active_builds = vec![make_active_build("b1", "cargo build")];
-        state.selected_panel = Panel::ActiveBuilds;
+        let mut state = TuiState {
+            active_builds: vec![make_active_build("b1", "cargo build")],
+            selected_panel: Panel::ActiveBuilds,
+            ..Default::default()
+        };
         state.handle_select();
         assert!(state.log_view.is_some());
         let log_view = state.log_view.as_ref().unwrap();
@@ -468,9 +472,11 @@ mod tests {
     fn test_handle_select_logs_toggles_auto_scroll() {
         init_test_logging();
         info!("TEST START: test_handle_select_logs_toggles_auto_scroll");
-        let mut state = TuiState::default();
-        state.log_view = Some(LogViewState::default());
-        state.selected_panel = Panel::Logs;
+        let mut state = TuiState {
+            log_view: Some(LogViewState::default()),
+            selected_panel: Panel::Logs,
+            ..Default::default()
+        };
         let before = state.log_view.as_ref().unwrap().auto_scroll;
         state.handle_select();
         let after = state.log_view.as_ref().unwrap().auto_scroll;
@@ -482,21 +488,29 @@ mod tests {
     fn test_copy_selected_variants() {
         init_test_logging();
         info!("TEST START: test_copy_selected_variants");
-        let mut state = TuiState::default();
-        state.workers = vec![make_worker("w1")];
-        state.selected_panel = Panel::Workers;
-        state.copy_selected();
-        assert_eq!(state.last_copied.as_deref(), Some("w1@host"));
+        let mut worker_state = TuiState {
+            workers: vec![make_worker("w1")],
+            selected_panel: Panel::Workers,
+            ..Default::default()
+        };
+        worker_state.copy_selected();
+        assert_eq!(worker_state.last_copied.as_deref(), Some("w1@host"));
 
-        state.active_builds = vec![make_active_build("b1", "cargo test")];
-        state.selected_panel = Panel::ActiveBuilds;
-        state.copy_selected();
-        assert_eq!(state.last_copied.as_deref(), Some("cargo test"));
+        let mut build_state = TuiState {
+            active_builds: vec![make_active_build("b1", "cargo test")],
+            selected_panel: Panel::ActiveBuilds,
+            ..Default::default()
+        };
+        build_state.copy_selected();
+        assert_eq!(build_state.last_copied.as_deref(), Some("cargo test"));
 
-        state.build_history = VecDeque::from([make_history("h1", "cargo check", Some("w1"), true)]);
-        state.selected_panel = Panel::BuildHistory;
-        state.copy_selected();
-        assert_eq!(state.last_copied.as_deref(), Some("cargo check"));
+        let mut history_state = TuiState {
+            build_history: VecDeque::from([make_history("h1", "cargo check", Some("w1"), true)]),
+            selected_panel: Panel::BuildHistory,
+            ..Default::default()
+        };
+        history_state.copy_selected();
+        assert_eq!(history_state.last_copied.as_deref(), Some("cargo check"));
         info!("TEST PASS: test_copy_selected_variants");
     }
 
@@ -504,12 +518,14 @@ mod tests {
     fn test_copy_selected_logs_joined_lines() {
         init_test_logging();
         info!("TEST START: test_copy_selected_logs_joined_lines");
-        let mut state = TuiState::default();
         let mut log_view = LogViewState::default();
         log_view.lines.push_back("line1".to_string());
         log_view.lines.push_back("line2".to_string());
-        state.log_view = Some(log_view);
-        state.selected_panel = Panel::Logs;
+        let mut state = TuiState {
+            log_view: Some(log_view),
+            selected_panel: Panel::Logs,
+            ..Default::default()
+        };
         state.copy_selected();
         assert_eq!(state.last_copied.as_deref(), Some("line1\nline2"));
         info!("TEST PASS: test_copy_selected_logs_joined_lines");
@@ -519,11 +535,13 @@ mod tests {
     fn test_filtered_build_history_filters() {
         init_test_logging();
         info!("TEST START: test_filtered_build_history_filters");
-        let mut state = TuiState::default();
-        state.build_history = VecDeque::from([
-            make_history("h1", "cargo build", Some("w1"), true),
-            make_history("h2", "cargo test", Some("w2"), false),
-        ]);
+        let mut state = TuiState {
+            build_history: VecDeque::from([
+                make_history("h1", "cargo build", Some("w1"), true),
+                make_history("h2", "cargo test", Some("w2"), false),
+            ]),
+            ..Default::default()
+        };
 
         state.filter.query = "build".to_string();
         let filtered = state.filtered_build_history();

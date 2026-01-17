@@ -5386,7 +5386,7 @@ mod tests {
         let json = serde_json::to_value(&response).unwrap();
         assert!(json.get("error").is_none());
         assert_eq!(json["data"], "data");
-        assert_eq!(json["success"], true);
+        assert!(json["success"].as_bool().unwrap());
     }
 
     #[test]
@@ -5395,7 +5395,7 @@ mod tests {
         let json = serde_json::to_value(&response).unwrap();
         assert!(json.get("data").is_none());
         assert!(json.get("error").is_some());
-        assert_eq!(json["success"], false);
+        assert!(!json["success"].as_bool().unwrap());
     }
 
     #[test]
@@ -5559,7 +5559,7 @@ mod tests {
             uptime_seconds: Some(3600),
         };
         let json = serde_json::to_value(&response).unwrap();
-        assert_eq!(json["running"], true);
+        assert!(json["running"].as_bool().unwrap());
         assert_eq!(json["socket_path"], "/tmp/rch.sock");
         assert_eq!(json["uptime_seconds"], 3600);
     }
@@ -5572,7 +5572,7 @@ mod tests {
             uptime_seconds: None,
         };
         let json = serde_json::to_value(&response).unwrap();
-        assert_eq!(json["running"], false);
+        assert!(!json["running"].as_bool().unwrap());
         assert!(json.get("uptime_seconds").is_none());
     }
 
@@ -5585,8 +5585,8 @@ mod tests {
             workers: None,
         };
         let json = serde_json::to_value(&response).unwrap();
-        assert_eq!(json["daemon_running"], true);
-        assert_eq!(json["hook_installed"], true);
+        assert!(json["daemon_running"].as_bool().unwrap());
+        assert!(json["hook_installed"].as_bool().unwrap());
         assert_eq!(json["workers_count"], 3);
         assert!(json.get("workers").is_none());
     }
@@ -5619,7 +5619,7 @@ mod tests {
             value_sources: None,
         };
         let json = serde_json::to_value(&response).unwrap();
-        assert_eq!(json["general"]["enabled"], true);
+        assert!(json["general"]["enabled"].as_bool().unwrap());
         assert_eq!(json["compilation"]["confidence_threshold"], 0.85);
         assert_eq!(json["transfer"]["compression_level"], 3);
         assert_eq!(json["circuit"]["failure_threshold"], 3);
@@ -5644,7 +5644,7 @@ mod tests {
             valid: true,
         };
         let json = serde_json::to_value(&response).unwrap();
-        assert_eq!(json["valid"], true);
+        assert!(json["valid"].as_bool().unwrap());
         assert!(json["errors"].as_array().unwrap().is_empty());
     }
 
@@ -5662,7 +5662,7 @@ mod tests {
             valid: false,
         };
         let json = serde_json::to_value(&response).unwrap();
-        assert_eq!(json["valid"], false);
+        assert!(!json["valid"].as_bool().unwrap());
         assert_eq!(json["errors"][0]["message"], "Invalid syntax");
         assert_eq!(json["warnings"][0]["file"], "workers.toml");
     }
@@ -5754,7 +5754,7 @@ mod tests {
         };
         let json = serde_json::to_value(&response).unwrap();
         assert_eq!(json["action"], "install");
-        assert_eq!(json["success"], true);
+        assert!(json["success"].as_bool().unwrap());
         assert_eq!(json["message"], "Hook installed successfully");
     }
 
@@ -5786,11 +5786,11 @@ mod tests {
             workers: vec![],
         };
         let json = serde_json::to_value(&response).unwrap();
-        assert_eq!(json["daemon_connected"], true);
+        assert!(json["daemon_connected"].as_bool().unwrap());
         assert_eq!(json["workers_configured"], 2);
         let tests = json["classification_tests"].as_array().unwrap();
         assert_eq!(tests[0]["command"], "cargo build");
-        assert_eq!(tests[0]["passed"], true);
+        assert!(tests[0]["passed"].as_bool().unwrap());
     }
 
     #[test]
@@ -5804,7 +5804,7 @@ mod tests {
         };
         let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["command"], "bun test");
-        assert_eq!(json["is_compilation"], true);
+        assert!(json["is_compilation"].as_bool().unwrap());
         assert_eq!(json["confidence"], 0.92);
     }
 

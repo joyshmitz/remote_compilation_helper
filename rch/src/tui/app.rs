@@ -392,6 +392,9 @@ mod tests {
             total_slots: 8,
             speed_score: 75.0,
             last_error: None,
+            consecutive_failures: 0,
+            recovery_in_secs: None,
+            failure_history: vec![],
         }
     }
 
@@ -539,5 +542,21 @@ mod tests {
         assert!(state.build_history[0].success);
         assert!(!state.build_history[1].success);
         info!("TEST PASS: test_update_state_build_history_success_flag");
+    }
+
+    #[test]
+    fn test_update_state_daemon_socket_path() {
+        init_test_logging();
+        info!("TEST START: test_update_state_daemon_socket_path");
+        let response = make_response(vec![], vec![], vec![]);
+        let mut state = TuiState::new();
+        update_state_from_daemon(&mut state, response);
+        info!(
+            "VERIFY: socket_path={:?} version={}",
+            state.daemon.socket_path, state.daemon.version
+        );
+        assert_eq!(state.daemon.socket_path, PathBuf::from("/tmp/rch.sock"));
+        assert_eq!(state.daemon.version, "0.1.0");
+        info!("TEST PASS: test_update_state_daemon_socket_path");
     }
 }

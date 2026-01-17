@@ -170,10 +170,10 @@ fn load_config_with_sources_from_paths(
 }
 
 fn load_partial_config(path: &Path) -> Result<PartialRchConfig> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read {:?}", path))?;
-    let parsed: PartialRchConfig = toml::from_str(&content)
-        .with_context(|| format!("Failed to parse {:?}", path))?;
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("Failed to read {:?}", path))?;
+    let parsed: PartialRchConfig =
+        toml::from_str(&content).with_context(|| format!("Failed to parse {:?}", path))?;
     Ok(parsed)
 }
 
@@ -859,9 +859,8 @@ mod tests {
         info!("TEST: test_source_tracking_default");
         let env_overrides: HashMap<String, String> = HashMap::new();
 
-        let loaded =
-            load_config_with_sources_from_paths(None, None, Some(&env_overrides))
-                .expect("load_config_with_sources_from_paths should succeed");
+        let loaded = load_config_with_sources_from_paths(None, None, Some(&env_overrides))
+            .expect("load_config_with_sources_from_paths should succeed");
 
         let source = loaded
             .sources
@@ -913,9 +912,8 @@ mod tests {
         let mut env_overrides: HashMap<String, String> = HashMap::new();
         env_overrides.insert("RCH_LOG_LEVEL".to_string(), "warn".to_string());
 
-        let loaded =
-            load_config_with_sources_from_paths(None, None, Some(&env_overrides))
-                .expect("load_config_with_sources_from_paths should succeed");
+        let loaded = load_config_with_sources_from_paths(None, None, Some(&env_overrides))
+            .expect("load_config_with_sources_from_paths should succeed");
 
         info!("RESULT: log_level={}", loaded.config.general.log_level);
         assert_eq!(loaded.config.general.log_level, "warn");

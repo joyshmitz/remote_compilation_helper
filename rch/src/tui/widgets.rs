@@ -700,11 +700,12 @@ fn render_scrollbar(
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::tui::state::{
-        ActiveBuild, BuildProgress, BuildStatus, CircuitState, LogViewState, Panel, TuiState,
-        WorkerState, WorkerStatus,
+        ActiveBuild, BuildProgress, BuildStatus, CircuitState, FilterState, LogViewState, Panel,
+        TuiState, WorkerState, WorkerStatus,
     };
     use chrono::Utc;
     use ratatui::backend::TestBackend;
@@ -779,12 +780,14 @@ mod tests {
     fn test_render_workers_panel_contains_ids() {
         init_test_logging();
         info!("TEST START: test_render_workers_panel_contains_ids");
-        let mut state = TuiState::default();
-        state.selected_panel = Panel::Workers;
-        state.workers = vec![
-            sample_worker("worker-a", WorkerStatus::Healthy, CircuitState::Closed),
-            sample_worker("worker-b", WorkerStatus::Degraded, CircuitState::HalfOpen),
-        ];
+        let state = TuiState {
+            selected_panel: Panel::Workers,
+            workers: vec![
+                sample_worker("worker-a", WorkerStatus::Healthy, CircuitState::Closed),
+                sample_worker("worker-b", WorkerStatus::Degraded, CircuitState::HalfOpen),
+            ],
+            ..Default::default()
+        };
         let content = render_to_string(60, 10, |f| {
             let colors = get_colors(false);
             render_workers_panel(f, Rect::new(0, 0, 60, 10), &state, &colors);
@@ -799,9 +802,11 @@ mod tests {
     fn test_render_active_builds_panel_shows_command() {
         init_test_logging();
         info!("TEST START: test_render_active_builds_panel_shows_command");
-        let mut state = TuiState::default();
-        state.selected_panel = Panel::ActiveBuilds;
-        state.active_builds = vec![sample_active_build("b1", "cargo build")];
+        let state = TuiState {
+            selected_panel: Panel::ActiveBuilds,
+            active_builds: vec![sample_active_build("b1", "cargo build")],
+            ..Default::default()
+        };
         let content = render_to_string(80, 10, |f| {
             let colors = get_colors(false);
             render_active_builds_panel(f, Rect::new(0, 0, 80, 10), &state, &colors);
@@ -815,9 +820,14 @@ mod tests {
     fn test_render_build_history_panel_shows_filtered_title() {
         init_test_logging();
         info!("TEST START: test_render_build_history_panel_shows_filtered_title");
-        let mut state = TuiState::default();
-        state.selected_panel = Panel::BuildHistory;
-        state.filter.query = "build".to_string();
+        let mut state = TuiState {
+            selected_panel: Panel::BuildHistory,
+            filter: FilterState {
+                query: "build".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         state.build_history.push_back(crate::tui::state::HistoricalBuild {
             id: "h1".to_string(),
             command: "cargo build".to_string(),
@@ -850,17 +860,19 @@ mod tests {
     fn test_render_logs_panel_scroll_indicator() {
         init_test_logging();
         info!("TEST START: test_render_logs_panel_scroll_indicator");
-        let mut state = TuiState::default();
         let mut log_view = LogViewState::default();
         for i in 0..10 {
             log_view.lines.push_back(format!("line {}", i));
         }
         log_view.scroll_offset = 2;
-        state.log_view = Some(log_view);
-        state.selected_panel = Panel::Logs;
-        let content = render_to_string(80, 8, |f| {
+        let state = TuiState {
+            log_view: Some(log_view),
+            selected_panel: Panel::Logs,
+            ..Default::default()
+        };
+        let content = render_to_string(80, 6, |f| {
             let colors = get_colors(false);
-            render_logs_panel(f, Rect::new(0, 0, 80, 8), &state, &colors);
+            render_logs_panel(f, Rect::new(0, 0, 80, 6), &state, &colors);
         });
         assert!(content.contains("[3-6/10]"));
         assert!(content.contains("AUTO"));
@@ -871,8 +883,10 @@ mod tests {
     fn test_render_help_overlay() {
         init_test_logging();
         info!("TEST START: test_render_help_overlay");
-        let mut state = TuiState::default();
-        state.show_help = true;
+        let state = TuiState {
+            show_help: true,
+            ..Default::default()
+        };
         let content = render_to_string(80, 24, |f| render(f, &state));
         assert!(content.contains("RCH Dashboard Help"));
         info!("TEST PASS: test_render_help_overlay");
@@ -882,9 +896,14 @@ mod tests {
     fn test_render_filter_input_overlay() {
         init_test_logging();
         info!("TEST START: test_render_filter_input_overlay");
-        let mut state = TuiState::default();
-        state.filter_mode = true;
-        state.filter.query = "abc".to_string();
+        let state = TuiState {
+            filter_mode: true,
+            filter: FilterState {
+                query: "abc".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let content = render_to_string(80, 24, |f| render(f, &state));
         assert!(content.contains("Search:"));
         assert!(content.contains("/abc"));
@@ -895,8 +914,10 @@ mod tests {
     fn test_render_error_bar() {
         init_test_logging();
         info!("TEST START: test_render_error_bar");
-        let mut state = TuiState::default();
-        state.error = Some("daemon down".to_string());
+        let state = TuiState {
+            error: Some("daemon down".to_string()),
+            ..Default::default()
+        };
         let content = render_to_string(80, 24, |f| render(f, &state));
         assert!(content.contains("Error:"));
         assert!(content.contains("daemon down"));
@@ -907,8 +928,10 @@ mod tests {
     fn test_render_copy_feedback() {
         init_test_logging();
         info!("TEST START: test_render_copy_feedback");
-        let mut state = TuiState::default();
-        state.last_copied = Some("payload".to_string());
+        let state = TuiState {
+            last_copied: Some("payload".to_string()),
+            ..Default::default()
+        };
         let content = render_to_string(80, 24, |f| render(f, &state));
         assert!(content.contains("Copied to clipboard!"));
         info!("TEST PASS: test_render_copy_feedback");

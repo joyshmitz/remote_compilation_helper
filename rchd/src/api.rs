@@ -97,6 +97,13 @@ pub struct WorkerStatusInfo {
     pub speed_score: f64,
     /// Last error message, if any.
     pub last_error: Option<String>,
+    /// Consecutive failure count.
+    pub consecutive_failures: u32,
+    /// Seconds until circuit auto-recovers (None if not open or cooldown elapsed).
+    pub recovery_in_secs: Option<u64>,
+    /// Recent health check results (true=success, false=failure).
+    /// Most recent result is at the end. Used for history visualization.
+    pub failure_history: Vec<bool>,
 }
 
 /// Active build information (placeholder).
@@ -560,13 +567,18 @@ async fn handle_status(ctx: &DaemonContext) -> Result<StatusResponse> {
             WorkerStatus::Disabled => "disabled",
         };
 
-        // Get circuit state from worker (default to Closed if not available)
-        let circuit_state = worker.circuit_state().await.unwrap_or(CircuitState::Closed);
+        // Get circuit state and stats from worker
+        let circuit_stats = worker.circuit_stats().await;
+        let circuit_state = circuit_stats.state();
         let circuit_str = match circuit_state {
             CircuitState::Closed => "closed",
             CircuitState::Open => "open",
             CircuitState::HalfOpen => "half_open",
         };
+
+        // Use default circuit config for recovery time calculation
+        let circuit_config = CircuitBreakerConfig::default();
+        let recovery_in_secs = circuit_stats.recovery_remaining_secs(&circuit_config);
 
         worker_infos.push(WorkerStatusInfo {
             id: worker.config.id.to_string(),
@@ -578,6 +590,9 @@ async fn handle_status(ctx: &DaemonContext) -> Result<StatusResponse> {
             total_slots: worker.config.total_slots,
             speed_score: worker.speed_score,
             last_error: worker.last_error().await,
+            consecutive_failures: circuit_stats.consecutive_failures(),
+            recovery_in_secs,
+            failure_history: circuit_stats.recent_results().to_vec(),
         });
 
         // Generate issues based on worker state
