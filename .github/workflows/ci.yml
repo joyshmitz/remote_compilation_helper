@@ -5,27 +5,44 @@ on:
     branches: [master, main]
   pull_request:
   schedule:
-    - cron: '0 6 * * 1'  # Weekly security scan
+    - cron: '0 6 * * 1'  # Weekly security scan on Monday 6 AM UTC
+
+# Cancel in-progress runs for the same branch/PR to save resources
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Minimal permissions - only what's needed
+permissions:
+  contents: read
+  pull-requests: write  # For benchmark comments
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Reduce network retries for faster failure
+  CARGO_NET_RETRY: 2
+  CARGO_HTTP_TIMEOUT: 30
 
 jobs:
-  # Fast syntax and type checking
+  # Fast syntax and type checking - gate for other jobs
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-01
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - run: cargo check --all-targets --all-features
 
   # Ensure consistent formatting
   fmt:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -37,6 +54,8 @@ jobs:
   # Lint checks with strict warnings
   clippy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: check
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -44,23 +63,41 @@ jobs:
           toolchain: nightly-2025-01-01
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
-  # Dependency vulnerability scanning
+  # Dependency vulnerability scanning - runs on PRs too for immediate feedback
   security:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  # Verify documentation builds without warnings
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-01-01
+      - uses: Swatinem/rust-cache@v2
+      - name: Build documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --all-features --workspace
+
   # Cross-platform test matrix
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
@@ -69,6 +106,8 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    needs: check
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -76,7 +115,8 @@ jobs:
           toolchain: nightly-2025-01-01
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ${{ matrix.os }}
+          shared-key: test-${{ matrix.os }}
+          cache-on-failure: true
       - name: Run tests
         env:
           RCH_MOCK_SSH: '1'
@@ -89,10 +129,12 @@ jobs:
           path: |
             target/debug/deps/*.log
             **/test-output.log
+          retention-days: 7
 
   # Integration testing with mock SSH
   e2e:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [check, clippy]
     steps:
       - uses: actions/checkout@v4
@@ -100,7 +142,9 @@ jobs:
         with:
           toolchain: nightly-2025-01-01
       - uses: Swatinem/rust-cache@v2
-      - name: Build
+        with:
+          cache-on-failure: true
+      - name: Build release binaries
         run: cargo build --release
       - name: Run E2E tests
         env:
@@ -115,24 +159,28 @@ jobs:
         with:
           name: e2e-logs
           path: e2e-output.log
+          retention-days: 14
 
   # Performance benchmark - verify latency budgets from AGENTS.md
   benchmark:
     runs-on: ubuntu-latest
-    needs: [check]
+    timeout-minutes: 30
+    needs: check
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-01
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: benchmark
+          cache-on-failure: true
       - name: Install Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Run benchmarks
-        run: |
-          cargo bench --bench classifier -- --save-baseline ci
+        run: cargo bench -p rch-common --bench classifier -- --save-baseline ci
       - name: Verify performance budgets
         run: python3 scripts/check_benchmark_budgets.py
       - name: Upload benchmark results
@@ -140,6 +188,7 @@ jobs:
         with:
           name: benchmark-results
           path: target/criterion/
+          retention-days: 30
       - name: Comment on PR with benchmark results
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
@@ -158,7 +207,7 @@ jobs:
               console.log('No summary file found, skipping comment');
             }
 
-  # Build release binaries for all targets
+  # Build release binaries for all targets (validates cross-compilation)
   build-release:
     strategy:
       fail-fast: false
@@ -172,6 +221,7 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             packages: gcc-aarch64-linux-gnu
+            linker: aarch64-linux-gnu-gcc
           - os: macos-latest
             target: x86_64-apple-darwin
           - os: macos-latest
@@ -179,6 +229,7 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     needs: [test, clippy]
     steps:
       - uses: actions/checkout@v4
@@ -189,10 +240,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release-${{ matrix.target }}
+          cache-on-failure: true
       - name: Install packages (Linux)
         if: matrix.packages
         run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
       - name: Build release
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
         run: cargo build --release --target ${{ matrix.target }}
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -205,10 +259,13 @@ jobs:
             target/${{ matrix.target }}/release/rchd.exe
             target/${{ matrix.target }}/release/rch-wkr
             target/${{ matrix.target }}/release/rch-wkr.exe
+          retention-days: 7
 
-  # Coverage reporting (optional - only on Linux)
+  # Coverage reporting (Linux only)
   coverage:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: check
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -217,6 +274,8 @@ jobs:
           components: llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Run coverage
         env:
           RCH_MOCK_SSH: '1'
@@ -225,3 +284,24 @@ jobs:
         with:
           files: lcov.info
           fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  # Final status check - useful for branch protection rules
+  ci-success:
+    runs-on: ubuntu-latest
+    needs: [check, fmt, clippy, security, test, e2e, build-release]
+    if: always()
+    steps:
+      - name: Check all jobs passed
+        run: |
+          if [ "${{ needs.check.result }}" != "success" ] || \
+             [ "${{ needs.fmt.result }}" != "success" ] || \
+             [ "${{ needs.clippy.result }}" != "success" ] || \
+             [ "${{ needs.security.result }}" != "success" ] || \
+             [ "${{ needs.test.result }}" != "success" ] || \
+             [ "${{ needs.e2e.result }}" != "success" ] || \
+             [ "${{ needs.build-release.result }}" != "success" ]; then
+            echo "One or more required jobs failed"
+            exit 1
+          fi
+          echo "All required CI checks passed!"
