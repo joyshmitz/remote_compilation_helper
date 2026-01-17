@@ -530,7 +530,9 @@ fn test_worker_selection_multiple() {
     assert!(response.contains("200 OK"), "Got: {}", response);
 
     let body = extract_json_body(&response).unwrap();
-    harness.logger.info(format!("[e2e::worker] SELECTION: scoring workers..."));
+    harness
+        .logger
+        .info("[e2e::worker] SELECTION: scoring workers...");
     harness.logger.info(format!("[e2e::worker] RESULT: {}", body));
 
     // Verify selection response contains reason
@@ -729,7 +731,7 @@ fn test_worker_handles_utf8_output() {
 
     // Verify the response is valid UTF-8 (already true since we're working with String)
     let body = extract_json_body(&response).unwrap();
-    assert!(body.len() > 0, "Expected non-empty response body");
+    assert!(!body.is_empty(), "Expected non-empty response body");
 
     harness.logger.info("[e2e::worker] VERIFY: UTF-8 output handled correctly");
     harness.logger.info("[e2e::worker] TEST PASS: test_worker_handles_utf8_output");

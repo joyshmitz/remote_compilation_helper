@@ -562,10 +562,15 @@ fn render_error_bar(frame: &mut Frame, error: &str, colors: &ColorScheme) {
 /// Render copy feedback.
 fn render_copy_feedback(frame: &mut Frame, colors: &ColorScheme) {
     let area = frame.area();
-    let feedback_area = Rect::new(area.width.saturating_sub(20), 1, 18, 1);
+    let message = "Copied to clipboard!";
+    let max_width = area.width.saturating_sub(2).max(1);
+    let width = (message.len() as u16).min(max_width);
+    let x = area.width.saturating_sub(width.saturating_add(1));
+    let feedback_area = Rect::new(x, 1, width, 1);
+    let visible = &message[..width as usize];
 
     let feedback = Paragraph::new(Span::styled(
-        "Copied to clipboard!",
+        visible,
         Style::default().fg(colors.success),
     ));
 
