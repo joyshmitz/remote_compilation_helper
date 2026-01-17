@@ -29,6 +29,7 @@ colored = "2"
 is-terminal = "0.4"
 terminal_size = "0.3"
 regex = "1"
+indicatif = { version = "0.17", features = ["tokio"] }
 
 [dev-dependencies]
 tempfile = "3"
