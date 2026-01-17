@@ -1,10 +1,14 @@
 'use client';
 
+import { useState } from 'react';
 import useSWR from 'swr';
-import { History, AlertTriangle, RefreshCw, CheckCircle, XCircle, Clock } from 'lucide-react';
+import { History, RefreshCw, CheckCircle, XCircle, Clock } from 'lucide-react';
 import { motion } from 'motion/react';
 import { formatDistanceToNow } from 'date-fns';
 import { api } from '@/lib/api';
+import { TableSkeleton } from '@/components/builds';
+import { Skeleton } from '@/components/ui/skeleton';
+import { ErrorState, errorHints } from '@/components/ui/error-state';
 import type { StatusResponse } from '@/lib/types';
 
 function formatDuration(ms: number): string {
@@ -13,7 +17,64 @@ function formatDuration(ms: number): string {
   return `${(ms / 60000).toFixed(1)}m`;
 }
 
+function BuildsPageSkeleton() {
+  return (
+    <div className="space-y-6" data-testid="builds-skeleton">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <Skeleton className="h-6 w-6 rounded-full" />
+            <Skeleton className="h-6 w-36" />
+          </div>
+          <Skeleton className="h-4 w-56 mt-2" />
+        </div>
+        <Skeleton className="h-9 w-9 rounded-lg" />
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div
+            key={`build-stat-skeleton-${index}`}
+            className="bg-surface border border-border rounded-lg p-4"
+          >
+            <Skeleton className="h-3 w-24 mb-2" />
+            <Skeleton className="h-7 w-16" />
+          </div>
+        ))}
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <Skeleton className="h-5 w-28" />
+        </div>
+        <div className="bg-surface border border-border rounded-lg divide-y divide-border">
+          {Array.from({ length: 2 }).map((_, index) => (
+            <div key={`active-skeleton-${index}`} className="p-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Skeleton className="h-2 w-2 rounded-full" />
+                <div className="space-y-2">
+                  <Skeleton className="h-3 w-28" />
+                  <Skeleton className="h-3 w-40" />
+                </div>
+              </div>
+              <Skeleton className="h-3 w-16" />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <Skeleton className="h-5 w-32" />
+        </div>
+        <TableSkeleton rows={6} columns={5} testId="builds-table-skeleton" />
+      </div>
+    </div>
+  );
+}
+
 export default function BuildsPage() {
+  const [isRetrying, setIsRetrying] = useState(false);
   const { data, error, isLoading, mutate, isValidating } = useSWR<StatusResponse>(
     'status',
     () => api.getStatus(),
@@ -23,19 +84,29 @@ export default function BuildsPage() {
     }
   );
 
+  const handleRetry = async () => {
+    setIsRetrying(true);
+    try {
+      await mutate();
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-muted-foreground">Loading build history...</div>
-      </div>
-    );
+    return <BuildsPageSkeleton />;
   }
 
   if (error || !data) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-4">
-        <AlertTriangle className="w-12 h-12 text-error" />
-        <div className="text-error font-medium">Failed to connect to daemon</div>
+      <div className="flex items-center justify-center h-full">
+        <ErrorState
+          error={error || 'Failed to load build history'}
+          title="Failed to connect to daemon"
+          hint={errorHints.daemonConnection}
+          onRetry={handleRetry}
+          isRetrying={isRetrying}
+        />
       </div>
     );
   }

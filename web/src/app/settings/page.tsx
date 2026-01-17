@@ -1,8 +1,11 @@
 'use client';
 
+import { useState } from 'react';
 import useSWR from 'swr';
-import { Settings, AlertTriangle, Server, Clock, Layers, Terminal } from 'lucide-react';
+import { Settings, Server, Clock, Layers, Terminal } from 'lucide-react';
 import { api } from '@/lib/api';
+import { Skeleton } from '@/components/ui/skeleton';
+import { ErrorState, errorHints } from '@/components/ui/error-state';
 import type { StatusResponse } from '@/lib/types';
 
 function formatUptime(seconds: number): string {
@@ -20,8 +23,37 @@ function formatUptime(seconds: number): string {
   return parts.join(' ');
 }
 
+function SettingsPageSkeleton() {
+  return (
+    <div className="space-y-6" data-testid="settings-skeleton">
+      <div>
+        <div className="flex items-center gap-2">
+          <Skeleton className="h-6 w-6 rounded-full" />
+          <Skeleton className="h-6 w-24" />
+        </div>
+        <Skeleton className="h-4 w-56 mt-2" />
+      </div>
+
+      {Array.from({ length: 4 }).map((_, index) => (
+        <div key={`settings-card-${index}`} className="bg-surface border border-border rounded-lg p-6">
+          <Skeleton className="h-5 w-40 mb-4" />
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            {Array.from({ length: 4 }).map((_, itemIndex) => (
+              <div key={`settings-item-${index}-${itemIndex}`} className="space-y-2">
+                <Skeleton className="h-3 w-20" />
+                <Skeleton className="h-4 w-32" />
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function SettingsPage() {
-  const { data, error, isLoading } = useSWR<StatusResponse>(
+  const [isRetrying, setIsRetrying] = useState(false);
+  const { data, error, isLoading, mutate } = useSWR<StatusResponse>(
     'status',
     () => api.getStatus(),
     {
@@ -30,19 +62,29 @@ export default function SettingsPage() {
     }
   );
 
+  const handleRetry = async () => {
+    setIsRetrying(true);
+    try {
+      await mutate();
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-muted-foreground">Loading settings...</div>
-      </div>
-    );
+    return <SettingsPageSkeleton />;
   }
 
   if (error || !data) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-4">
-        <AlertTriangle className="w-12 h-12 text-error" />
-        <div className="text-error font-medium">Failed to connect to daemon</div>
+      <div className="flex items-center justify-center h-full">
+        <ErrorState
+          error={error || 'Failed to load settings'}
+          title="Failed to connect to daemon"
+          hint={errorHints.daemonConnection}
+          onRetry={handleRetry}
+          isRetrying={isRetrying}
+        />
       </div>
     );
   }

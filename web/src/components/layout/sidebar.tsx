@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { Server, History, Settings, Activity, Home, Menu, X } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -79,13 +79,15 @@ function SidebarContent({ pathname, onNavigate, variant }: SidebarContentProps) 
 export function Sidebar() {
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [hydrated, setHydrated] = useState(false);
+  const hydratedRef = useRef(false);
 
   useEffect(() => {
-    setHydrated(true);
+    hydratedRef.current = true;
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored === 'true') {
+        // Load persisted state from localStorage after hydration
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setSidebarOpen(true);
       }
     } catch {
@@ -94,13 +96,13 @@ export function Sidebar() {
   }, []);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydratedRef.current) return;
     try {
       localStorage.setItem(STORAGE_KEY, String(sidebarOpen));
     } catch {
       // Ignore storage errors (private mode, disabled storage)
     }
-  }, [sidebarOpen, hydrated]);
+  }, [sidebarOpen]);
 
   return (
     <>

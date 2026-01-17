@@ -1,13 +1,76 @@
 'use client';
 
+import { useState } from 'react';
 import useSWR from 'swr';
-import { Activity, AlertTriangle, RefreshCw, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
+import { Activity, RefreshCw, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
 import { motion } from 'motion/react';
 import { api } from '@/lib/api';
 import { Progress } from '@/components/ui/progress';
+import { Skeleton } from '@/components/ui/skeleton';
+import { ErrorState, errorHints } from '@/components/ui/error-state';
 import type { BudgetStatusResponse } from '@/lib/types';
 
+function MetricsPageSkeleton() {
+  return (
+    <div className="space-y-6" data-testid="metrics-skeleton">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <Skeleton className="h-6 w-6 rounded-full" />
+            <Skeleton className="h-6 w-24" />
+          </div>
+          <Skeleton className="h-4 w-60 mt-2" />
+        </div>
+        <Skeleton className="h-9 w-9 rounded-lg" />
+      </div>
+
+      <div>
+        <div className="flex items-center gap-2 mb-3">
+          <Skeleton className="h-5 w-36" />
+          <Skeleton className="h-5 w-20 rounded-full" />
+        </div>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, index) => (
+            <div
+              key={`budget-skeleton-${index}`}
+              className="bg-surface border border-border rounded-lg p-4"
+            >
+              <div className="flex items-center justify-between mb-2">
+                <Skeleton className="h-4 w-28" />
+                <Skeleton className="h-4 w-4 rounded-full" />
+              </div>
+              <div className="space-y-2">
+                {Array.from({ length: 3 }).map((_, rowIndex) => (
+                  <div key={`budget-row-${rowIndex}`} className="flex justify-between">
+                    <Skeleton className="h-3 w-14" />
+                    <Skeleton className="h-3 w-16" />
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3">
+                <Skeleton className="h-1 w-full rounded-full" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <Skeleton className="h-5 w-40 mb-3" />
+        <div className="bg-surface border border-border rounded-lg p-4">
+          <div className="space-y-2">
+            {Array.from({ length: 6 }).map((_, index) => (
+              <Skeleton key={`metric-line-${index}`} className="h-3 w-full" />
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function MetricsPage() {
+  const [isRetrying, setIsRetrying] = useState(false);
   const { data: budgetData, error: budgetError, isLoading: budgetLoading, mutate, isValidating } = useSWR<BudgetStatusResponse>(
     'budget',
     () => api.getBudget(),
@@ -17,7 +80,7 @@ export default function MetricsPage() {
     }
   );
 
-  const { data: metricsText, error: metricsError, isLoading: metricsLoading } = useSWR<string>(
+  const { data: metricsText, error: metricsError, isLoading: metricsLoading, mutate: mutateMetrics } = useSWR<string>(
     'metrics',
     () => api.getMetrics(),
     {
@@ -26,19 +89,29 @@ export default function MetricsPage() {
     }
   );
 
+  const handleRetry = async () => {
+    setIsRetrying(true);
+    try {
+      await Promise.all([mutate(), mutateMetrics()]);
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+
   if (budgetLoading || metricsLoading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-muted-foreground">Loading metrics...</div>
-      </div>
-    );
+    return <MetricsPageSkeleton />;
   }
 
   if (budgetError || metricsError) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-4">
-        <AlertTriangle className="w-12 h-12 text-error" />
-        <div className="text-error font-medium">Failed to load metrics</div>
+      <div className="flex items-center justify-center h-full">
+        <ErrorState
+          error={budgetError || metricsError || 'Failed to load metrics'}
+          title="Failed to load metrics"
+          hint={errorHints.daemonConnection}
+          onRetry={handleRetry}
+          isRetrying={isRetrying}
+        />
       </div>
     );
   }

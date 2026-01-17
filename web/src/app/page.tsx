@@ -1,12 +1,15 @@
 'use client';
 
+import { useState } from 'react';
 import useSWR from 'swr';
 import { Server, Hammer, Clock, AlertTriangle } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Header } from '@/components/layout';
-import { WorkersGrid } from '@/components/workers';
-import { BuildHistoryTable } from '@/components/builds';
-import { StatCard } from '@/components/stats';
+import { BuildHistoryTable, TableSkeleton } from '@/components/builds';
+import { StatCard, StatCardSkeleton } from '@/components/stats';
+import { Skeleton } from '@/components/ui/skeleton';
+import { ErrorState, errorHints } from '@/components/ui/error-state';
+import { WorkersGrid, WorkersGridSkeleton } from '@/components/workers';
 import type { StatusResponse } from '@/lib/types';
 
 function formatDuration(ms: number): string {
@@ -15,8 +18,54 @@ function formatDuration(ms: number): string {
   return `${(ms / 60000).toFixed(1)}m`;
 }
 
+function DashboardSkeleton() {
+  return (
+    <div className="flex flex-col h-full" data-testid="dashboard-skeleton">
+      <div className="h-14 bg-surface border-b border-border flex items-center justify-between px-6">
+        <div className="flex items-center gap-4">
+          <Skeleton className="h-3 w-28" />
+          <Skeleton className="h-3 w-40" />
+        </div>
+        <Skeleton className="h-8 w-8 rounded-lg" />
+      </div>
+
+      <div className="flex-1 overflow-auto p-6 space-y-6">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <StatCardSkeleton key={`stat-skeleton-${index}`} />
+          ))}
+        </div>
+
+        <section>
+          <div className="flex items-center justify-between mb-4">
+            <Skeleton className="h-5 w-24" />
+            <Skeleton className="h-4 w-16" />
+          </div>
+          <WorkersGridSkeleton />
+        </section>
+
+        <section>
+          <div className="flex items-center justify-between mb-4">
+            <Skeleton className="h-5 w-32" />
+            <Skeleton className="h-4 w-20" />
+          </div>
+          <div className="bg-card border border-border rounded-lg p-4">
+            <TableSkeleton
+              rows={4}
+              columns={6}
+              className="border-0 rounded-none bg-transparent"
+              testId="build-history-skeleton"
+            />
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
 export default function DashboardPage() {
-  const { data, error, isLoading } = useSWR<StatusResponse>(
+  const [isRetrying, setIsRetrying] = useState(false);
+  const { data, error, isLoading, mutate } = useSWR<StatusResponse>(
     'status',
     () => api.getStatus(),
     {
@@ -25,22 +74,29 @@ export default function DashboardPage() {
     }
   );
 
+  const handleRetry = async () => {
+    setIsRetrying(true);
+    try {
+      await mutate();
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-muted-foreground">Loading dashboard...</div>
-      </div>
-    );
+    return <DashboardSkeleton />;
   }
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-4">
-        <AlertTriangle className="w-12 h-12 text-error" />
-        <div className="text-error font-medium">Failed to connect to daemon</div>
-        <div className="text-sm text-muted-foreground">
-          Make sure rchd is running: rchd start
-        </div>
+      <div className="flex items-center justify-center h-full">
+        <ErrorState
+          error={error}
+          title="Failed to connect to daemon"
+          hint={errorHints.daemonConnection}
+          onRetry={handleRetry}
+          isRetrying={isRetrying}
+        />
       </div>
     );
   }

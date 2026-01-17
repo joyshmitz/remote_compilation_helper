@@ -1,13 +1,36 @@
 'use client';
 
+import { useState } from 'react';
 import useSWR from 'swr';
-import { Server, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Server, RefreshCw } from 'lucide-react';
 import { motion } from 'motion/react';
 import { api } from '@/lib/api';
-import { WorkersGrid } from '@/components/workers';
+import { Skeleton } from '@/components/ui/skeleton';
+import { ErrorState, errorHints } from '@/components/ui/error-state';
+import { WorkersGrid, WorkersGridSkeleton } from '@/components/workers';
 import type { StatusResponse } from '@/lib/types';
 
+function WorkersPageSkeleton() {
+  return (
+    <div className="space-y-6" data-testid="workers-skeleton">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <Skeleton className="h-6 w-6 rounded-full" />
+            <Skeleton className="h-6 w-28" />
+          </div>
+          <Skeleton className="h-4 w-64 mt-2" />
+        </div>
+        <Skeleton className="h-9 w-9 rounded-lg" />
+      </div>
+
+      <WorkersGridSkeleton />
+    </div>
+  );
+}
+
 export default function WorkersPage() {
+  const [isRetrying, setIsRetrying] = useState(false);
   const { data, error, isLoading, mutate, isValidating } = useSWR<StatusResponse>(
     'status',
     () => api.getStatus(),
@@ -17,22 +40,29 @@ export default function WorkersPage() {
     }
   );
 
+  const handleRetry = async () => {
+    setIsRetrying(true);
+    try {
+      await mutate();
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-muted-foreground">Loading workers...</div>
-      </div>
-    );
+    return <WorkersPageSkeleton />;
   }
 
   if (error || !data) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-4">
-        <AlertTriangle className="w-12 h-12 text-error" />
-        <div className="text-error font-medium">Failed to connect to daemon</div>
-        <div className="text-sm text-muted-foreground">
-          Make sure rchd is running
-        </div>
+      <div className="flex items-center justify-center h-full">
+        <ErrorState
+          error={error || 'Failed to load workers'}
+          title="Failed to connect to daemon"
+          hint={errorHints.daemonConnection}
+          onRetry={handleRetry}
+          isRetrying={isRetrying}
+        />
       </div>
     );
   }
