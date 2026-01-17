@@ -6,7 +6,9 @@ use crate::ui::context::OutputContext;
 use crate::ui::theme::StatusIndicator;
 use anyhow::{Context, Result, bail};
 use directories::ProjectDirs;
-use rch_common::{RchConfig, SshClient, SshOptions, WorkerConfig, WorkerId};
+use rch_common::{
+    DiscoveredHost, RchConfig, SshClient, SshOptions, WorkerConfig, WorkerId, discover_all,
+};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -960,6 +962,339 @@ pub async fn workers_enable(worker_id: &str, ctx: &OutputContext) -> Result<()> 
     }
 
     Ok(())
+}
+
+/// Deploy rch-wkr binary to workers.
+///
+/// This is a stub implementation - actual deployment logic to be implemented.
+#[allow(dead_code)]
+pub async fn workers_deploy_binary(
+    worker_id: Option<String>,
+    all: bool,
+    force: bool,
+    dry_run: bool,
+    ctx: &OutputContext,
+) -> Result<()> {
+    let style = ctx.theme();
+
+    if worker_id.is_none() && !all {
+        if ctx.is_json() {
+            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+                "workers deploy-binary",
+                error_codes::CONFIG_INVALID,
+                "Specify either a worker ID or --all",
+            ));
+        } else {
+            println!(
+                "{} Specify either {} or {}",
+                StatusIndicator::Error.display(style),
+                style.highlight("<worker-id>"),
+                style.highlight("--all")
+            );
+        }
+        return Ok(());
+    }
+
+    // Stub implementation
+    if ctx.is_json() {
+        let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+            "workers deploy-binary",
+            error_codes::INTERNAL_ERROR,
+            "Binary deployment not yet implemented",
+        ));
+    } else {
+        println!(
+            "{} Binary deployment is not yet implemented.",
+            StatusIndicator::Warning.display(style)
+        );
+        println!(
+            "  {} This feature will deploy the rch-wkr binary to remote workers.",
+            style.muted("→")
+        );
+        if let Some(ref w) = worker_id {
+            println!("  {} Target worker: {}", style.muted("→"), style.highlight(w));
+        } else if all {
+            println!("  {} Target: all workers", style.muted("→"));
+        }
+        if force {
+            println!("  {} Force overwrite: yes", style.muted("→"));
+        }
+        if dry_run {
+            println!("  {} Dry run: yes (no changes will be made)", style.muted("→"));
+        }
+    }
+
+    let _ = (worker_id, all, force, dry_run); // Suppress unused warnings
+
+    Ok(())
+}
+
+/// Discover potential workers from SSH config and shell aliases.
+pub async fn workers_discover(
+    probe: bool,
+    add: bool,
+    yes: bool,
+    ctx: &OutputContext,
+) -> Result<()> {
+    let style = ctx.theme();
+
+    // Discover hosts from SSH config and shell aliases
+    let hosts = discover_all().context("Failed to discover hosts")?;
+
+    if hosts.is_empty() {
+        if ctx.is_json() {
+            let _ = ctx.json(&JsonResponse::ok(
+                "workers discover",
+                serde_json::json!({
+                    "discovered": [],
+                    "message": "No potential workers found"
+                }),
+            ));
+        } else {
+            println!(
+                "{} No potential workers found in SSH config or shell aliases.",
+                StatusIndicator::Warning.display(style)
+            );
+            println!();
+            println!("  {} Checked:", style.muted("→"));
+            println!("      ~/.ssh/config");
+            println!("      ~/.bashrc, ~/.zshrc");
+            println!("      ~/.bash_aliases, ~/.zsh_aliases");
+        }
+        return Ok(());
+    }
+
+    // JSON output
+    if ctx.is_json() {
+        let hosts_json: Vec<_> = hosts
+            .iter()
+            .map(|h| {
+                serde_json::json!({
+                    "alias": h.alias,
+                    "hostname": h.hostname,
+                    "user": h.user,
+                    "identity_file": h.identity_file,
+                    "port": h.port,
+                    "source": format!("{}", h.source),
+                })
+            })
+            .collect();
+
+        let _ = ctx.json(&JsonResponse::ok(
+            "workers discover",
+            serde_json::json!({
+                "discovered": hosts_json,
+                "count": hosts.len(),
+            }),
+        ));
+        return Ok(());
+    }
+
+    // Human-readable output
+    println!("{}", style.format_header("Discovered Potential Workers"));
+    println!();
+    println!(
+        "  Found {} potential worker(s):",
+        style.highlight(&hosts.len().to_string())
+    );
+    println!();
+
+    for host in &hosts {
+        println!(
+            "  {} {} {} {}@{}",
+            StatusIndicator::Info.display(style),
+            style.highlight(&host.alias),
+            style.muted("→"),
+            host.user,
+            host.hostname
+        );
+        if let Some(ref identity) = host.identity_file {
+            // Shorten path for display
+            let short_path = identity
+                .replace(&dirs::home_dir().map(|p| p.display().to_string()).unwrap_or_default(), "~");
+            println!("      {} Key: {}", style.muted("└"), short_path);
+        }
+        println!("      {} Source: {}", style.muted("└"), host.source);
+    }
+    println!();
+
+    // Probe hosts if requested
+    if probe {
+        println!("{}", style.format_header("Probing Hosts"));
+        println!();
+
+        for host in &hosts {
+            print!(
+                "  {} Probing {}... ",
+                StatusIndicator::Info.display(style),
+                style.highlight(&host.alias)
+            );
+
+            // Try to connect and get capabilities
+            let result = probe_host(host).await;
+
+            match result {
+                Ok(info) => {
+                    let status = if info.is_suitable() {
+                        style.success("OK")
+                    } else {
+                        style.warning("BELOW MINIMUM")
+                    };
+                    println!("{}", status);
+                    println!("      {}", info.summary());
+                    if !info.is_suitable() {
+                        println!(
+                            "      {} Minimum: 4 cores, 4GB RAM, 10GB disk",
+                            style.muted("⚠")
+                        );
+                    }
+                }
+                Err(e) => {
+                    println!("{} ({})", style.error("FAILED"), e);
+                }
+            }
+        }
+        println!();
+    }
+
+    // Add to workers.toml if requested
+    if add {
+        if !yes {
+            println!(
+                "{} The --add flag requires --yes for non-interactive mode.",
+                StatusIndicator::Warning.display(style)
+            );
+            println!(
+                "  {} Use: rch workers discover --add --yes",
+                style.muted("→")
+            );
+            return Ok(());
+        }
+
+        // Write to workers.toml
+        let config_dir = directories::ProjectDirs::from("com", "rch", "rch")
+            .map(|p| p.config_dir().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("~/.config/rch"));
+
+        std::fs::create_dir_all(&config_dir)?;
+        let workers_path = config_dir.join("workers.toml");
+
+        let mut content = String::new();
+        content.push_str("# Auto-discovered workers\n");
+        content.push_str("# Generated by: rch workers discover --add\n\n");
+
+        for host in &hosts {
+            content.push_str("[[workers]]\n");
+            content.push_str(&format!("id = \"{}\"\n", host.alias));
+            content.push_str(&format!("host = \"{}\"\n", host.hostname));
+            content.push_str(&format!("user = \"{}\"\n", host.user));
+            if let Some(ref identity) = host.identity_file {
+                content.push_str(&format!("identity_file = \"{}\"\n", identity));
+            }
+            content.push_str("total_slots = 16  # Adjust based on CPU cores\n");
+            content.push_str("priority = 100\n");
+            content.push('\n');
+        }
+
+        std::fs::write(&workers_path, content)?;
+        println!(
+            "{} Wrote {} worker(s) to {}",
+            StatusIndicator::Success.display(style),
+            hosts.len(),
+            workers_path.display()
+        );
+    }
+
+    // Hint about next steps
+    if !add && !probe {
+        println!("  {} Next steps:", style.muted("Hint"));
+        println!("      rch workers discover --probe   # Test SSH connectivity");
+        println!("      rch workers discover --add --yes  # Add to workers.toml");
+    }
+
+    Ok(())
+}
+
+/// Probe a discovered host to check connectivity and get comprehensive system info.
+async fn probe_host(host: &DiscoveredHost) -> Result<ProbeInfo> {
+    use tokio::process::Command;
+
+    // Build SSH command with a comprehensive probe script
+    let mut cmd = Command::new("ssh");
+    cmd.arg("-o").arg("BatchMode=yes");
+    cmd.arg("-o").arg("ConnectTimeout=10");
+    cmd.arg("-o").arg("StrictHostKeyChecking=accept-new");
+
+    if let Some(ref identity) = host.identity_file {
+        cmd.arg("-i").arg(identity);
+    }
+
+    let target = format!("{}@{}", host.user, host.hostname);
+    cmd.arg(&target);
+
+    // Single command that gathers all info in a parseable format
+    let probe_script = r#"echo "CORES:$(nproc 2>/dev/null || echo 0)"; \
+echo "MEM:$(free -g 2>/dev/null | awk '/Mem:/{print $2}' || echo 0)"; \
+echo "DISK:$(df -BG /tmp 2>/dev/null | awk 'NR==2{gsub("G","",$4); print $4}' || echo 0)"; \
+echo "RUST:$(rustc --version 2>/dev/null || echo none)"; \
+echo "ARCH:$(uname -m 2>/dev/null || echo unknown)""#;
+
+    cmd.arg(probe_script);
+
+    let output = cmd.output().await.context("Failed to execute SSH")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("SSH failed: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut info = ProbeInfo::default();
+
+    // Parse the output
+    for line in stdout.lines() {
+        if let Some((key, value)) = line.split_once(':') {
+            match key {
+                "CORES" => info.cores = value.trim().parse().unwrap_or(0),
+                "MEM" => info.memory_gb = value.trim().parse().unwrap_or(0),
+                "DISK" => info.disk_gb = value.trim().parse().unwrap_or(0),
+                "RUST" => {
+                    let v = value.trim();
+                    info.rust_version = if v == "none" { None } else { Some(v.to_string()) };
+                }
+                "ARCH" => info.arch = value.trim().to_string(),
+                _ => {}
+            }
+        }
+    }
+
+    Ok(info)
+}
+
+/// Information gathered from probing a host.
+#[derive(Default)]
+struct ProbeInfo {
+    cores: u32,
+    memory_gb: u32,
+    disk_gb: u32,
+    rust_version: Option<String>,
+    arch: String,
+}
+
+impl ProbeInfo {
+    /// Check if host meets minimum requirements for a worker.
+    fn is_suitable(&self) -> bool {
+        self.cores >= 4 && self.memory_gb >= 4 && self.disk_gb >= 10
+    }
+
+    /// Get a short summary string.
+    fn summary(&self) -> String {
+        let rust = self.rust_version.as_deref().unwrap_or("not installed");
+        format!(
+            "{} cores, {}GB RAM, {}GB free, {} ({})",
+            self.cores, self.memory_gb, self.disk_gb, self.arch, rust
+        )
+    }
 }
 
 // =============================================================================

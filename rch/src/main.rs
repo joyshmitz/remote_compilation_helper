@@ -331,6 +331,36 @@ enum WorkersAction {
     Drain { worker: String },
     /// Enable a worker
     Enable { worker: String },
+    /// Deploy rch-wkr binary to remote workers
+    DeployBinary {
+        /// Worker ID to deploy to, or --all for all workers
+        worker: Option<String>,
+        /// Deploy to all workers
+        #[arg(long)]
+        all: bool,
+        /// Force deployment even if version matches
+        #[arg(long)]
+        force: bool,
+        /// Show planned actions without executing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Discover potential workers from SSH config and shell aliases
+    #[command(after_help = r#"EXAMPLES:
+    rch workers discover           # List discovered hosts
+    rch workers discover --probe   # Probe discovered hosts for connectivity
+    rch workers discover --add     # Add discovered hosts to workers.toml"#)]
+    Discover {
+        /// Probe discovered hosts for SSH connectivity
+        #[arg(long)]
+        probe: bool,
+        /// Add discovered hosts to workers.toml
+        #[arg(long)]
+        add: bool,
+        /// Skip interactive confirmation when adding
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -542,6 +572,17 @@ async fn handle_workers(action: WorkersAction, ctx: &OutputContext) -> Result<()
         }
         WorkersAction::Enable { worker } => {
             commands::workers_enable(&worker, ctx).await?;
+        }
+        WorkersAction::DeployBinary {
+            worker,
+            all,
+            force,
+            dry_run,
+        } => {
+            commands::workers_deploy_binary(worker, all, force, dry_run, ctx).await?;
+        }
+        WorkersAction::Discover { probe, add, yes } => {
+            commands::workers_discover(probe, add, yes, ctx).await?;
         }
     }
     Ok(())
