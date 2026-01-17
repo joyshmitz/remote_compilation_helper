@@ -2209,6 +2209,7 @@ dependencies = [
  "opentelemetry_sdk",
  "prometheus",
  "rch-common",
+ "rch-telemetry",
  "serde",
  "serde_json",
  "tempfile",

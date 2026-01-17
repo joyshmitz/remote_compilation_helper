@@ -180,6 +180,8 @@ export default function BuildsPage() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 className="p-4 flex items-center justify-between"
+                data-testid="active-build"
+                data-build-id={build.id}
               >
                 <div className="flex items-center gap-3">
                   <div className="w-2 h-2 rounded-full bg-warning animate-pulse" />
@@ -207,7 +209,7 @@ export default function BuildsPage() {
           </div>
         ) : (
           <div className="bg-surface border border-border rounded-lg overflow-hidden">
-            <table className="w-full text-sm">
+            <table className="w-full text-sm" data-testid="builds-table">
               <thead className="bg-surface-elevated">
                 <tr>
                   <th className="text-left p-3 font-medium text-muted-foreground">Project</th>
@@ -219,7 +221,12 @@ export default function BuildsPage() {
               </thead>
               <tbody className="divide-y divide-border">
                 {recent_builds.map((build) => (
-                  <tr key={build.id} className="hover:bg-surface-elevated/50">
+                  <tr
+                    key={build.id}
+                    className="hover:bg-surface-elevated/50"
+                    data-testid="build-row"
+                    data-build-id={build.id}
+                  >
                     <td className="p-3 font-mono">{build.project_id}</td>
                     <td className="p-3 text-muted-foreground">{build.worker_id}</td>
                     <td className="p-3 font-mono">{formatDuration(build.duration_ms)}</td>

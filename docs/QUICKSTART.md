@@ -116,16 +116,22 @@ The agent never knew compilation ran remotely!
 
 ## Verify It's Working
 
-```bash
-# Check worker connectivity
-rch workers probe --all
+Quick checks:
 
-# See active compilations
+```bash
+# Hook + daemon health
+rch hook status
+rch daemon status
+
+# Active and recent builds
 rch status --jobs
 
-# View worker health
+# Worker health and slots
 rch status --workers
 ```
+
+Need deeper verification or live monitoring? See the
+[Verifying RCH Is Working](./guides/verification.md) guide.
 
 ## Next Steps
 

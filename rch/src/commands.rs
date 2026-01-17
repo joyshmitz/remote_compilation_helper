@@ -2,7 +2,7 @@
 //!
 //! This module contains the actual business logic for each CLI subcommand.
 
-use crate::error::ConfigError;
+use crate::error::{ConfigError, SshError};
 use crate::ui::context::OutputContext;
 use crate::ui::theme::StatusIndicator;
 use anyhow::{Context, Result, bail};
@@ -15,6 +15,7 @@ use rch_common::{
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::process::Command;
@@ -624,7 +625,8 @@ pub async fn workers_probe(
             );
         }
 
-        let mut client = SshClient::new(worker.clone(), SshOptions::default());
+        let ssh_options = SshOptions::default();
+        let mut client = SshClient::new(worker.clone(), ssh_options.clone());
 
         match client.connect().await {
             Ok(()) => {
@@ -665,19 +667,21 @@ pub async fn workers_probe(
                         }
                     }
                     Err(e) => {
+                        let ssh_error = classify_ssh_error(worker, &e, ssh_options.connect_timeout);
+                        let report = format_ssh_report(ssh_error);
                         if ctx.is_json() {
                             results.push(WorkerProbeResult {
                                 id: worker.id.as_str().to_string(),
                                 host: worker.host.clone(),
                                 status: "error".to_string(),
                                 latency_ms: None,
-                                error: Some(e.to_string()),
+                                error: Some(report),
                             });
                         } else {
                             println!(
-                                "{} {}",
+                                "{} Health check failed:\n{}",
                                 StatusIndicator::Error.display(style),
-                                style.error(&e.to_string())
+                                indent_lines(&report, "    ")
                             );
                         }
                     }
@@ -685,19 +689,21 @@ pub async fn workers_probe(
                 let _ = client.disconnect().await;
             }
             Err(e) => {
+                let ssh_error = classify_ssh_error(worker, &e, ssh_options.connect_timeout);
+                let report = format_ssh_report(ssh_error);
                 if ctx.is_json() {
                     results.push(WorkerProbeResult {
                         id: worker.id.as_str().to_string(),
                         host: worker.host.clone(),
                         status: "connection_failed".to_string(),
                         latency_ms: None,
-                        error: Some(e.to_string()),
+                        error: Some(report),
                     });
                 } else {
                     println!(
-                        "{} Connection failed: {}",
+                        "{} Connection failed:\n{}",
                         StatusIndicator::Error.display(style),
-                        style.muted(&e.to_string())
+                        indent_lines(&report, "    ")
                     );
                 }
             }
@@ -709,6 +715,84 @@ pub async fn workers_probe(
     }
 
     Ok(())
+}
+
+fn classify_ssh_error(worker: &WorkerConfig, err: &anyhow::Error, timeout: Duration) -> SshError {
+    let message = err.to_string();
+    let message_lower = message.to_lowercase();
+    let key_path = ssh_key_path(worker);
+
+    if message_lower.contains("permission denied") || message_lower.contains("publickey") {
+        return SshError::PermissionDenied {
+            host: worker.host.clone(),
+            user: worker.user.clone(),
+            key_path,
+        };
+    }
+
+    if message_lower.contains("connection refused") {
+        return SshError::ConnectionRefused {
+            host: worker.host.clone(),
+            user: worker.user.clone(),
+            key_path,
+        };
+    }
+
+    if message_lower.contains("timed out") || message_lower.contains("timeout") {
+        return SshError::ConnectionTimeout {
+            host: worker.host.clone(),
+            user: worker.user.clone(),
+            key_path,
+            timeout_secs: timeout.as_secs().max(1),
+        };
+    }
+
+    if message_lower.contains("host key verification failed")
+        || message_lower.contains("known_hosts")
+    {
+        return SshError::HostKeyVerificationFailed {
+            host: worker.host.clone(),
+            user: worker.user.clone(),
+            key_path,
+        };
+    }
+
+    if message_lower.contains("authentication agent")
+        || (message_lower.contains("agent") && message_lower.contains("no identities"))
+    {
+        return SshError::AgentUnavailable {
+            host: worker.host.clone(),
+            user: worker.user.clone(),
+            key_path,
+        };
+    }
+
+    SshError::ConnectionFailed {
+        host: worker.host.clone(),
+        user: worker.user.clone(),
+        key_path,
+        message,
+    }
+}
+
+fn ssh_key_path(worker: &WorkerConfig) -> PathBuf {
+    PathBuf::from(shellexpand::tilde(&worker.identity_file).to_string())
+}
+
+fn format_ssh_report(error: SshError) -> String {
+    format!("{:?}", miette::Report::new(error))
+}
+
+fn indent_lines(text: &str, prefix: &str) -> String {
+    let mut out = String::new();
+    for (idx, line) in text.lines().enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        out.push_str(prefix);
+        out.push_str(line);
+    }
+    out
 }
 
 /// Worker benchmark result for JSON output.

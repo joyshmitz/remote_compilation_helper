@@ -713,6 +713,9 @@ fn check_ssh_keys(
         checks.push(result);
     }
 
+    // Check worker identity files from config
+    check_worker_identity_files(checks, ctx, options, fixes_applied);
+
     // Check SSH config
     let ssh_config_result = check_ssh_config();
     print_check_result(&ssh_config_result, ctx);
@@ -815,6 +818,68 @@ fn check_ssh_key_permissions(
             fixable: false,
         },
     }
+}
+
+fn check_worker_identity_files(
+    checks: &mut Vec<CheckResult>,
+    ctx: &OutputContext,
+    options: &DoctorOptions,
+    fixes_applied: &mut Vec<FixApplied>,
+) {
+    let workers = match load_workers_from_config() {
+        Ok(w) => w,
+        Err(_) => return,
+    };
+
+    for worker in workers {
+        let key_path = PathBuf::from(shellexpand::tilde(&worker.identity_file).to_string());
+        let name = format!("worker_key:{}", worker.id.as_str());
+        let suggestion = ssh_worker_suggestion(&worker.user, &worker.host, &key_path);
+
+        if !key_path.exists() {
+            let result = CheckResult {
+                category: "ssh".to_string(),
+                name,
+                status: CheckStatus::Warning,
+                message: format!("Identity file missing for worker {}", worker.id.as_str()),
+                details: Some(key_path.display().to_string()),
+                suggestion: Some(suggestion),
+                fixable: false,
+            };
+            print_check_result(&result, ctx);
+            checks.push(result);
+            continue;
+        }
+
+        let key_result = check_ssh_key_permissions(&key_path, options, fixes_applied);
+        let status = key_result.status;
+        let mut message = key_result.message;
+        message.push_str(&format!(" (worker {})", worker.id.as_str()));
+
+        let result = CheckResult {
+            category: "ssh".to_string(),
+            name,
+            status,
+            message,
+            details: key_result.details,
+            suggestion: Some(suggestion),
+            fixable: key_result.fixable,
+        };
+        print_check_result(&result, ctx);
+        checks.push(result);
+    }
+}
+
+fn ssh_worker_suggestion(user: &str, host: &str, key_path: &Path) -> String {
+    let key = key_path.display();
+    format!(
+        "Copy key: ssh-copy-id -i {key} {user}@{host}; \
+Test: ssh -i {key} {user}@{host} echo \"success\"; \
+Debug: ssh -vvv -i {key} {user}@{host}",
+        key = key,
+        user = user,
+        host = host
+    )
 }
 
 fn check_ssh_config() -> CheckResult {

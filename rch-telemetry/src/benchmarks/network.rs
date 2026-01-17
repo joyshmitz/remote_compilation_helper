@@ -865,7 +865,7 @@ mod tests {
         let payload = benchmark.generate_test_payload().unwrap();
         let size = std::fs::metadata(payload.path()).unwrap().len();
         info!("RESULT: Generated file of {} bytes", size);
-        assert_eq!(size, 1 * 1024 * 1024);
+        assert_eq!(size, 1024 * 1024);
         info!("VERIFY: Payload is exactly 1MB");
 
         info!("TEST PASS: test_payload_generation");

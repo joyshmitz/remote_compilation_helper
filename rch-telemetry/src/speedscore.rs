@@ -95,23 +95,11 @@ impl SpeedScore {
         );
 
         // Normalize each component to 0-100
-        let cpu_score = results
-            .cpu
-            .as_ref()
-            .map(normalize_cpu)
-            .unwrap_or(0.0);
+        let cpu_score = results.cpu.as_ref().map(normalize_cpu).unwrap_or(0.0);
 
-        let memory_score = results
-            .memory
-            .as_ref()
-            .map(normalize_memory)
-            .unwrap_or(0.0);
+        let memory_score = results.memory.as_ref().map(normalize_memory).unwrap_or(0.0);
 
-        let disk_score = results
-            .disk
-            .as_ref()
-            .map(normalize_disk)
-            .unwrap_or(0.0);
+        let disk_score = results.disk.as_ref().map(normalize_disk).unwrap_or(0.0);
 
         let network_score = results
             .network
@@ -465,9 +453,25 @@ fn normalize_disk(result: &DiskBenchmarkResult) -> f64 {
 
 /// Normalize network benchmark result to 0-100.
 fn normalize_network(result: &NetworkBenchmarkResult) -> f64 {
-    // The network benchmark already calculates a 0-100 score
-    // We can use it directly or recalculate for consistency
-    result.score
+    // Throughput average (upload + download)
+    let throughput_avg = (result.upload_mbps + result.download_mbps) / 2.0;
+    let throughput_score = normalize(
+        throughput_avg,
+        reference::NETWORK_LOW,
+        reference::NETWORK_HIGH,
+        true,
+    );
+
+    // Latency (lower is better)
+    let latency_score = normalize(
+        result.latency_ms,
+        reference::LATENCY_HIGH,
+        reference::LATENCY_LOW,
+        false,
+    );
+
+    // Combine: 60% throughput, 40% latency
+    throughput_score * 0.6 + latency_score * 0.4
 }
 
 /// Normalize compilation benchmark result to 0-100.
@@ -716,9 +720,7 @@ mod tests {
             .with_cpu(CpuBenchmarkResult::default())
             .with_memory(MemoryBenchmarkResult::default());
 
-        info!(
-            "INPUT: BenchmarkResults with CPU and memory, missing disk/network/compilation"
-        );
+        info!("INPUT: BenchmarkResults with CPU and memory, missing disk/network/compilation");
         info!("RESULT: component_count = {}", results.component_count());
 
         assert!(!results.is_complete());
@@ -816,8 +818,12 @@ mod tests {
         info!("INPUT: Full BenchmarkResults with all components");
         info!(
             "RESULT: total={:.1}, cpu={:.1}, memory={:.1}, disk={:.1}, network={:.1}, compilation={:.1}",
-            score.total, score.cpu_score, score.memory_score, score.disk_score,
-            score.network_score, score.compilation_score
+            score.total,
+            score.cpu_score,
+            score.memory_score,
+            score.disk_score,
+            score.network_score,
+            score.compilation_score
         );
 
         assert!(score.total > 0.0 && score.total <= 100.0);
@@ -836,25 +842,22 @@ mod tests {
         init_test_logging();
         info!("TEST START: test_speedscore_rating");
 
-        let mut score = SpeedScore::default();
+        let cases = [
+            (95.0, "Excellent"),
+            (80.0, "Very Good"),
+            (65.0, "Good"),
+            (50.0, "Average"),
+            (35.0, "Below Average"),
+            (20.0, "Poor"),
+        ];
 
-        score.total = 95.0;
-        assert_eq!(score.rating(), "Excellent");
-
-        score.total = 80.0;
-        assert_eq!(score.rating(), "Very Good");
-
-        score.total = 65.0;
-        assert_eq!(score.rating(), "Good");
-
-        score.total = 50.0;
-        assert_eq!(score.rating(), "Average");
-
-        score.total = 35.0;
-        assert_eq!(score.rating(), "Below Average");
-
-        score.total = 20.0;
-        assert_eq!(score.rating(), "Poor");
+        for (total, expected) in cases {
+            let score = SpeedScore {
+                total,
+                ..Default::default()
+            };
+            assert_eq!(score.rating(), expected);
+        }
 
         info!("VERIFY: All rating thresholds work correctly");
         info!("TEST PASS: test_speedscore_rating");
@@ -880,7 +883,8 @@ mod tests {
         let json = serde_json::to_string(&score).expect("serialization should succeed");
         info!("RESULT: Serialized to JSON (len={})", json.len());
 
-        let deser: SpeedScore = serde_json::from_str(&json).expect("deserialization should succeed");
+        let deser: SpeedScore =
+            serde_json::from_str(&json).expect("deserialization should succeed");
 
         assert_eq!(score.total, deser.total);
         assert_eq!(score.cpu_score, deser.cpu_score);
@@ -928,9 +932,7 @@ mod tests {
             });
 
         let score = SpeedScore::calculate(&results);
-        info!(
-            "INPUT: Extreme high benchmark values"
-        );
+        info!("INPUT: Extreme high benchmark values");
         info!("RESULT: total={}, cpu={}", score.total, score.cpu_score);
 
         assert!(score.total >= 0.0 && score.total <= 100.0);
@@ -938,12 +940,11 @@ mod tests {
         info!("VERIFY: Scores clamped to 0-100 range");
 
         // Extreme low values
-        let results = BenchmarkResults::new()
-            .with_cpu(CpuBenchmarkResult {
-                score: 0.0,
-                ops_per_second: 0.0,
-                ..Default::default()
-            });
+        let results = BenchmarkResults::new().with_cpu(CpuBenchmarkResult {
+            score: 0.0,
+            ops_per_second: 0.0,
+            ..Default::default()
+        });
 
         let score = SpeedScore::calculate(&results);
         info!("INPUT: Extreme low benchmark values");

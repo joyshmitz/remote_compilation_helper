@@ -33,5 +33,5 @@ pub use collect::network::{
     NetDevStats, NetworkCollector, NetworkError, NetworkMetrics, NetworkTelemetry,
 };
 pub use speedscore::{
-    calculate_speedscore, BenchmarkResults, SpeedScore, SpeedScoreWeights, SPEEDSCORE_VERSION,
+    BenchmarkResults, SPEEDSCORE_VERSION, SpeedScore, SpeedScoreWeights, calculate_speedscore,
 };

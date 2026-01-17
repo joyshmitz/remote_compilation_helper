@@ -173,6 +173,140 @@ pub enum WorkerError {
 }
 
 // =============================================================================
+// SSH Errors
+// =============================================================================
+
+/// Errors related to SSH connectivity and authentication.
+#[derive(Error, Diagnostic, Debug)]
+pub enum SshError {
+    /// SSH authentication failed (permission denied).
+    #[error("SSH authentication failed for {user}@{host}")]
+    #[diagnostic(
+        code(rch::ssh::permission_denied),
+        help(
+            "SSH Troubleshooting:\n\
+  1. Verify key exists:\n\
+     ls -la {key_path:?}\n\n\
+  2. Generate a key if needed:\n\
+     ssh-keygen -t ed25519 -f {key_path:?}\n\n\
+  3. Copy key to worker:\n\
+     ssh-copy-id -i {key_path:?} {user}@{host}\n\n\
+  4. Test connection manually:\n\
+     ssh -i {key_path:?} {user}@{host} echo \"success\"\n\n\
+  5. If using SSH agent:\n\
+     eval $(ssh-agent) && ssh-add {key_path:?}\n\n\
+  6. Debug with verbose logs:\n\
+     ssh -vvv -i {key_path:?} {user}@{host}\n\n\
+Run 'rch doctor' for comprehensive SSH diagnostics."
+        )
+    )]
+    PermissionDenied {
+        host: String,
+        user: String,
+        key_path: PathBuf,
+    },
+
+    /// SSH connection was refused by the host.
+    #[error("SSH connection refused for {user}@{host}")]
+    #[diagnostic(
+        code(rch::ssh::connection_refused),
+        help(
+            "SSH Troubleshooting:\n\
+  1. Ensure sshd is running on the worker and port 22 is open.\n\
+  2. If using a custom port, configure it in ~/.ssh/config and workers.toml.\n\
+  3. Debug with verbose logs:\n\
+     ssh -vvv -i {key_path:?} {user}@{host}\n\n\
+Run 'rch doctor' for comprehensive SSH diagnostics."
+        )
+    )]
+    ConnectionRefused {
+        host: String,
+        user: String,
+        key_path: PathBuf,
+    },
+
+    /// SSH connection timed out.
+    #[error("SSH connection to {host} timed out after {timeout_secs}s")]
+    #[diagnostic(
+        code(rch::ssh::timeout),
+        help(
+            "SSH Troubleshooting:\n\
+  1. Check network connectivity and firewall rules.\n\
+  2. Verify the host is reachable:\n\
+     ssh -vvv -i {key_path:?} {user}@{host}\n\n\
+Run 'rch doctor' for comprehensive SSH diagnostics."
+        )
+    )]
+    ConnectionTimeout {
+        host: String,
+        user: String,
+        key_path: PathBuf,
+        timeout_secs: u64,
+    },
+
+    /// SSH host key verification failed.
+    #[error("SSH host key verification failed for {host}")]
+    #[diagnostic(
+        code(rch::ssh::host_key_verification_failed),
+        help(
+            "SSH Troubleshooting:\n\
+  1. Remove the old host key:\n\
+     ssh-keygen -R {host}\n\n\
+  2. Fetch and trust the new host key:\n\
+     ssh-keyscan -H {host} >> ~/.ssh/known_hosts\n\n\
+  3. Retry with verbose logs:\n\
+     ssh -vvv -i {key_path:?} {user}@{host}\n\n\
+Run 'rch doctor' for comprehensive SSH diagnostics."
+        )
+    )]
+    HostKeyVerificationFailed {
+        host: String,
+        user: String,
+        key_path: PathBuf,
+    },
+
+    /// SSH agent is unavailable or has no keys.
+    #[error("SSH agent unavailable for key {key_path}")]
+    #[diagnostic(
+        code(rch::ssh::agent_unavailable),
+        help(
+            "SSH Troubleshooting:\n\
+  1. Start the SSH agent and add your key:\n\
+     eval $(ssh-agent) && ssh-add {key_path:?}\n\n\
+  2. Verify agent has keys:\n\
+     ssh-add -L\n\n\
+  3. Retry with verbose logs:\n\
+     ssh -vvv -i {key_path:?} {user}@{host}\n\n\
+Run 'rch doctor' for comprehensive SSH diagnostics."
+        )
+    )]
+    AgentUnavailable {
+        host: String,
+        user: String,
+        key_path: PathBuf,
+    },
+
+    /// Generic SSH connection failure.
+    #[error("SSH connection failed for {user}@{host}: {message}")]
+    #[diagnostic(
+        code(rch::ssh::connection_failed),
+        help(
+            "SSH Troubleshooting:\n\
+  1. Verify host/user/key in workers.toml.\n\
+  2. Try a manual connection with verbose logs:\n\
+     ssh -vvv -i {key_path:?} {user}@{host}\n\n\
+Run 'rch doctor' for comprehensive SSH diagnostics."
+        )
+    )]
+    ConnectionFailed {
+        host: String,
+        user: String,
+        key_path: PathBuf,
+        message: String,
+    },
+}
+
+// =============================================================================
 // Daemon Errors
 // =============================================================================
 
@@ -427,6 +561,7 @@ pub enum UpdateError {
 mod tests {
     use super::*;
     use miette::Report;
+    use tracing::info;
 
     // =========================================================================
     // ConfigError Tests
@@ -543,6 +678,86 @@ mod tests {
 
         assert!(formatted.contains("missing"));
         assert!(formatted.contains("rch workers list"));
+    }
+
+    // =========================================================================
+    // SshError Tests
+    // =========================================================================
+
+    #[test]
+    fn test_ssh_permission_denied_includes_guidance() {
+        info!("TEST START: test_ssh_permission_denied_includes_guidance");
+        let err = SshError::PermissionDenied {
+            host: "gpu-1".to_string(),
+            user: "ubuntu".to_string(),
+            key_path: PathBuf::from("/home/user/.ssh/id_rsa"),
+        };
+        info!("INPUT: SshError::PermissionDenied for ubuntu@gpu-1");
+        let report = Report::new(err);
+        let formatted = format!("{:?}", report);
+        info!("RESULT: Error message:\n{formatted}");
+
+        assert!(
+            formatted.contains("ssh-copy-id"),
+            "Should include ssh-copy-id guidance: {formatted}"
+        );
+        assert!(
+            formatted.contains("ubuntu@gpu-1"),
+            "Should include host/user: {formatted}"
+        );
+        assert!(
+            formatted.contains("/home/user/.ssh/id_rsa"),
+            "Should include key path: {formatted}"
+        );
+        info!("VERIFY: Message includes ssh-copy-id command with actual host/path");
+        info!("TEST PASS: test_ssh_permission_denied_includes_guidance");
+    }
+
+    #[test]
+    fn test_ssh_timeout_includes_guidance() {
+        info!("TEST START: test_ssh_timeout_includes_guidance");
+        let err = SshError::ConnectionTimeout {
+            host: "10.0.0.5".to_string(),
+            user: "ubuntu".to_string(),
+            key_path: PathBuf::from("/home/user/.ssh/id_rsa"),
+            timeout_secs: 30,
+        };
+        info!("INPUT: SshError::ConnectionTimeout for 10.0.0.5");
+        let report = Report::new(err);
+        let formatted = format!("{:?}", report);
+        info!("RESULT: Error message:\n{formatted}");
+
+        assert!(
+            formatted.contains("firewall") || formatted.contains("network"),
+            "Should include network/firewall guidance: {formatted}"
+        );
+        assert!(
+            formatted.contains("10.0.0.5"),
+            "Should include host: {formatted}"
+        );
+        info!("VERIFY: Message includes network troubleshooting guidance");
+        info!("TEST PASS: test_ssh_timeout_includes_guidance");
+    }
+
+    #[test]
+    fn test_ssh_host_key_includes_guidance() {
+        info!("TEST START: test_ssh_host_key_includes_guidance");
+        let err = SshError::HostKeyVerificationFailed {
+            host: "gpu-1".to_string(),
+            user: "ubuntu".to_string(),
+            key_path: PathBuf::from("/home/user/.ssh/id_rsa"),
+        };
+        info!("INPUT: SshError::HostKeyVerificationFailed");
+        let report = Report::new(err);
+        let formatted = format!("{:?}", report);
+        info!("RESULT: Error message:\n{formatted}");
+
+        assert!(
+            formatted.contains("known_hosts") || formatted.contains("ssh-keyscan"),
+            "Should include known_hosts troubleshooting: {formatted}"
+        );
+        info!("VERIFY: Message includes known_hosts troubleshooting");
+        info!("TEST PASS: test_ssh_host_key_includes_guidance");
     }
 
     // =========================================================================

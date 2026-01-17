@@ -188,32 +188,60 @@ rch config show | grep -A5 "\[transfer\]"
 
 **Understanding:**
 
-The circuit breaker opens after repeated failures to protect the system. States:
-- **Closed**: Normal operation
-- **Open**: Worker excluded (after failures)
-- **Half-open**: Probing to see if worker recovered
+RCH uses a per-worker circuit breaker to prevent cascading failures. Think of it
+like an electrical breaker: after repeated failures, it "opens" and stops
+routing builds to that worker until the cooldown expires.
+
+**States:**
+- **Closed**: Normal operation (worker accepts jobs)
+- **Open**: Worker excluded after failures; cooldown running
+- **Half-open**: Limited probes to test recovery
+
+**Transitions (defaults):**
+- **Closed → Open**: 3 consecutive failures or high error rate (>= 50% in 60s)
+- **Open → Half-open**: cooldown elapsed (30s)
+- **Half-open → Closed**: 2 consecutive successes
+- **Half-open → Open**: any failure
 
 **Diagnosis:**
 
 ```bash
-# Check circuit state
+# Check circuit state (summary)
 rch status --workers
 
-# View failure history
+# Detailed circuit status
+rch status --circuits
+
+# Failure history and recent events
 rch workers history my-worker
+rch daemon logs | grep -i circuit
 ```
 
 **Solutions:**
 
 ```bash
-# Wait for automatic recovery (half-open probes)
+# Wait for automatic recovery (half-open probes after cooldown)
 
-# Or manually reset if worker is fixed
+# Manually reset once the worker is fixed
 rch workers reset my-worker
 
 # Force re-probe
 rch workers probe my-worker
 ```
+
+**Configuration (config.toml):**
+
+```toml
+[circuit]
+failure_threshold = 3        # consecutive failures to open
+success_threshold = 2        # consecutive successes to close
+error_rate_threshold = 0.5   # error rate to open within window
+window_secs = 60             # rolling window size
+open_cooldown_secs = 30      # cooldown before half-open
+half_open_max_probes = 1     # concurrent probes allowed
+```
+
+See the full guide: `docs/guides/circuit-breaker.md`.
 
 ### 7. Classification Wrong (Non-build Commands Offloaded)
 

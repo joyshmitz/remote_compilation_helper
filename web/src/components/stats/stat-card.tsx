@@ -19,6 +19,7 @@ export function StatCard({ label, value, icon: Icon, trend }: StatCardProps) {
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
       className="bg-card border border-border rounded-lg p-4"
+      data-testid="stat-card"
     >
       <div className="flex items-center justify-between mb-2">
         <span className="text-sm text-muted-foreground">{label}</span>

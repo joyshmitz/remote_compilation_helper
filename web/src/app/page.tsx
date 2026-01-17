@@ -65,6 +65,7 @@ function DashboardSkeleton() {
 
 export default function DashboardPage() {
   const [isRetrying, setIsRetrying] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const { data, error, isLoading, mutate } = useSWR<StatusResponse>(
     'status',
     () => api.getStatus(),
@@ -80,6 +81,15 @@ export default function DashboardPage() {
       await mutate();
     } finally {
       setIsRetrying(false);
+    }
+  };
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    try {
+      await mutate();
+    } finally {
+      setIsRefreshing(false);
     }
   };
 
@@ -108,7 +118,11 @@ export default function DashboardPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <Header daemon={status.daemon} />
+      <Header
+        daemon={status.daemon}
+        onRefresh={handleRefresh}
+        isRefreshing={isRefreshing}
+      />
 
       <div className="flex-1 overflow-auto p-6 space-y-6">
         {/* Stats Grid */}

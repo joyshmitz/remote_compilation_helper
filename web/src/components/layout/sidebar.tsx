@@ -34,7 +34,7 @@ function SidebarContent({ pathname, onNavigate, variant }: SidebarContentProps) 
         </Link>
       </div>
 
-      <nav className="flex-1 p-4">
+      <nav className="flex-1 p-4" aria-label="Primary">
         <ul className="space-y-1">
           {navItems.map((item) => {
             const isActive = pathname === item.href;
@@ -43,11 +43,12 @@ function SidebarContent({ pathname, onNavigate, variant }: SidebarContentProps) 
                 <Link
                   href={item.href}
                   onClick={onNavigate}
+                  aria-current={isActive ? 'page' : undefined}
                   className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-colors relative ${
                     isActive
                       ? 'text-primary'
                       : 'text-muted-foreground hover:text-foreground hover:bg-surface-elevated'
-                  }`}
+                  } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface`}
                 >
                   {isActive && (
                     <motion.div
