@@ -22,8 +22,9 @@ impl UpdateLock {
 
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| UpdateError::InstallFailed(format!("Failed to create lock dir: {}", e)))?;
+            fs::create_dir_all(parent).map_err(|e| {
+                UpdateError::InstallFailed(format!("Failed to create lock dir: {}", e))
+            })?;
         }
 
         // Check if lock file exists and if the process is still running
@@ -43,8 +44,9 @@ impl UpdateLock {
         }
 
         // Write our PID to the lock file
-        let mut file = File::create(&path)
-            .map_err(|e| UpdateError::InstallFailed(format!("Failed to create lock file: {}", e)))?;
+        let mut file = File::create(&path).map_err(|e| {
+            UpdateError::InstallFailed(format!("Failed to create lock file: {}", e))
+        })?;
 
         write!(file, "{}", std::process::id())
             .map_err(|e| UpdateError::InstallFailed(format!("Failed to write lock file: {}", e)))?;
@@ -80,8 +82,9 @@ impl Drop for UpdateLock {
 
 /// Get the path to the lock file.
 fn get_lock_path() -> Result<PathBuf, UpdateError> {
-    let data_dir = dirs::data_dir()
-        .ok_or_else(|| UpdateError::InstallFailed("Could not determine data directory".to_string()))?;
+    let data_dir = dirs::data_dir().ok_or_else(|| {
+        UpdateError::InstallFailed("Could not determine data directory".to_string())
+    })?;
 
     Ok(data_dir.join("rch/update.lock"))
 }

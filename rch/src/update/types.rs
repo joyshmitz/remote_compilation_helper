@@ -292,8 +292,6 @@ mod tests {
         let target = current_target();
         assert!(!target.is_empty());
         // Should contain architecture
-        assert!(
-            target.contains("x86_64") || target.contains("aarch64") || target.contains("arm")
-        );
+        assert!(target.contains("x86_64") || target.contains("aarch64") || target.contains("arm"));
     }
 }

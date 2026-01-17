@@ -38,13 +38,13 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub use exit_codes::{
-    ALREADY_CURRENT, CONFIG, DAEMON_DOWN, ERROR, LOCKED, NEEDS_MIGRATION, NEEDS_SETUP,
-    NO_WORKERS, OK, USAGE,
+    ALREADY_CURRENT, CONFIG, DAEMON_DOWN, ERROR, LOCKED, NEEDS_MIGRATION, NEEDS_SETUP, NO_WORKERS,
+    OK, USAGE,
 };
 pub use lock::ConfigLock;
 pub use primitives::{
-    append_line_if_missing, atomic_write, create_backup, create_if_missing, ensure_directory,
-    ensure_symlink, update_if_changed, IdempotentResult,
+    IdempotentResult, append_line_if_missing, atomic_write, create_backup, create_if_missing,
+    ensure_directory, ensure_symlink, update_if_changed,
 };
 
 /// Complete RCH installation state.
@@ -303,8 +303,8 @@ pub fn detect_state() -> Result<RchState> {
 
 /// Detect user configuration state.
 fn detect_user_config(issues: &mut Vec<StateIssue>) -> Result<ConfigState> {
-    let config_dir = dirs::config_dir()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine config directory"))?;
+    let config_dir =
+        dirs::config_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine config directory"))?;
     let config_path = config_dir.join("rch/config.toml");
 
     let exists = config_path.exists();
@@ -362,7 +362,7 @@ fn detect_user_config(issues: &mut Vec<StateIssue>) -> Result<ConfigState> {
 }
 
 /// Detect project configuration state.
-fn detect_project_config(_issues: &mut Vec<StateIssue>) -> Result<ConfigState> {
+fn detect_project_config(_issues: &mut [StateIssue]) -> Result<ConfigState> {
     let cwd = std::env::current_dir().context("Cannot determine current directory")?;
     let config_path = cwd.join(".rch/config.toml");
 
@@ -397,8 +397,8 @@ fn detect_project_config(_issues: &mut Vec<StateIssue>) -> Result<ConfigState> {
 
 /// Detect workers configuration state.
 fn detect_workers_state(issues: &mut Vec<StateIssue>) -> Result<WorkersState> {
-    let config_dir = dirs::config_dir()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine config directory"))?;
+    let config_dir =
+        dirs::config_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine config directory"))?;
     let config_path = config_dir.join("rch/workers.toml");
 
     let exists = config_path.exists();
@@ -502,13 +502,12 @@ fn detect_daemon_state(issues: &mut Vec<StateIssue>) -> Result<DaemonState> {
 }
 
 /// Detect hooks state.
-fn detect_hooks_state(_issues: &mut Vec<StateIssue>) -> Result<Vec<AgentHookState>> {
+fn detect_hooks_state(_issues: &mut [StateIssue]) -> Result<Vec<AgentHookState>> {
     // Check for Claude Code hook
     let mut hooks = Vec::new();
 
     // Claude Code settings location
-    let claude_settings = dirs::config_dir()
-        .map(|p| p.join("claude-code/settings.json"));
+    let claude_settings = dirs::config_dir().map(|p| p.join("claude-code/settings.json"));
 
     if let Some(path) = claude_settings {
         let registered = path.exists();
@@ -567,8 +566,9 @@ fn determine_overall_status(components: &ComponentStates, issues: &[StateIssue])
 
     // Check for basic setup requirements
     let config_ready = components.user_config.exists && components.user_config.valid;
-    let workers_ready =
-        components.workers.exists && components.workers.valid && components.workers.worker_count > 0;
+    let workers_ready = components.workers.exists
+        && components.workers.valid
+        && components.workers.worker_count > 0;
 
     if !config_ready || !workers_ready {
         return InstallStatus::NeedsSetup;
@@ -592,8 +592,7 @@ pub fn state_to_exit_code(state: &RchState) -> i32 {
     if let Some(issue) = state
         .issues
         .iter()
-        .filter(|i| i.severity == IssueSeverity::Critical)
-        .next()
+        .find(|i| i.severity == IssueSeverity::Critical)
     {
         return issue.exit_code;
     }
@@ -617,7 +616,10 @@ mod tests {
         assert_eq!(format!("{}", InstallStatus::NeedsSetup), "needs setup");
         assert_eq!(format!("{}", InstallStatus::NotInstalled), "not installed");
         assert_eq!(format!("{}", InstallStatus::Degraded), "degraded");
-        assert_eq!(format!("{}", InstallStatus::NeedsMigration), "needs migration");
+        assert_eq!(
+            format!("{}", InstallStatus::NeedsMigration),
+            "needs migration"
+        );
     }
 
     #[test]

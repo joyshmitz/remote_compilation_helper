@@ -3,7 +3,7 @@
 //! This module provides a `ConfigLock` that uses file-based locking with
 //! timeout support and stale lock detection.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -404,8 +404,7 @@ mod tests {
     fn test_lock_holder() {
         let tmp = TempDir::new().unwrap();
         let lock_dir = tmp.path().join("locks");
-        let _lock =
-            ConfigLock::acquire_in_dir(&lock_dir, "holder_test", "test operation").unwrap();
+        let _lock = ConfigLock::acquire_in_dir(&lock_dir, "holder_test", "test operation").unwrap();
 
         let holder = ConfigLock::lock_holder_in_dir(&lock_dir, "holder_test").unwrap();
         assert!(holder.is_some());

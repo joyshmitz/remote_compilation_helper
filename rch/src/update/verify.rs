@@ -42,8 +42,8 @@ pub async fn verify_checksum(
     let sha256_actual = compute_sha256(file_path).await?;
 
     // Check both BLAKE3 and SHA256
-    let checksum_valid = actual.eq_ignore_ascii_case(expected)
-        || sha256_actual.eq_ignore_ascii_case(expected);
+    let checksum_valid =
+        actual.eq_ignore_ascii_case(expected) || sha256_actual.eq_ignore_ascii_case(expected);
 
     if !checksum_valid {
         return Err(UpdateError::ChecksumMismatch {

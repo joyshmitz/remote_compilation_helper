@@ -4,7 +4,7 @@
 //! repeatedly without side effects. All write operations use the write-to-temp-
 //! then-rename pattern to ensure atomicity.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
@@ -386,8 +386,7 @@ pub fn ensure_symlink(link: &Path, target: &Path) -> Result<IdempotentResult> {
 /// * `AlreadyExists` - Line already exists in file
 pub fn append_line_if_missing(path: &Path, line: &str) -> Result<IdempotentResult> {
     let content = if path.exists() {
-        fs::read_to_string(path)
-            .with_context(|| format!("Failed to read file: {:?}", path))?
+        fs::read_to_string(path).with_context(|| format!("Failed to read file: {:?}", path))?
     } else {
         String::new()
     };
@@ -431,8 +430,7 @@ pub fn ensure_directory(path: &Path) -> Result<IdempotentResult> {
         return Err(anyhow!("Path exists but is not a directory: {:?}", path));
     }
 
-    fs::create_dir_all(path)
-        .with_context(|| format!("Failed to create directory: {:?}", path))?;
+    fs::create_dir_all(path).with_context(|| format!("Failed to create directory: {:?}", path))?;
 
     Ok(IdempotentResult::Created)
 }
@@ -481,11 +479,7 @@ mod tests {
         let tmp_files: Vec<_> = fs::read_dir(tmp.path())
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .is_some_and(|ext| ext == "tmp")
-            })
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "tmp"))
             .collect();
         assert!(tmp_files.is_empty(), "Temp files should be cleaned up");
     }

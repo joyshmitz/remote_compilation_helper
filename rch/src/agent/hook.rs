@@ -3,7 +3,7 @@
 //! Provides idempotent hook installation and management for supported agents.
 
 use super::types::AgentKind;
-use crate::state::primitives::{atomic_write, create_backup, IdempotentResult};
+use crate::state::primitives::{IdempotentResult, atomic_write, create_backup};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -103,11 +103,11 @@ fn check_claude_code_hook() -> Result<HookStatus> {
         return Ok(HookStatus::NotInstalled);
     }
 
-    let content = std::fs::read_to_string(&settings_path)
-        .context("Failed to read Claude Code settings")?;
+    let content =
+        std::fs::read_to_string(&settings_path).context("Failed to read Claude Code settings")?;
 
-    let settings: Value = serde_json::from_str(&content)
-        .context("Failed to parse Claude Code settings")?;
+    let settings: Value =
+        serde_json::from_str(&content).context("Failed to parse Claude Code settings")?;
 
     // Check for PreToolUse hook with rch
     if let Some(hooks) = settings.get("hooks") {
@@ -325,7 +325,8 @@ fn install_gemini_cli_hook(dry_run: bool) -> Result<IdempotentResult> {
         .entry("hooks")
         .or_insert_with(|| serde_json::json!({}));
 
-    let hooks_obj = hooks.as_object_mut()
+    let hooks_obj = hooks
+        .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("Hooks is not an object"))?;
 
     let pre_tool_use = hooks_obj
@@ -370,7 +371,8 @@ fn uninstall_gemini_cli_hook(dry_run: bool) -> Result<IdempotentResult> {
         if let Some(pre_tool_use) = hooks.get_mut("pre_tool_use") {
             if let Some(arr) = pre_tool_use.as_array_mut() {
                 arr.retain(|hook| {
-                    !hook.get("command")
+                    !hook
+                        .get("command")
                         .and_then(|c| c.as_str())
                         .map(|c| c.contains("rch"))
                         .unwrap_or(false)
@@ -551,10 +553,7 @@ fn install_continue_dev_hook(dry_run: bool) -> Result<IdempotentResult> {
         .or_insert_with(|| serde_json::json!({}));
 
     if let Some(exp_obj) = experimental.as_object_mut() {
-        exp_obj.insert(
-            "preCompileCommand".to_string(),
-            serde_json::json!("rch"),
-        );
+        exp_obj.insert("preCompileCommand".to_string(), serde_json::json!("rch"));
     }
 
     let content = serde_json::to_string_pretty(&config)?;

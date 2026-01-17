@@ -139,7 +139,9 @@ pub fn classify_command(cmd: &str) -> Classification {
             // Ensure exact match or boundary match (e.g. "cargo clean" matches "cargo clean"
             // or "cargo clean ", but NOT "cargo cleanup")
             if rest.is_empty() || rest.starts_with(' ') {
-                return Classification::not_compilation(format!("matches never-intercept: {pattern}"));
+                return Classification::not_compilation(format!(
+                    "matches never-intercept: {pattern}"
+                ));
             }
         }
     }

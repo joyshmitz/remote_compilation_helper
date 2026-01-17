@@ -430,9 +430,7 @@ async fn main() -> Result<()> {
                 generate_completions(shell);
                 Ok(())
             }
-            Commands::Doctor { fix, install_deps } => {
-                handle_doctor(fix, install_deps, &ctx).await
-            }
+            Commands::Doctor { fix, install_deps } => handle_doctor(fix, install_deps, &ctx).await,
             Commands::Update {
                 check,
                 version,
@@ -577,6 +575,7 @@ async fn handle_doctor(fix: bool, install_deps: bool, ctx: &OutputContext) -> Re
     crate::doctor::run_doctor(ctx, options).await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_update(
     ctx: &OutputContext,
     check_only: bool,
@@ -615,10 +614,5 @@ async fn handle_update(
 
 /// Generate shell completion scripts for static installation
 fn generate_completions(shell: clap_complete::Shell) {
-    clap_complete::generate(
-        shell,
-        &mut Cli::command(),
-        "rch",
-        &mut std::io::stdout(),
-    );
+    clap_complete::generate(shell, &mut Cli::command(), "rch", &mut std::io::stdout());
 }

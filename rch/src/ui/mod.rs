@@ -68,7 +68,7 @@ pub use progress::{
     MultiProgressManager, Spinner, StepProgress, TransferProgress, with_spinner,
     with_spinner_result,
 };
-pub use theme::{SemanticColors, StatusIndicator, Theme, Symbols};
+pub use theme::{SemanticColors, StatusIndicator, Symbols, Theme};
 pub use writer::{OutputBuffer, OutputWriter, SharedOutputBuffer};
 
 // Test utilities are public for integration tests

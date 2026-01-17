@@ -2,7 +2,7 @@
 //!
 //! Runs comprehensive diagnostics and optionally auto-fixes common issues.
 
-use crate::commands::{config_dir, load_workers_from_config, JsonResponse};
+use crate::commands::{JsonResponse, config_dir, load_workers_from_config};
 use crate::ui::context::OutputContext;
 use crate::ui::theme::StatusIndicator;
 use anyhow::Result;
@@ -110,21 +110,27 @@ pub async fn run_doctor(ctx: &OutputContext, options: DoctorOptions) -> Result<(
     // Calculate summary
     let summary = DoctorSummary {
         total: checks.len(),
-        passed: checks.iter().filter(|c| c.status == CheckStatus::Pass).count(),
-        warnings: checks.iter().filter(|c| c.status == CheckStatus::Warning).count(),
-        failed: checks.iter().filter(|c| c.status == CheckStatus::Fail).count(),
+        passed: checks
+            .iter()
+            .filter(|c| c.status == CheckStatus::Pass)
+            .count(),
+        warnings: checks
+            .iter()
+            .filter(|c| c.status == CheckStatus::Warning)
+            .count(),
+        failed: checks
+            .iter()
+            .filter(|c| c.status == CheckStatus::Fail)
+            .count(),
     };
 
     // Output results
     if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok(
-            "doctor",
-            DoctorResponse {
-                checks,
-                summary,
-                fixes_applied,
-            },
-        ));
+        let _ = ctx.json(&JsonResponse::ok("doctor", DoctorResponse {
+            checks,
+            summary,
+            fixes_applied,
+        }));
     } else {
         // Print summary
         println!();
@@ -198,7 +204,11 @@ pub async fn run_doctor(ctx: &OutputContext, options: DoctorOptions) -> Result<(
 // Prerequisite Checks
 // =============================================================================
 
-fn check_prerequisites(checks: &mut Vec<CheckResult>, ctx: &OutputContext, _options: &DoctorOptions) {
+fn check_prerequisites(
+    checks: &mut Vec<CheckResult>,
+    ctx: &OutputContext,
+    _options: &DoctorOptions,
+) {
     let style = ctx.theme();
 
     if !ctx.is_json() {
@@ -257,7 +267,11 @@ fn check_command_exists(cmd: &str, description: &str) -> CheckResult {
     CheckResult {
         category: "prerequisites".to_string(),
         name: cmd.to_string(),
-        status: if exists { CheckStatus::Pass } else { CheckStatus::Fail },
+        status: if exists {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Fail
+        },
         message: if exists {
             format!("{} is installed", description)
         } else {
@@ -277,7 +291,11 @@ fn check_command_exists(cmd: &str, description: &str) -> CheckResult {
 // Configuration Checks
 // =============================================================================
 
-fn check_configuration(checks: &mut Vec<CheckResult>, ctx: &OutputContext, _options: &DoctorOptions) {
+fn check_configuration(
+    checks: &mut Vec<CheckResult>,
+    ctx: &OutputContext,
+    _options: &DoctorOptions,
+) {
     let style = ctx.theme();
 
     if !ctx.is_json() {
@@ -354,7 +372,7 @@ fn check_config_file() -> CheckResult {
                 details: None,
                 suggestion: None,
                 fixable: false,
-            }
+            };
         }
     };
 
@@ -415,7 +433,7 @@ fn check_workers_file() -> CheckResult {
                 details: None,
                 suggestion: None,
                 fixable: false,
-            }
+            };
         }
     };
 
@@ -575,10 +593,8 @@ fn check_ssh_key_permissions(
             } else {
                 // Try to fix if requested
                 if options.fix {
-                    match std::fs::set_permissions(
-                        key_path,
-                        std::fs::Permissions::from_mode(0o600),
-                    ) {
+                    match std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))
+                    {
                         Ok(()) => {
                             fixes_applied.push(FixApplied {
                                 check_name: key_name.clone(),
@@ -663,7 +679,9 @@ fn check_ssh_config() -> CheckResult {
             status: CheckStatus::Warning,
             message: "No SSH config file".to_string(),
             details: Some(ssh_config.display().to_string()),
-            suggestion: Some("Consider creating ~/.ssh/config for custom host settings".to_string()),
+            suggestion: Some(
+                "Consider creating ~/.ssh/config for custom host settings".to_string(),
+            ),
             fixable: false,
         }
     }
@@ -806,7 +824,11 @@ fn check_claude_code_hook() -> CheckResult {
 // Worker Checks
 // =============================================================================
 
-async fn check_workers(checks: &mut Vec<CheckResult>, ctx: &OutputContext, options: &DoctorOptions) {
+async fn check_workers(
+    checks: &mut Vec<CheckResult>,
+    ctx: &OutputContext,
+    options: &DoctorOptions,
+) {
     let style = ctx.theme();
 
     if !ctx.is_json() {
@@ -869,7 +891,10 @@ async fn check_workers(checks: &mut Vec<CheckResult>, ctx: &OutputContext, optio
 
     // Only probe workers in verbose mode
     if options.verbose && !ctx.is_json() {
-        println!("  {}", style.muted("(use --verbose to probe worker connectivity)"));
+        println!(
+            "  {}",
+            style.muted("(use --verbose to probe worker connectivity)")
+        );
     }
 
     if !ctx.is_json() {

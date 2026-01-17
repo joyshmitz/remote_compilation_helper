@@ -73,12 +73,7 @@ fn parse_env_file(path: &Path) -> Result<Vec<(String, String)>> {
                 value[1..value.len() - 1].to_string()
             } else {
                 // Remove inline comments (not inside quotes)
-                value
-                    .split('#')
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .to_string()
+                value.split('#').next().unwrap_or("").trim().to_string()
             };
 
             if key.is_empty() {
@@ -146,11 +141,7 @@ mod tests {
     fn test_parse_env_file_quoted() {
         let tmp = TempDir::new().unwrap();
         let env_file = tmp.path().join(".env");
-        fs::write(
-            &env_file,
-            "DOUBLE=\"hello world\"\nSINGLE='single quoted'",
-        )
-        .unwrap();
+        fs::write(&env_file, "DOUBLE=\"hello world\"\nSINGLE='single quoted'").unwrap();
 
         let vars = parse_env_file(&env_file).unwrap();
         assert_eq!(vars.len(), 2);

@@ -239,9 +239,15 @@ mod tests {
 
     #[test]
     fn test_agent_kind_from_id() {
-        assert_eq!(AgentKind::from_id("claude-code"), Some(AgentKind::ClaudeCode));
+        assert_eq!(
+            AgentKind::from_id("claude-code"),
+            Some(AgentKind::ClaudeCode)
+        );
         assert_eq!(AgentKind::from_id("claude"), Some(AgentKind::ClaudeCode));
-        assert_eq!(AgentKind::from_id("CLAUDE-CODE"), Some(AgentKind::ClaudeCode));
+        assert_eq!(
+            AgentKind::from_id("CLAUDE-CODE"),
+            Some(AgentKind::ClaudeCode)
+        );
         assert_eq!(AgentKind::from_id("unknown"), None);
     }
 

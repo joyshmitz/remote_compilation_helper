@@ -28,6 +28,5 @@ pub use types::{
 
 // Config module re-exports
 pub use config::{
-    ConfigSource, ConfigWarning, EnvError, EnvParser, Profile, Severity, Sourced,
-    validate_config,
+    ConfigSource, ConfigWarning, EnvError, EnvParser, Profile, Severity, Sourced, validate_config,
 };

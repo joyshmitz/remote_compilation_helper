@@ -9,12 +9,12 @@ use rch_common::{
     CommandResult, SshClient, SshOptions, ToolchainInfo, TransferConfig, WorkerConfig,
     wrap_command_with_toolchain,
 };
+use shell_escape::escape;
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
 use tracing::{debug, info, warn};
-use shell_escape::escape;
-use std::borrow::Cow;
 
 /// Remote project path prefix.
 const REMOTE_BASE: &str = "/tmp/rch";
@@ -103,7 +103,7 @@ impl TransferPipeline {
 
         // Build rsync command with excludes
         let mut cmd = Command::new("rsync");
-        
+
         let identity_file = shellexpand::tilde(&worker.identity_file);
         let escaped_identity = escape(Cow::from(identity_file.as_ref()));
 
@@ -283,7 +283,7 @@ impl TransferPipeline {
         info!("Retrieving artifacts from {} on {}", remote_path, worker.id);
 
         let mut cmd = Command::new("rsync");
-        
+
         let identity_file = shellexpand::tilde(&worker.identity_file);
         let escaped_identity = escape(Cow::from(identity_file.as_ref()));
 
@@ -368,7 +368,9 @@ impl TransferPipeline {
         let mut client = SshClient::new(worker.clone(), self.ssh_options.clone());
         client.connect().await?;
 
-        let result = client.execute(&format!("rm -rf {}", escaped_remote_path)).await?;
+        let result = client
+            .execute(&format!("rm -rf {}", escaped_remote_path))
+            .await?;
 
         client.disconnect().await?;
 

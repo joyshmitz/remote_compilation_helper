@@ -14,7 +14,7 @@ mod lock;
 mod types;
 mod verify;
 
-pub use check::{check_for_updates, UpdateCheck};
+pub use check::{UpdateCheck, check_for_updates};
 pub use download::download_release;
 pub use install::{install_update, rollback};
 pub use types::Channel;
@@ -23,6 +23,7 @@ use crate::ui::OutputContext;
 use anyhow::Result;
 
 /// Main entry point for the update command.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_update(
     ctx: &OutputContext,
     check_only: bool,

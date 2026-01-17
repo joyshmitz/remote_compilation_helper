@@ -177,8 +177,16 @@ mod tests {
         let defaults = Profile::Dev.get_defaults();
 
         // Should include both defaults when vars are unset
-        assert!(defaults.iter().any(|(k, v)| *k == "RCH_LOG_LEVEL" && *v == "debug"));
-        assert!(defaults.iter().any(|(k, v)| *k == "RCH_LOG_FORMAT" && *v == "pretty"));
+        assert!(
+            defaults
+                .iter()
+                .any(|(k, v)| *k == "RCH_LOG_LEVEL" && *v == "debug")
+        );
+        assert!(
+            defaults
+                .iter()
+                .any(|(k, v)| *k == "RCH_LOG_FORMAT" && *v == "pretty")
+        );
     }
 
     #[test]
@@ -191,8 +199,16 @@ mod tests {
         let defaults = Profile::Test.get_defaults();
 
         // Should include mock SSH and test mode
-        assert!(defaults.iter().any(|(k, v)| *k == "RCH_MOCK_SSH" && *v == "1"));
-        assert!(defaults.iter().any(|(k, v)| *k == "RCH_TEST_MODE" && *v == "1"));
+        assert!(
+            defaults
+                .iter()
+                .any(|(k, v)| *k == "RCH_MOCK_SSH" && *v == "1")
+        );
+        assert!(
+            defaults
+                .iter()
+                .any(|(k, v)| *k == "RCH_TEST_MODE" && *v == "1")
+        );
     }
 
     #[test]
@@ -205,7 +221,11 @@ mod tests {
         // Should NOT include RCH_LOG_LEVEL since it's already set
         assert!(!defaults.iter().any(|(k, _)| *k == "RCH_LOG_LEVEL"));
         // But should include RCH_LOG_FORMAT which isn't set
-        assert!(defaults.iter().any(|(k, v)| *k == "RCH_LOG_FORMAT" && *v == "pretty"));
+        assert!(
+            defaults
+                .iter()
+                .any(|(k, v)| *k == "RCH_LOG_FORMAT" && *v == "pretty")
+        );
 
         // Clean up
         remove_env("RCH_LOG_LEVEL");

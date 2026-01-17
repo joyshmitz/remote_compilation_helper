@@ -42,7 +42,10 @@ pub async fn install_update(
 
     // Backup current binaries
     if !ctx.is_json() {
-        println!("Backing up current installation to {}...", backup_dir.display());
+        println!(
+            "Backing up current installation to {}...",
+            backup_dir.display()
+        );
     }
     backup_current_installation(&install_dir, &backup_dir)?;
 
@@ -129,16 +132,18 @@ fn get_install_dir() -> Result<PathBuf, UpdateError> {
     }
 
     // Default to ~/.local/bin
-    let home = dirs::home_dir()
-        .ok_or_else(|| UpdateError::InstallFailed("Could not determine home directory".to_string()))?;
+    let home = dirs::home_dir().ok_or_else(|| {
+        UpdateError::InstallFailed("Could not determine home directory".to_string())
+    })?;
 
     Ok(home.join(".local/bin"))
 }
 
 /// Get the backup directory for a version.
 fn get_backup_dir(version: &str) -> Result<PathBuf, UpdateError> {
-    let data_dir = dirs::data_dir()
-        .ok_or_else(|| UpdateError::InstallFailed("Could not determine data directory".to_string()))?;
+    let data_dir = dirs::data_dir().ok_or_else(|| {
+        UpdateError::InstallFailed("Could not determine data directory".to_string())
+    })?;
 
     let backup_base = data_dir.join("rch/backups");
     std::fs::create_dir_all(&backup_base)
@@ -151,8 +156,9 @@ fn get_backup_dir(version: &str) -> Result<PathBuf, UpdateError> {
 
 /// Find the latest backup.
 fn find_latest_backup() -> Result<PathBuf, UpdateError> {
-    let data_dir = dirs::data_dir()
-        .ok_or_else(|| UpdateError::InstallFailed("Could not determine data directory".to_string()))?;
+    let data_dir = dirs::data_dir().ok_or_else(|| {
+        UpdateError::InstallFailed("Could not determine data directory".to_string())
+    })?;
 
     let backup_base = data_dir.join("rch/backups");
 
@@ -175,7 +181,10 @@ fn find_latest_backup() -> Result<PathBuf, UpdateError> {
 }
 
 /// Backup current installation.
-fn backup_current_installation(install_dir: &std::path::Path, backup_dir: &std::path::Path) -> Result<(), UpdateError> {
+fn backup_current_installation(
+    install_dir: &std::path::Path,
+    backup_dir: &std::path::Path,
+) -> Result<(), UpdateError> {
     std::fs::create_dir_all(backup_dir)
         .map_err(|e| UpdateError::InstallFailed(format!("Failed to create backup dir: {}", e)))?;
 
@@ -183,8 +192,9 @@ fn backup_current_installation(install_dir: &std::path::Path, backup_dir: &std::
         let src = install_dir.join(binary);
         if src.exists() {
             let dst = backup_dir.join(binary);
-            std::fs::copy(&src, &dst)
-                .map_err(|e| UpdateError::InstallFailed(format!("Failed to backup {}: {}", binary, e)))?;
+            std::fs::copy(&src, &dst).map_err(|e| {
+                UpdateError::InstallFailed(format!("Failed to backup {}: {}", binary, e))
+            })?;
         }
     }
 
@@ -197,7 +207,12 @@ fn extract_archive(archive: &std::path::Path, dest: &std::path::Path) -> Result<
         .map_err(|e| UpdateError::InstallFailed(format!("Failed to create extract dir: {}", e)))?;
 
     let output = Command::new("tar")
-        .args(["-xzf", archive.to_str().unwrap(), "-C", dest.to_str().unwrap()])
+        .args([
+            "-xzf",
+            archive.to_str().unwrap(),
+            "-C",
+            dest.to_str().unwrap(),
+        ])
         .output()
         .map_err(|e| UpdateError::InstallFailed(format!("Failed to run tar: {}", e)))?;
 
@@ -212,7 +227,10 @@ fn extract_archive(archive: &std::path::Path, dest: &std::path::Path) -> Result<
 }
 
 /// Replace binaries in install directory.
-fn replace_binaries(src_dir: &std::path::Path, install_dir: &std::path::Path) -> Result<(), UpdateError> {
+fn replace_binaries(
+    src_dir: &std::path::Path,
+    install_dir: &std::path::Path,
+) -> Result<(), UpdateError> {
     std::fs::create_dir_all(install_dir)
         .map_err(|e| UpdateError::InstallFailed(format!("Failed to create install dir: {}", e)))?;
 
@@ -223,8 +241,9 @@ fn replace_binaries(src_dir: &std::path::Path, install_dir: &std::path::Path) ->
 
             // Remove existing binary first
             if dst.exists() {
-                std::fs::remove_file(&dst)
-                    .map_err(|e| UpdateError::InstallFailed(format!("Failed to remove old {}: {}", binary, e)))?;
+                std::fs::remove_file(&dst).map_err(|e| {
+                    UpdateError::InstallFailed(format!("Failed to remove old {}: {}", binary, e))
+                })?;
             }
 
             // Move new binary
@@ -235,18 +254,23 @@ fn replace_binaries(src_dir: &std::path::Path, install_dir: &std::path::Path) ->
                     std::fs::remove_file(&src)?;
                     Ok::<_, std::io::Error>(())
                 })
-                .map_err(|e| UpdateError::InstallFailed(format!("Failed to install {}: {}", binary, e)))?;
+                .map_err(|e| {
+                    UpdateError::InstallFailed(format!("Failed to install {}: {}", binary, e))
+                })?;
 
             // Make executable
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 let mut perms = std::fs::metadata(&dst)
-                    .map_err(|e| UpdateError::InstallFailed(format!("Failed to get permissions: {}", e)))?
+                    .map_err(|e| {
+                        UpdateError::InstallFailed(format!("Failed to get permissions: {}", e))
+                    })?
                     .permissions();
                 perms.set_mode(0o755);
-                std::fs::set_permissions(&dst, perms)
-                    .map_err(|e| UpdateError::InstallFailed(format!("Failed to set permissions: {}", e)))?;
+                std::fs::set_permissions(&dst, perms).map_err(|e| {
+                    UpdateError::InstallFailed(format!("Failed to set permissions: {}", e))
+                })?;
             }
         }
     }
@@ -265,7 +289,7 @@ fn verify_installation(install_dir: &std::path::Path) -> Result<(), UpdateError>
 
     if !output.status.success() {
         return Err(UpdateError::InstallFailed(
-            "Installed binary failed version check".to_string()
+            "Installed binary failed version check".to_string(),
         ));
     }
 
@@ -273,29 +297,37 @@ fn verify_installation(install_dir: &std::path::Path) -> Result<(), UpdateError>
 }
 
 /// Restore from backup.
-fn restore_from_backup(backup_dir: &std::path::Path, install_dir: &std::path::Path) -> Result<(), UpdateError> {
+fn restore_from_backup(
+    backup_dir: &std::path::Path,
+    install_dir: &std::path::Path,
+) -> Result<(), UpdateError> {
     for binary in &["rch", "rchd", "rch-wkr"] {
         let src = backup_dir.join(binary);
         if src.exists() {
             let dst = install_dir.join(binary);
 
             if dst.exists() {
-                std::fs::remove_file(&dst)
-                    .map_err(|e| UpdateError::InstallFailed(format!("Failed to remove {}: {}", binary, e)))?;
+                std::fs::remove_file(&dst).map_err(|e| {
+                    UpdateError::InstallFailed(format!("Failed to remove {}: {}", binary, e))
+                })?;
             }
 
-            std::fs::copy(&src, &dst)
-                .map_err(|e| UpdateError::InstallFailed(format!("Failed to restore {}: {}", binary, e)))?;
+            std::fs::copy(&src, &dst).map_err(|e| {
+                UpdateError::InstallFailed(format!("Failed to restore {}: {}", binary, e))
+            })?;
 
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 let mut perms = std::fs::metadata(&dst)
-                    .map_err(|e| UpdateError::InstallFailed(format!("Failed to get permissions: {}", e)))?
+                    .map_err(|e| {
+                        UpdateError::InstallFailed(format!("Failed to get permissions: {}", e))
+                    })?
                     .permissions();
                 perms.set_mode(0o755);
-                std::fs::set_permissions(&dst, perms)
-                    .map_err(|e| UpdateError::InstallFailed(format!("Failed to set permissions: {}", e)))?;
+                std::fs::set_permissions(&dst, perms).map_err(|e| {
+                    UpdateError::InstallFailed(format!("Failed to set permissions: {}", e))
+                })?;
             }
         }
     }

@@ -78,10 +78,18 @@ impl JsonError {
 
     /// Create a JsonError from a miette Diagnostic.
     pub fn from_diagnostic(diag: &dyn miette::Diagnostic) -> Self {
-        let code = diag.code().map(|c| c.to_string()).unwrap_or_else(|| error_codes::INTERNAL_ERROR.to_string());
+        let code = diag
+            .code()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| error_codes::INTERNAL_ERROR.to_string());
         let message = diag.to_string();
         let suggestions = diag.help().map(|h| vec![h.to_string()]);
-        Self { code, message, details: None, suggestions }
+        Self {
+            code,
+            message,
+            details: None,
+            suggestions,
+        }
     }
 }
 
@@ -343,7 +351,7 @@ pub fn load_workers_from_config() -> Result<Vec<WorkerConfig>> {
         .with_context(|| format!("Failed to read {:?}", config_path))?;
 
     // Parse the TOML - expect [[workers]] array
-    let parsed: toml::Value = 
+    let parsed: toml::Value =
         toml::from_str(&contents).with_context(|| format!("Failed to parse {:?}", config_path))?;
 
     let empty_array = vec![];
@@ -479,7 +487,10 @@ pub async fn workers_probe(
 
     if workers.is_empty() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<Vec<WorkerProbeResult>>::ok("workers probe", vec![]));
+            let _ = ctx.json(&JsonResponse::<Vec<WorkerProbeResult>>::ok(
+                "workers probe",
+                vec![],
+            ));
         }
         return Ok(());
     }
@@ -546,7 +557,7 @@ pub async fn workers_probe(
         let mut client = SshClient::new(worker.clone(), SshOptions::default());
 
         match client.connect().await {
-            Ok(())=> {
+            Ok(()) => {
                 let start = std::time::Instant::now();
                 match client.health_check().await {
                     Ok(true) => {
@@ -649,7 +660,10 @@ pub async fn workers_benchmark(ctx: &OutputContext) -> Result<()> {
 
     if workers.is_empty() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<Vec<WorkerBenchmarkResult>>::ok("workers benchmark", vec![]));
+            let _ = ctx.json(&JsonResponse::<Vec<WorkerBenchmarkResult>>::ok(
+                "workers benchmark",
+                vec![],
+            ));
         }
         return Ok(());
     }
@@ -676,7 +690,7 @@ pub async fn workers_benchmark(ctx: &OutputContext) -> Result<()> {
         let mut client = SshClient::new(worker.clone(), SshOptions::default());
 
         match client.connect().await {
-            Ok(())=> {
+            Ok(()) => {
                 // Run a simple benchmark: compile a hello world Rust program
                 let benchmark_cmd = r###"#
                     cd /tmp && \
@@ -795,7 +809,11 @@ pub async fn workers_drain(worker_id: &str, ctx: &OutputContext) -> Result<()> {
     // Check if daemon is running
     if !Path::new(DEFAULT_SOCKET_PATH).exists() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<()>::err_cmd("workers drain", error_codes::DAEMON_NOT_RUNNING, "Daemon is not running"));
+            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+                "workers drain",
+                error_codes::DAEMON_NOT_RUNNING,
+                "Daemon is not running",
+            ));
         } else {
             println!(
                 "{} Daemon is not running. Start it with {}",
@@ -807,7 +825,7 @@ pub async fn workers_drain(worker_id: &str, ctx: &OutputContext) -> Result<()> {
                 StatusIndicator::Info.display(style)
             );
         }
-        return Ok(())
+        return Ok(());
     }
 
     // Send drain command to daemon
@@ -849,7 +867,11 @@ pub async fn workers_drain(worker_id: &str, ctx: &OutputContext) -> Result<()> {
         }
         Err(e) => {
             if ctx.is_json() {
-                let _ = ctx.json(&JsonResponse::<()>::err_cmd("workers drain", error_codes::INTERNAL_ERROR, e.to_string()));
+                let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+                    "workers drain",
+                    error_codes::INTERNAL_ERROR,
+                    e.to_string(),
+                ));
             } else {
                 println!(
                     "{} Failed to communicate with daemon: {}",
@@ -873,7 +895,11 @@ pub async fn workers_enable(worker_id: &str, ctx: &OutputContext) -> Result<()> 
 
     if !Path::new(DEFAULT_SOCKET_PATH).exists() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<()>::err_cmd("workers enable", error_codes::DAEMON_NOT_RUNNING, "Daemon is not running"));
+            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+                "workers enable",
+                error_codes::DAEMON_NOT_RUNNING,
+                "Daemon is not running",
+            ));
         } else {
             println!(
                 "{} Daemon is not running. Start it with {}",
@@ -881,7 +907,7 @@ pub async fn workers_enable(worker_id: &str, ctx: &OutputContext) -> Result<()> 
                 style.highlight("rch daemon start")
             );
         }
-        return Ok(())
+        return Ok(());
     }
 
     match send_daemon_command(&format!("POST /workers/{}/enable\n", worker_id)).await {
@@ -918,7 +944,11 @@ pub async fn workers_enable(worker_id: &str, ctx: &OutputContext) -> Result<()> 
         }
         Err(e) => {
             if ctx.is_json() {
-                let _ = ctx.json(&JsonResponse::<()>::err_cmd("workers enable", error_codes::INTERNAL_ERROR, e.to_string()));
+                let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+                    "workers enable",
+                    error_codes::INTERNAL_ERROR,
+                    e.to_string(),
+                ));
             } else {
                 println!(
                     "{} Failed to communicate with daemon: {}",
@@ -958,7 +988,7 @@ pub fn daemon_status(ctx: &OutputContext) -> Result<()> {
             socket_path: DEFAULT_SOCKET_PATH.to_string(),
             uptime_seconds,
         }));
-        return Ok(())
+        return Ok(());
     }
 
     println!("{}", style.format_header("RCH Daemon Status"));
@@ -1054,7 +1084,7 @@ pub async fn daemon_start(ctx: &OutputContext) -> Result<()> {
                 style.highlight("rch daemon restart")
             );
         }
-        return Ok(())
+        return Ok(());
     }
 
     // Check if rchd binary exists
@@ -1159,7 +1189,7 @@ pub async fn daemon_stop(ctx: &OutputContext) -> Result<()> {
                 style.muted("(socket not found)")
             );
         }
-        return Ok(())
+        return Ok(());
     }
 
     if !ctx.is_json() {
@@ -1186,7 +1216,7 @@ pub async fn daemon_stop(ctx: &OutputContext) -> Result<()> {
                             StatusIndicator::Success.with_label(style, "Daemon stopped.")
                         );
                     }
-                    return Ok(())
+                    return Ok(());
                 }
             }
             if ctx.is_json() {
@@ -1205,7 +1235,10 @@ pub async fn daemon_stop(ctx: &OutputContext) -> Result<()> {
         }
         Err(_) => {
             if ctx.is_json() {
-                let _ = ctx.json(&JsonResponse::<()>::err("daemon stop", "Could not send shutdown command"));
+                let _ = ctx.json(&JsonResponse::<()>::err(
+                    "daemon stop",
+                    "Could not send shutdown command",
+                ));
             } else {
                 println!(
                     "{} Could not send shutdown command.",
@@ -1237,7 +1270,10 @@ pub async fn daemon_stop(ctx: &OutputContext) -> Result<()> {
                 }
                 _ => {
                     if ctx.is_json() {
-                        let _ = ctx.json(&JsonResponse::<()>::err("daemon stop", "Could not stop daemon"));
+                        let _ = ctx.json(&JsonResponse::<()>::err(
+                            "daemon stop",
+                            "Could not stop daemon",
+                        ));
                     } else {
                         println!(
                             "{} Could not stop daemon. You may need to kill it manually.",
@@ -1322,7 +1358,7 @@ pub fn daemon_logs(lines: usize, ctx: &OutputContext) -> Result<()> {
                 }
             }
 
-            return Ok(())
+            return Ok(());
         }
     }
 
@@ -1418,14 +1454,15 @@ pub fn config_show(show_sources: bool, ctx: &OutputContext) -> Result<()> {
     println!();
 
     // Helper closure to format value with source
-    let format_with_source = |key: &str, value: &str, sources: &Option<Vec<ConfigValueSource>>| -> String {
-        if let Some(vs) = sources {
-            if let Some(s) = vs.iter().find(|v| v.key == key) {
-                return format!("{} {}", value, style.muted(&format!("# from {}", s.source)));
+    let format_with_source =
+        |key: &str, value: &str, sources: &Option<Vec<ConfigValueSource>>| -> String {
+            if let Some(vs) = sources {
+                if let Some(s) = vs.iter().find(|v| v.key == key) {
+                    return format!("{} {}", value, style.muted(&format!("# from {}", s.source)));
+                }
             }
-        }
-        value.to_string()
-    };
+            value.to_string()
+        };
 
     println!("{}", style.highlight("[general]"));
     println!(
@@ -1681,7 +1718,7 @@ exclude_patterns = [
         if !ctx.is_json() {
             println!(
                 "{} {} {}",
-                StatusIndicator::Success.display(&style),
+                StatusIndicator::Success.display(style),
                 style.muted("Created:"),
                 style.value(&config_path.display().to_string())
             );
@@ -1725,7 +1762,7 @@ enabled = true
         if !ctx.is_json() {
             println!(
                 "{} {} {}",
-                StatusIndicator::Success.display(&style),
+                StatusIndicator::Success.display(style),
                 style.muted("Created:"),
                 style.value(&workers_path.display().to_string())
             );
@@ -1743,14 +1780,11 @@ enabled = true
     }
 
     if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok_cmd(
-            "config init",
-            ConfigInitResponse {
-                created,
-                already_existed,
-            },
-        ));
-        return Ok(())
+        let _ = ctx.json(&JsonResponse::ok_cmd("config init", ConfigInitResponse {
+            created,
+            already_existed,
+        }));
+        return Ok(());
     }
 
     println!("\n{}", style.format_success("Configuration initialized!"));
@@ -1789,9 +1823,9 @@ pub fn config_validate(ctx: &OutputContext) -> Result<()> {
         None => {
             println!(
                 "{} Could not determine config directory",
-                StatusIndicator::Error.display(&style)
+                StatusIndicator::Error.display(style)
             );
-            return Ok(())
+            return Ok(());
         }
     };
 
@@ -1803,7 +1837,7 @@ pub fn config_validate(ctx: &OutputContext) -> Result<()> {
                 Ok(config) => {
                     println!(
                         "{} {}: {}",
-                        StatusIndicator::Success.display(&style),
+                        StatusIndicator::Success.display(style),
                         style.highlight("config.toml"),
                         style.success("Valid")
                     );
@@ -1814,7 +1848,7 @@ pub fn config_validate(ctx: &OutputContext) -> Result<()> {
                     {
                         println!(
                             "  {} {} should be between 0.0 and 1.0",
-                            StatusIndicator::Warning.display(&style),
+                            StatusIndicator::Warning.display(style),
                             style.key("confidence_threshold")
                         );
                         warnings += 1;
@@ -1822,7 +1856,7 @@ pub fn config_validate(ctx: &OutputContext) -> Result<()> {
                     if config.transfer.compression_level > 19 {
                         println!(
                             "  {} {} should be 1-19",
-                            StatusIndicator::Warning.display(&style),
+                            StatusIndicator::Warning.display(style),
                             style.key("compression_level")
                         );
                         warnings += 1;
@@ -1831,7 +1865,7 @@ pub fn config_validate(ctx: &OutputContext) -> Result<()> {
                 Err(e) => {
                     println!(
                         "{} {}: {} - {}",
-                        StatusIndicator::Error.display(&style),
+                        StatusIndicator::Error.display(style),
                         style.highlight("config.toml"),
                         style.error("Parse error"),
                         style.muted(&e.to_string())
@@ -1842,7 +1876,7 @@ pub fn config_validate(ctx: &OutputContext) -> Result<()> {
             Err(e) => {
                 println!(
                     "{} {}: {} - {}",
-                    StatusIndicator::Error.display(&style),
+                    StatusIndicator::Error.display(style),
                     style.highlight("config.toml"),
                     style.error("Read error"),
                     style.muted(&e.to_string())
@@ -1873,7 +1907,7 @@ pub fn config_validate(ctx: &OutputContext) -> Result<()> {
                         .unwrap_or(0);
                     println!(
                         "{} {}: {} ({} workers)",
-                        StatusIndicator::Success.display(&style),
+                        StatusIndicator::Success.display(style),
                         style.highlight("workers.toml"),
                         style.success("Valid"),
                         workers
@@ -1882,7 +1916,7 @@ pub fn config_validate(ctx: &OutputContext) -> Result<()> {
                     if workers == 0 {
                         println!(
                             "  {} No workers defined",
-                            StatusIndicator::Warning.display(&style)
+                            StatusIndicator::Warning.display(style)
                         );
                         warnings += 1;
                     }
@@ -1890,7 +1924,7 @@ pub fn config_validate(ctx: &OutputContext) -> Result<()> {
                 Err(e) => {
                     println!(
                         "{} {}: {} - {}",
-                        StatusIndicator::Error.display(&style),
+                        StatusIndicator::Error.display(style),
                         style.highlight("workers.toml"),
                         style.error("Parse error"),
                         style.muted(&e.to_string())
@@ -1901,7 +1935,7 @@ pub fn config_validate(ctx: &OutputContext) -> Result<()> {
             Err(e) => {
                 println!(
                     "{} {}: {} - {}",
-                    StatusIndicator::Error.display(&style),
+                    StatusIndicator::Error.display(style),
                     style.highlight("workers.toml"),
                     style.error("Read error"),
                     style.muted(&e.to_string())
@@ -1912,13 +1946,13 @@ pub fn config_validate(ctx: &OutputContext) -> Result<()> {
     } else {
         println!(
             "{} {}: {}",
-            StatusIndicator::Error.display(&style),
+            StatusIndicator::Error.display(style),
             style.highlight("workers.toml"),
             style.error("Not found")
         );
         println!(
             "  {} Run {} to create it",
-            StatusIndicator::Info.display(&style),
+            StatusIndicator::Info.display(style),
             style.highlight("rch config init")
         );
         errors += 1;
@@ -1931,14 +1965,14 @@ pub fn config_validate(ctx: &OutputContext) -> Result<()> {
             Ok(content) => match toml::from_str::<RchConfig>(&content) {
                 Ok(_) => println!(
                     "{} {}: {}",
-                    StatusIndicator::Success.display(&style),
+                    StatusIndicator::Success.display(style),
                     style.highlight(".rch/config.toml"),
                     style.success("Valid")
                 ),
                 Err(e) => {
                     println!(
                         "{} {}: {} - {}",
-                        StatusIndicator::Error.display(&style),
+                        StatusIndicator::Error.display(style),
                         style.highlight(".rch/config.toml"),
                         style.error("Parse error"),
                         style.muted(&e.to_string())
@@ -1949,7 +1983,7 @@ pub fn config_validate(ctx: &OutputContext) -> Result<()> {
             Err(e) => {
                 println!(
                     "{} {}: {} - {}",
-                    StatusIndicator::Error.display(&style),
+                    StatusIndicator::Error.display(style),
                     style.highlight(".rch/config.toml"),
                     style.error("Read error"),
                     style.muted(&e.to_string())
@@ -2042,14 +2076,11 @@ fn config_set_at(config_path: &Path, key: &str, value: &str, ctx: &OutputContext
         .with_context(|| format!("Failed to write {:?}", config_path))?;
 
     if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok_cmd(
-            "config set",
-            ConfigSetResponse {
-                key: key.to_string(),
-                value: value.to_string(),
-                config_path: config_path.display().to_string(),
-            },
-        ));
+        let _ = ctx.json(&JsonResponse::ok_cmd("config set", ConfigSetResponse {
+            key: key.to_string(),
+            value: value.to_string(),
+            config_path: config_path.display().to_string(),
+        }));
     } else {
         println!("Updated {:?}: {} = {}", config_path, key, value);
     }
@@ -2068,7 +2099,10 @@ pub fn config_export(format: &str, ctx: &OutputContext) -> Result<()> {
             println!();
             println!("export RCH_ENABLED={}", config.general.enabled);
             println!("export RCH_LOG_LEVEL=\"{}\"", config.general.log_level);
-            println!("export RCH_DAEMON_SOCKET=\"{}\"", config.general.socket_path);
+            println!(
+                "export RCH_DAEMON_SOCKET=\"{}\"",
+                config.general.socket_path
+            );
             println!(
                 "export RCH_CONFIDENCE_THRESHOLD={}",
                 config.compilation.confidence_threshold
@@ -2170,7 +2204,7 @@ fn parse_string_list(value: &str, key: &str) -> Result<Vec<String>> {
 
     if trimmed.starts_with('[') {
         let wrapped = format!("value = {}", trimmed);
-        let parsed: toml::Value = 
+        let parsed: toml::Value =
             toml::from_str(&wrapped).with_context(|| format!("Invalid array for {}", key))?;
         let array = parsed
             .get("value")
@@ -2235,7 +2269,7 @@ pub fn hook_install(ctx: &OutputContext) -> Result<()> {
     // Add or update the hooks section
     let hooks = settings
         .as_object_mut()
-        .context("Settings must be an object")? 
+        .context("Settings must be an object")?
         .entry("hooks")
         .or_insert(serde_json::json!({}));
 
@@ -2301,7 +2335,7 @@ pub fn hook_uninstall(ctx: &OutputContext) -> Result<()> {
                 settings_path.display()
             );
         }
-        return Ok(())
+        return Ok(());
     }
 
     let content = std::fs::read_to_string(&settings_path)?;

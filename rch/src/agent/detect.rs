@@ -243,7 +243,12 @@ fn extract_version(s: &str) -> Option<String> {
     // Try to find a semver-like pattern
     for word in s.split_whitespace() {
         let word = word.trim_start_matches('v');
-        if word.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        if word
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false)
+        {
             // Check if it looks like a version number
             if word.contains('.') || word.chars().all(|c| c.is_ascii_digit()) {
                 return Some(word.to_string());
@@ -267,10 +272,7 @@ mod tests {
 
     #[test]
     fn test_extract_version_with_prefix() {
-        assert_eq!(
-            extract_version("claude 1.2.3"),
-            Some("1.2.3".to_string())
-        );
+        assert_eq!(extract_version("claude 1.2.3"), Some("1.2.3".to_string()));
         assert_eq!(
             extract_version("tool version 2.0.0"),
             Some("2.0.0".to_string())

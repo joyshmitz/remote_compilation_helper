@@ -20,8 +20,8 @@ pub async fn query_daemon_full_status() -> Result<DaemonFullStatusResponse> {
     let response = send_status_command().await?;
 
     // Extract JSON body from HTTP response
-    let json_body = extract_json_body(&response)
-        .ok_or_else(|| anyhow::anyhow!("Invalid response format"))?;
+    let json_body =
+        extract_json_body(&response).ok_or_else(|| anyhow::anyhow!("Invalid response format"))?;
 
     let status: DaemonFullStatusResponse =
         serde_json::from_str(json_body).context("Failed to parse status response")?;
@@ -136,9 +136,7 @@ pub fn render_full_status(
             };
             println!(
                 "  {} [{}] {}",
-                style.symbols.bullet_filled,
-                severity_style,
-                issue.summary
+                style.symbols.bullet_filled, severity_style, issue.summary
             );
             if let Some(remediation) = &issue.remediation {
                 println!("    {} {}", style.muted("Fix:"), style.info(remediation));
@@ -177,12 +175,7 @@ fn render_workers_table(status: &DaemonFullStatusResponse, style: &Theme) {
     );
     println!(
         "  {:12} {:8} {:10} {:6} {:10} {:8}",
-        "────────────",
-        "────────",
-        "──────────",
-        "──────",
-        "──────────",
-        "────────"
+        "────────────", "────────", "──────────", "──────", "──────────", "────────"
     );
 
     for worker in &status.workers {

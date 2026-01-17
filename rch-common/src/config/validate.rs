@@ -188,7 +188,10 @@ pub fn validate_config(config: &ConfigToValidate) -> Vec<ConfigWarning> {
         if !valid_levels.contains(&level.to_lowercase().as_str()) {
             warnings.push(ConfigWarning::error(
                 "RCH_LOG_LEVEL",
-                format!("Invalid log level '{}', expected one of: {:?}", level, valid_levels),
+                format!(
+                    "Invalid log level '{}', expected one of: {:?}",
+                    level, valid_levels
+                ),
             ));
         }
     }
@@ -198,7 +201,9 @@ pub fn validate_config(config: &ConfigToValidate) -> Vec<ConfigWarning> {
 
 /// Check if there are any errors in the warnings list.
 pub fn has_errors(warnings: &[ConfigWarning]) -> bool {
-    warnings.iter().any(|w| matches!(w.severity, Severity::Error))
+    warnings
+        .iter()
+        .any(|w| matches!(w.severity, Severity::Error))
 }
 
 /// Filter warnings by severity.
@@ -260,7 +265,11 @@ mod tests {
             ..Default::default()
         };
         let warnings = validate_config(&config);
-        assert!(warnings.iter().any(|w| w.var == "RCH_SSH_KEY" && matches!(w.severity, Severity::Error)));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.var == "RCH_SSH_KEY" && matches!(w.severity, Severity::Error))
+        );
     }
 
     #[test]
@@ -283,7 +292,11 @@ mod tests {
             ..Default::default()
         };
         let warnings = validate_config(&config);
-        assert!(warnings.iter().any(|w| w.var == "RCH_CIRCUIT_FAILURE_THRESHOLD"));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.var == "RCH_CIRCUIT_FAILURE_THRESHOLD")
+        );
     }
 
     #[test]
@@ -293,7 +306,11 @@ mod tests {
             ..Default::default()
         };
         let warnings = validate_config(&config);
-        assert!(warnings.iter().any(|w| w.var == "RCH_LOG_LEVEL" && matches!(w.severity, Severity::Error)));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.var == "RCH_LOG_LEVEL" && matches!(w.severity, Severity::Error))
+        );
     }
 
     #[test]

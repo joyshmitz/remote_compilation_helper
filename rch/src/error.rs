@@ -72,7 +72,9 @@ pub enum ConfigError {
     #[error("Workers config not found: {path}")]
     #[diagnostic(
         code(rch::config::workers_not_found),
-        help("Create a workers config at ~/.config/rch/workers.toml\nExample:\n\n[[workers]]\nid = \"worker1\"\nhost = \"192.168.1.100\"\nuser = \"ubuntu\"\nidentity_file = \"~/.ssh/id_rsa\"\ntotal_slots = 16\n")
+        help(
+            "Create a workers config at ~/.config/rch/workers.toml\nExample:\n\n[[workers]]\nid = \"worker1\"\nhost = \"192.168.1.100\"\nuser = \"ubuntu\"\nidentity_file = \"~/.ssh/id_rsa\"\ntotal_slots = 16\n"
+        )
     )]
     WorkersNotFound { path: PathBuf },
 }
@@ -147,7 +149,9 @@ pub enum WorkerError {
     #[error("All worker circuit breakers are open")]
     #[diagnostic(
         code(rch::worker::all_circuits_open),
-        help("Workers have experienced repeated failures.\nWait for circuit breakers to reset or check worker health:\n  rch workers probe --all")
+        help(
+            "Workers have experienced repeated failures.\nWait for circuit breakers to reset or check worker health:\n  rch workers probe --all"
+        )
     )]
     AllCircuitsOpen,
 
@@ -239,7 +243,9 @@ pub enum TransferError {
     #[error("rsync failed with exit code {exit_code:?}")]
     #[diagnostic(
         code(rch::transfer::rsync_failed),
-        help("Ensure rsync is installed on both local and remote machines:\n  which rsync\n  ssh worker which rsync")
+        help(
+            "Ensure rsync is installed on both local and remote machines:\n  which rsync\n  ssh worker which rsync"
+        )
     )]
     RsyncFailed {
         exit_code: Option<i32>,
@@ -250,7 +256,9 @@ pub enum TransferError {
     #[error("SSH authentication failed for {user}@{host}")]
     #[diagnostic(
         code(rch::transfer::ssh_auth_failed),
-        help("Verify SSH key permissions (chmod 600) and that the key is added to remote authorized_keys:\n  ssh-copy-id -i {identity_file} {user}@{host}")
+        help(
+            "Verify SSH key permissions (chmod 600) and that the key is added to remote authorized_keys:\n  ssh-copy-id -i {identity_file} {user}@{host}"
+        )
     )]
     SshAuthFailed {
         host: String,
@@ -302,7 +310,9 @@ pub enum HookError {
     #[error("Invalid hook input: {message}")]
     #[diagnostic(
         code(rch::hook::invalid_input),
-        help("This error indicates a problem with the hook protocol.\nExpected JSON with tool_name and tool_input fields.")
+        help(
+            "This error indicates a problem with the hook protocol.\nExpected JSON with tool_name and tool_input fields."
+        )
     )]
     InvalidInput { message: String },
 
@@ -310,7 +320,9 @@ pub enum HookError {
     #[error("Failed to install Claude Code hook")]
     #[diagnostic(
         code(rch::hook::install_failed),
-        help("Manual installation:\n  Add to ~/.config/claude-code/settings.json:\n  \"hooks\": {{\n    \"PreToolUse\": [{{ \"command\": \"rch\" }}]\n  }}")
+        help(
+            "Manual installation:\n  Add to ~/.config/claude-code/settings.json:\n  \"hooks\": {{\n    \"PreToolUse\": [{{ \"command\": \"rch\" }}]\n  }}"
+        )
     )]
     InstallFailed {
         #[source]
@@ -348,7 +360,9 @@ pub enum UpdateError {
     #[error("No compatible release found for {platform}")]
     #[diagnostic(
         code(rch::update::no_release),
-        help("Build from source: cargo install --git https://github.com/Dicklesworthstone/remote_compilation_helper.git")
+        help(
+            "Build from source: cargo install --git https://github.com/Dicklesworthstone/remote_compilation_helper.git"
+        )
     )]
     NoRelease { platform: String },
 
