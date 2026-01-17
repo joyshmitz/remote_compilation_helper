@@ -137,10 +137,12 @@ export default function MetricsPage() {
           </p>
         </div>
         <button
+          type="button"
           onClick={() => mutate()}
           disabled={isValidating}
           className="p-2 rounded-lg hover:bg-surface-elevated transition-colors disabled:opacity-50"
           title="Refresh"
+          aria-label="Refresh metrics"
         >
           <motion.div
             animate={isValidating ? { rotate: 360 } : { rotate: 0 }}

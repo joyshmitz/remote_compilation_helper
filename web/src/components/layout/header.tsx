@@ -34,10 +34,12 @@ export function Header({ daemon, onRefresh, isRefreshing }: HeaderProps) {
 
       <div className="flex items-center gap-4">
         <button
+          type="button"
           onClick={onRefresh}
           disabled={isRefreshing}
           className="p-2 rounded-lg hover:bg-surface-elevated transition-colors disabled:opacity-50"
           title="Refresh data"
+          aria-label="Refresh dashboard data"
         >
           <motion.div
             animate={isRefreshing ? { rotate: 360 } : { rotate: 0 }}
