@@ -146,4 +146,77 @@ mod tests {
             "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72"
         );
     }
+
+    #[test]
+    fn test_verify_sha256_bytes_case_insensitive() {
+        let content = b"test content";
+        // SHA256 in uppercase
+        let expected_upper = "6AE8A75555209FD6C44157C0AED8016E763FF435A19CF186F76863140143FF72";
+
+        assert!(verify_sha256_bytes(content, expected_upper).is_ok());
+    }
+
+    #[test]
+    fn test_verify_sha256_bytes_empty_content() {
+        let content = b"";
+        // SHA256 of empty string
+        let expected = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+        assert!(verify_sha256_bytes(content, expected).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_compute_sha256_large_file() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("large.bin");
+
+        // Create a larger file (1MB of zeros)
+        let content = vec![0u8; 1024 * 1024];
+        std::fs::write(&file_path, &content).unwrap();
+
+        let hash = compute_sha256(&file_path.to_path_buf()).await.unwrap();
+        // SHA256 of 1MB of zeros
+        assert_eq!(
+            hash,
+            "30e14955ebf1352266dc2ff8067e68104607e750abb9d3b36582b8af909fcb58"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_checksum_sha256() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("test.txt");
+
+        std::fs::write(&file_path, "test content").unwrap();
+
+        // Verify using SHA256
+        let expected = "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72";
+        let result = verify_checksum(&file_path, expected).await.unwrap();
+
+        assert!(result.checksum_valid);
+    }
+
+    #[tokio::test]
+    async fn test_verify_checksum_mismatch() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("test.txt");
+
+        std::fs::write(&file_path, "test content").unwrap();
+
+        // Wrong checksum
+        let wrong = "0000000000000000000000000000000000000000000000000000000000000000";
+        let result = verify_checksum(&file_path, wrong).await;
+
+        assert!(matches!(result, Err(UpdateError::ChecksumMismatch { .. })));
+    }
+
+    #[test]
+    fn test_verify_sha256_bytes_binary_content() {
+        // Test with binary (non-UTF8) content
+        let content: &[u8] = &[0x00, 0x01, 0x02, 0xFF, 0xFE, 0xFD];
+        // SHA256 of the above bytes
+        let expected = "feb1aba6fea741741b1bbcc974f74fed337b535b8eec7223b6dd15d7108f08e3";
+
+        assert!(verify_sha256_bytes(content, expected).is_ok());
+    }
 }

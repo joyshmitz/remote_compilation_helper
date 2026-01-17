@@ -232,4 +232,83 @@ mod tests {
             actual: "b".to_string()
         }));
     }
+
+    #[tokio::test]
+    async fn test_extract_checksum_single_file() {
+        // Test single checksum (no filename, just hash)
+        let temp = TempDir::new().unwrap();
+        let checksum_file = temp.path().join("rch.tar.gz.sha256");
+
+        // Some checksum files contain just the hash
+        std::fs::write(&checksum_file, "abc123def456").unwrap();
+
+        let result = extract_checksum(&checksum_file.to_path_buf(), "rch.tar.gz").await;
+        assert_eq!(result.unwrap(), "abc123def456");
+    }
+
+    #[tokio::test]
+    async fn test_extract_checksum_with_path_prefix() {
+        let temp = TempDir::new().unwrap();
+        let checksum_file = temp.path().join("checksums.txt");
+
+        // Some checksums have path prefixes like ./release/
+        std::fs::write(
+            &checksum_file,
+            "abc123  ./release/rch-v0.1.0-linux.tar.gz\ndef456  ./release/rch-v0.1.0-darwin.tar.gz",
+        )
+        .unwrap();
+
+        let result =
+            extract_checksum(&checksum_file.to_path_buf(), "rch-v0.1.0-linux.tar.gz").await;
+        assert_eq!(result.unwrap(), "abc123");
+    }
+
+    #[test]
+    fn test_is_transient_error_comprehensive() {
+        // Network errors are transient
+        assert!(is_transient_error(&UpdateError::NetworkError(
+            "connection reset".to_string()
+        )));
+        assert!(is_transient_error(&UpdateError::NetworkError(
+            "timeout".to_string()
+        )));
+
+        // Other errors are not transient
+        assert!(!is_transient_error(&UpdateError::DownloadFailed(
+            "404".to_string()
+        )));
+        assert!(!is_transient_error(&UpdateError::InstallFailed(
+            "permission denied".to_string()
+        )));
+        assert!(!is_transient_error(&UpdateError::LockHeld));
+        assert!(!is_transient_error(&UpdateError::NoBackupAvailable));
+        assert!(!is_transient_error(&UpdateError::InvalidVersion(
+            "bad".to_string()
+        )));
+        assert!(!is_transient_error(&UpdateError::UnsupportedPlatform(
+            "unknown".to_string()
+        )));
+    }
+
+    #[tokio::test]
+    async fn test_extract_checksum_multiline_format() {
+        let temp = TempDir::new().unwrap();
+        let checksum_file = temp.path().join("SHA256SUMS");
+
+        // Test typical SHA256SUMS format with multiple entries
+        std::fs::write(
+            &checksum_file,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  rch-linux-amd64.tar.gz\n\
+             d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592  rch-darwin-amd64.tar.gz\n\
+             9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08  rch-linux-arm64.tar.gz",
+        )
+        .unwrap();
+
+        let result =
+            extract_checksum(&checksum_file.to_path_buf(), "rch-darwin-amd64.tar.gz").await;
+        assert_eq!(
+            result.unwrap(),
+            "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592"
+        );
+    }
 }

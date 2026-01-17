@@ -428,4 +428,113 @@ mod tests {
         let content = std::fs::read_to_string(install_dir.join("rch")).unwrap();
         assert_eq!(content, "test binary");
     }
+
+    #[test]
+    fn test_backup_creates_directory() {
+        let temp = TempDir::new().unwrap();
+        let install_dir = temp.path().join("install");
+        let backup_dir = temp.path().join("backup/nested/deep");
+
+        std::fs::create_dir_all(&install_dir).unwrap();
+        std::fs::write(install_dir.join("rch"), "test").unwrap();
+
+        // Backup directory doesn't exist yet
+        assert!(!backup_dir.exists());
+
+        backup_current_installation(&install_dir, &backup_dir).unwrap();
+
+        // Should have created the directory
+        assert!(backup_dir.exists());
+        assert!(backup_dir.join("rch").exists());
+    }
+
+    #[test]
+    fn test_backup_skips_missing_binaries() {
+        let temp = TempDir::new().unwrap();
+        let install_dir = temp.path().join("install");
+        let backup_dir = temp.path().join("backup");
+
+        std::fs::create_dir_all(&install_dir).unwrap();
+        // Only create rch, not rchd or rch-wkr
+        std::fs::write(install_dir.join("rch"), "test").unwrap();
+
+        backup_current_installation(&install_dir, &backup_dir).unwrap();
+
+        // Only rch should be backed up
+        assert!(backup_dir.join("rch").exists());
+        assert!(!backup_dir.join("rchd").exists());
+        assert!(!backup_dir.join("rch-wkr").exists());
+    }
+
+    #[test]
+    fn test_backup_all_binaries() {
+        let temp = TempDir::new().unwrap();
+        let install_dir = temp.path().join("install");
+        let backup_dir = temp.path().join("backup");
+
+        std::fs::create_dir_all(&install_dir).unwrap();
+        std::fs::write(install_dir.join("rch"), "rch content").unwrap();
+        std::fs::write(install_dir.join("rchd"), "rchd content").unwrap();
+        std::fs::write(install_dir.join("rch-wkr"), "rch-wkr content").unwrap();
+
+        backup_current_installation(&install_dir, &backup_dir).unwrap();
+
+        // All three should be backed up
+        assert!(backup_dir.join("rch").exists());
+        assert!(backup_dir.join("rchd").exists());
+        assert!(backup_dir.join("rch-wkr").exists());
+
+        // Verify content
+        assert_eq!(
+            std::fs::read_to_string(backup_dir.join("rchd")).unwrap(),
+            "rchd content"
+        );
+    }
+
+    #[test]
+    fn test_replace_binaries_creates_install_dir() {
+        let temp = TempDir::new().unwrap();
+        let src_dir = temp.path().join("src");
+        let install_dir = temp.path().join("install/nested");
+
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(src_dir.join("rch"), "new binary").unwrap();
+
+        // Install directory doesn't exist
+        assert!(!install_dir.exists());
+
+        replace_binaries(&src_dir, &install_dir).unwrap();
+
+        // Should have created it
+        assert!(install_dir.join("rch").exists());
+    }
+
+    #[test]
+    fn test_restore_preserves_content() {
+        let temp = TempDir::new().unwrap();
+        let backup_dir = temp.path().join("backup");
+        let install_dir = temp.path().join("install");
+
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        std::fs::create_dir_all(&install_dir).unwrap();
+
+        // Create backup with specific content
+        std::fs::write(backup_dir.join("rch"), "backup v1.0").unwrap();
+        std::fs::write(backup_dir.join("rchd"), "backup daemon").unwrap();
+
+        // Create current with different content
+        std::fs::write(install_dir.join("rch"), "current v2.0").unwrap();
+        std::fs::write(install_dir.join("rchd"), "current daemon").unwrap();
+
+        restore_from_backup(&backup_dir, &install_dir).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(install_dir.join("rch")).unwrap(),
+            "backup v1.0"
+        );
+        assert_eq!(
+            std::fs::read_to_string(install_dir.join("rchd")).unwrap(),
+            "backup daemon"
+        );
+    }
 }

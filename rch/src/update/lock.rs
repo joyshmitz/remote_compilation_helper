@@ -155,4 +155,97 @@ mod tests {
         // Use a very high PID that's unlikely to exist
         assert!(!is_process_running(999999999));
     }
+
+    #[test]
+    fn test_lock_file_contains_pid() {
+        // Clear any existing lock first
+        if let Ok(path) = get_lock_path() {
+            let _ = std::fs::remove_file(&path);
+        }
+
+        let lock = UpdateLock::acquire().unwrap();
+        let path = get_lock_path().unwrap();
+
+        // Read the lock file and verify it contains our PID
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let file_pid: u32 = contents.trim().parse().unwrap();
+        let our_pid = std::process::id();
+
+        assert_eq!(file_pid, our_pid);
+
+        drop(lock);
+    }
+
+    #[test]
+    fn test_lock_removed_on_drop() {
+        // Clear any existing lock first
+        if let Ok(path) = get_lock_path() {
+            let _ = std::fs::remove_file(&path);
+        }
+
+        let path = get_lock_path().unwrap();
+
+        {
+            let _lock = UpdateLock::acquire().unwrap();
+            assert!(path.exists());
+        }
+        // After drop, lock file should be removed
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn test_stale_lock_from_dead_process() {
+        // Clear any existing lock first
+        let path = get_lock_path().unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+
+        // Create a lock file with a non-existent PID
+        std::fs::write(&path, "999999999").unwrap();
+
+        // Should be able to acquire lock since the PID doesn't exist
+        let lock = UpdateLock::acquire();
+        assert!(lock.is_ok());
+
+        // Clean up
+        drop(lock);
+    }
+
+    #[test]
+    fn test_is_locked_with_active_lock() {
+        // Clear any existing lock first
+        if let Ok(path) = get_lock_path() {
+            let _ = std::fs::remove_file(&path);
+        }
+
+        // Without lock, should not be locked
+        assert!(!UpdateLock::is_locked());
+
+        // Acquire lock
+        let _lock = UpdateLock::acquire().unwrap();
+
+        // Now should report as locked
+        assert!(UpdateLock::is_locked());
+    }
+
+    #[test]
+    fn test_is_process_running_with_zero_pid() {
+        // PID 0 is a special kernel process, behavior varies by OS
+        // On most systems, this should return false or true based on kernel
+        // This test just ensures it doesn't panic
+        let _ = is_process_running(0);
+    }
+
+    #[test]
+    fn test_is_process_running_with_pid_one() {
+        // PID 1 (init/systemd) should always be running on Linux
+        #[cfg(unix)]
+        {
+            assert!(is_process_running(1));
+        }
+    }
 }

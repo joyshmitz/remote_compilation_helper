@@ -235,4 +235,62 @@ mod tests {
 
         assert!(filter_by_channel(&releases, Channel::Stable).is_none());
     }
+
+    #[test]
+    fn test_filter_by_channel_nightly_accepts_any() {
+        let releases = vec![
+            ReleaseInfo {
+                tag_name: "v0.3.0-alpha.1".to_string(),
+                name: "Alpha".to_string(),
+                prerelease: true,
+                draft: false,
+                html_url: "".to_string(),
+                body: None,
+                assets: vec![],
+                published_at: None,
+            },
+            ReleaseInfo {
+                tag_name: "v0.2.0".to_string(),
+                name: "Stable".to_string(),
+                prerelease: false,
+                draft: false,
+                html_url: "".to_string(),
+                body: None,
+                assets: vec![],
+                published_at: None,
+            },
+        ];
+
+        // Nightly should accept any release, preferring first (latest)
+        let nightly = filter_by_channel(&releases, Channel::Nightly).unwrap();
+        assert_eq!(nightly.tag_name, "v0.3.0-alpha.1");
+    }
+
+    #[test]
+    fn test_filter_by_channel_empty_releases() {
+        let releases: Vec<ReleaseInfo> = vec![];
+
+        assert!(filter_by_channel(&releases, Channel::Stable).is_none());
+        assert!(filter_by_channel(&releases, Channel::Beta).is_none());
+        assert!(filter_by_channel(&releases, Channel::Nightly).is_none());
+    }
+
+    #[test]
+    fn test_filter_by_channel_beta_only() {
+        let releases = vec![
+            ReleaseInfo {
+                tag_name: "v0.1.0".to_string(),
+                name: "Stable Only".to_string(),
+                prerelease: false,
+                draft: false,
+                html_url: "".to_string(),
+                body: None,
+                assets: vec![],
+                published_at: None,
+            },
+        ];
+
+        // Beta channel requires prerelease flag
+        assert!(filter_by_channel(&releases, Channel::Beta).is_none());
+    }
 }
