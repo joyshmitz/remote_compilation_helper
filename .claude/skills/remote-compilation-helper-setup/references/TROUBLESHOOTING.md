@@ -1,106 +1,63 @@
-# RCH Troubleshooting Guide
+# Troubleshooting
 
-## Diagnostic Command
+**First step**: `rch doctor --verbose`
 
-Always start here:
+## Symptom Index
+
+| Error Message | Jump To |
+|---------------|---------|
+| "Permission denied (publickey)" | [SSH Issues](#ssh-issues) |
+| "Connection refused" | [SSH Issues](#ssh-issues) |
+| "Host key verification failed" | [SSH Issues](#ssh-issues) |
+| "No config file" / "Config not found" | [Configuration](#configuration) |
+| "Invalid TOML" | [Configuration](#configuration) |
+| "Daemon not running" / socket errors | [Daemon](#daemon) |
+| "Hook not triggering" | [Hook Issues](#hook-issues) |
+| "No workers available" | [Worker Issues](#worker-issues) |
+| "Transfer failed" | [Worker Issues](#worker-issues) |
+| Compilation slower than local | [Performance](#performance) |
+
+---
+
+## Installation
 
 ```bash
-rch doctor --verbose
-```
-
-This checks:
-- Prerequisites (rsync, zstd, ssh-agent)
-- Configuration files
-- SSH key availability
-- Daemon status
-- Hook installation
-- Worker connectivity
-
-## Issue Categories
-
-### 1. Installation Issues
-
-**Rust nightly not installed:**
-```bash
-# Install rustup if missing
+# Rust nightly not installed
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup install nightly && rustup default nightly
 
-# Install nightly
-rustup install nightly
-rustup default nightly
-```
-
-**Build fails with edition 2024 error:**
-```bash
-# Ensure nightly is recent enough
+# Edition 2024 error → need recent nightly
 rustup update nightly
+rustc +nightly --version  # Need 1.82+
 
-# Check version (need 1.82+)
-rustc +nightly --version
+# Missing rsync/zstd
+sudo apt install rsync zstd      # Debian/Ubuntu
+brew install rsync zstd          # macOS
+sudo dnf install rsync zstd      # Fedora
 ```
 
-**Missing rsync/zstd:**
+---
+
+## SSH Issues
+
+| Symptom | Diagnose | Fix |
+|---------|----------|-----|
+| Permission denied | `ssh -vvv -i key user@host` | `chmod 600 ~/.ssh/*`; check key path |
+| Connection refused | `nc -zv host 22` | Check firewall, SSH service running |
+| Host key failed | — | `ssh-keyscan host >> ~/.ssh/known_hosts` |
+| Agent not running | `echo $SSH_AUTH_SOCK` | `eval $(ssh-agent) && ssh-add` |
+
+**Full SSH debug**: `ssh -vvv -i ~/.ssh/key user@host "echo ok"`
+
+---
+
+## Configuration
+
 ```bash
-# Ubuntu/Debian
-sudo apt install rsync zstd
-
-# macOS
-brew install rsync zstd
-
-# Fedora
-sudo dnf install rsync zstd
-```
-
-### 2. SSH Issues
-
-**"Permission denied (publickey)":**
-```bash
-# Check key exists
-ls -la ~/.ssh/
-
-# Check key permissions (must be 600)
-chmod 600 ~/.ssh/id_*
-
-# Test SSH directly
-ssh -vvv -i ~/.ssh/key user@host
-
-# Add key to agent
-eval $(ssh-agent)
-ssh-add ~/.ssh/your_key
-```
-
-**"Connection refused":**
-```bash
-# Check worker is reachable
-ping worker-host
-
-# Check SSH port is open
-nc -zv worker-host 22
-
-# Check firewall on worker
-ssh worker "sudo ufw status"
-```
-
-**"Host key verification failed":**
-```bash
-# Add host to known_hosts
-ssh-keyscan worker-host >> ~/.ssh/known_hosts
-
-# Or connect once interactively
-ssh user@worker-host
-```
-
-### 3. Configuration Issues
-
-**Config file not found:**
-```bash
-# Create config directory
+# No config directory
 mkdir -p ~/.config/rch
 
-# Initialize with wizard
-rch init
-
-# Or create manually
+# Create minimal config
 cat > ~/.config/rch/workers.toml << 'EOF'
 [[workers]]
 id = "worker1"
@@ -110,183 +67,100 @@ identity_file = "~/.ssh/id_ed25519"
 total_slots = 8
 priority = 100
 EOF
-```
 
-**Invalid TOML syntax:**
-```bash
-# Validate config
+# Or use interactive wizard
+rch init
+
+# Validate syntax
 rch config check
-
-# Common issues:
-# - Missing quotes around strings
-# - Wrong array syntax (use [[workers]] not [workers])
-# - Typos in field names
 ```
 
-### 4. Daemon Issues
+**Common TOML mistakes**:
+- Missing quotes around string values
+- `[workers]` instead of `[[workers]]`
+- Typos in field names
 
-**Daemon not running:**
+---
+
+## Daemon
+
+| Symptom | Check | Fix |
+|---------|-------|-----|
+| Not running | `pgrep rchd` | `rchd &` or `systemctl --user start rchd` |
+| Socket missing | `ls /tmp/rch.sock` | Start daemon |
+| Socket stale | Socket exists but daemon dead | `rm /tmp/rch.sock && rchd` |
+| Crashes | `rchd --foreground --verbose` | Check logs for error |
+
+**Daemon logs**: `journalctl --user -u rchd -f`
+
+---
+
+## Hook Issues
+
+| Symptom | Check | Fix |
+|---------|-------|-----|
+| Not registered | `grep rch ~/.claude/settings.json` | `rch hook install` |
+| Returns error | `echo '{"tool":"Bash","input":{"command":"cargo check"}}' \| rch hook` | Check `which rch`, reinstall |
+| Not intercepting | `rch classify "cargo build"` | Verify command is supported |
+
+**Commands never intercepted** (by design):
+- `bun install/add/remove` (package management)
+- `bun run/dev/build` (local execution)
+- Piped: `cargo build | tee log`
+- Background: `cargo build &`
+
+**Test hook directly**:
 ```bash
-# Start daemon in foreground (for debugging)
-rchd --foreground --verbose
+echo '{"tool":"Bash","input":{"command":"cargo build"}}' | rch hook
+# Expect: {"allow":true,"output":"..."}
 
-# Start as background process
-rchd &
-
-# Or use systemd
-systemctl --user start rchd
+RCH_DRY_RUN=1 cargo check  # Logs decision without remote execution
 ```
 
-**Socket permission denied:**
-```bash
-# Check socket
-ls -la /tmp/rch.sock
+---
 
-# Remove stale socket
-rm /tmp/rch.sock
+## Worker Issues
 
-# Restart daemon
-rchd
-```
+| Symptom | Check | Fix |
+|---------|-------|-----|
+| No workers | `rch workers status` | Add workers to config |
+| Can't connect | `ssh -i key user@host "echo ok"` | Fix SSH (see above) |
+| Missing toolchain | `ssh worker "which rustc bun"` | Install on worker |
+| Transfer fails | `rsync -avz --dry-run ./src/ worker:/tmp/t/` | Check disk space, rsync version |
 
-**Daemon crashes:**
-```bash
-# Check logs
-journalctl --user -u rchd -f
+**Install Rust on worker**: `ssh worker "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"`
 
-# Or with foreground mode
-rchd --foreground --log-level=debug
-```
+**Check worker disk**: `ssh worker "df -h /tmp"`
 
-### 5. Hook Issues
+---
 
-**Hook not triggering:**
-```bash
-# Check hook is registered
-cat ~/.claude/settings.json | jq '.hooks.PreToolUse'
+## Performance
 
-# Reinstall hook
-rch hook install --force
+| Symptom | Likely Cause | Fix |
+|---------|--------------|-----|
+| Slower than local | Project too small (<2s compile) | RCH overhead ~100-500ms; only helps for longer builds |
+| High transfer time | Large project / slow network | Check `.rchignore` excludes `target/`, `node_modules/` |
+| Worker slow | High load | `ssh worker "uptime"` → try different worker |
 
-# Test with dry run
-RCH_DRY_RUN=1 cargo check
-```
+**Profile transfer**: `time rsync -avz ./src/ worker:/tmp/test/`
 
-**Hook returns error JSON:**
-```bash
-# Check hook binary
-which rch
+**Check network**: `ping -c 5 worker`
 
-# Test hook directly
-echo '{"tool":"Bash","input":{"command":"cargo check"}}' | rch hook
-
-# Enable debug logging
-RCH_LOG=debug cargo check
-```
-
-**Commands not being intercepted:**
-```bash
-# Verify command is supported
-rch classify "cargo build"
-
-# Check if in NEVER_INTERCEPT list
-# (bun install, npm, etc. always run locally)
-
-# Check for piped/backgrounded (not intercepted)
-# cargo build | tee log  # NOT intercepted
-# cargo build &          # NOT intercepted
-```
-
-### 6. Worker Issues
-
-**No workers available:**
-```bash
-# Check worker status
-rch workers status
-
-# Probe connectivity
-rch workers probe --all
-
-# Check slots
-rch workers list --verbose
-```
-
-**Worker missing toolchain:**
-```bash
-# SSH to worker and check
-ssh worker1 "which rustc cargo bun gcc"
-
-# Install on worker
-ssh worker1 "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
-```
-
-**Transfer failures:**
-```bash
-# Test rsync directly
-rsync -avz --dry-run ./src/ worker1:/tmp/test/
-
-# Check disk space on worker
-ssh worker1 "df -h /tmp"
-
-# Check rsync version compatibility
-rsync --version
-ssh worker1 "rsync --version"
-```
-
-### 7. Performance Issues
-
-**Compilation slower than local:**
-```bash
-# Check worker load
-ssh worker1 "uptime; top -bn1 | head -20"
-
-# Check network latency
-ping -c 5 worker1
-
-# Profile transfer time
-time rsync -avz ./src/ worker1:/tmp/test/
-
-# Consider: is project too small to benefit?
-# RCH overhead ~100-500ms, only helps if compile >2s
-```
-
-**High transfer overhead:**
-```bash
-# Check what's being transferred
-RCH_LOG=debug cargo build 2>&1 | grep transfer
-
-# Ensure target/ is excluded
-cat .rchignore  # Should have target/, node_modules/, .git/
-
-# Use incremental sync
-# (default, but verify it's not doing full copies)
-```
+---
 
 ## Debug Mode
 
-Enable verbose logging:
-
 ```bash
-# Environment variable
-export RCH_LOG=debug
+export RCH_LOG=debug    # or trace for maximum detail
+cargo build             # Logs show hook decisions
 
-# Or per-command
-RCH_LOG=trace cargo build
+# Levels: error, warn, info, debug, trace
 ```
 
-Log levels: `error`, `warn`, `info`, `debug`, `trace`
+---
 
-## Getting Help
+## Generate Diagnostic Report
 
 ```bash
-# Show version
-rch --version
-
-# Built-in help
-rch --help
-rch doctor --help
-rch workers --help
-
-# Generate diagnostic report
-rch doctor --json > rch-diagnostic.json
+rch doctor --json > diagnostic.json
 ```

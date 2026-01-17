@@ -1,48 +1,30 @@
 ---
 name: remote-compilation-helper-setup
 description: >-
-  Set up and troubleshoot RCH (Remote Compilation Helper). Use when installing RCH,
-  configuring workers, diagnosing connection issues, or setting up Claude Code hooks.
+  Install RCH, configure workers, fix SSH/daemon/hook issues. Use when setting up
+  remote compilation, adding build machines, or troubleshooting rch doctor failures.
 ---
 
-# Remote Compilation Helper Setup
-
-Automated setup and troubleshooting for RCH - transparent compilation offloading.
-
-## Table of Contents
-
-- [Quick Start](#quick-start) - Run diagnostics and initialize
-- [Setup Workflow](#setup-workflow) - Step-by-step checklist
-- [Worker Configuration](#worker-configuration) - Add remote machines
-- [Troubleshooting](#troubleshooting) - Common issues and fixes
-- [Claude Code Hook](#claude-code-hook-setup) - Hook installation
-- [References](#references) - Deep dives
+# RCH Setup
 
 ## Quick Start
 
 ```bash
-# 1. Run diagnostics (shows what's missing)
-rch doctor
-
-# 2. Auto-fix common issues
-rch doctor --fix
-
-# 3. Initialize interactively (if not yet configured)
-rch init
+rch doctor              # Diagnose issues
+rch doctor --fix        # Auto-fix common problems
+rch init                # Interactive setup wizard
 ```
 
-## Setup Workflow
+## Setup Checklist
 
-- [ ] **Prerequisites**: Rust nightly, rsync, zstd, ssh-agent
-- [ ] **Install RCH**: `cargo install --path rch`
-- [ ] **Configure workers**: `~/.config/rch/workers.toml`
-- [ ] **Install Claude Code hook**: `rch hook install`
-- [ ] **Start daemon**: `rchd` (or systemd service)
-- [ ] **Verify**: `rch doctor` shows all green
+- [ ] Prerequisites: `rustup`, `rsync`, `zstd`, `ssh-agent`
+- [ ] Install: `cargo install --path rch`
+- [ ] Configure: `~/.config/rch/workers.toml`
+- [ ] Hook: `rch hook install`
+- [ ] Daemon: `rchd &` or `systemctl --user start rchd`
+- [ ] Verify: `rch doctor` (all green)
 
-## Worker Configuration
-
-Workers are remote machines with SSH access. Minimal config:
+## Worker Config
 
 ```toml
 # ~/.config/rch/workers.toml
@@ -51,111 +33,74 @@ id = "worker1"
 host = "192.168.1.100"
 user = "ubuntu"
 identity_file = "~/.ssh/id_ed25519"
-total_slots = 8      # CPU cores available
-priority = 100       # Higher = preferred
-tags = ["rust"]      # Optional capability tags
+total_slots = 8    # CPU cores
+priority = 100     # Higher = preferred
+tags = ["rust"]    # Optional
 ```
 
-### Auto-Discover Workers from SSH Config
+### Discover from SSH Config
 
 ```bash
-# RCH can discover workers from ~/.ssh/config
-rch workers discover --from-ssh-config
-
-# Preview what would be added
-rch workers discover --from-ssh-config --dry-run
+rch workers discover --from-ssh-config --dry-run  # Preview
+rch workers discover --from-ssh-config            # Add workers
 ```
 
-SSH config entries become workers if they have:
-- `HostName` (IP or domain)
-- `User`
-- `IdentityFile`
+Requires: `HostName`, `User`, `IdentityFile` in SSH config entry.
 
-### Test Worker Connectivity
+### Test Workers
 
 ```bash
-# Test single worker
-rch workers probe worker1 --verbose
-
-# Test all workers
-rch workers probe --all
-
-# Show worker capabilities (toolchains detected)
-rch workers list --capabilities
+rch workers probe worker1 --verbose    # Single worker
+rch workers probe --all                # All workers
+rch workers list --capabilities        # Show toolchains
 ```
 
-## Troubleshooting
+## Troubleshooting Quick Reference
 
-### `rch doctor` Checks
+| Symptom | Check | Fix |
+|---------|-------|-----|
+| Missing tools | `which rsync zstd` | `apt install rsync zstd` |
+| SSH fails | `ssh -i key host "echo ok"` | `chmod 600 ~/.ssh/*`; `ssh-add` |
+| No config | `ls ~/.config/rch/` | `rch init` |
+| Daemon down | `ls /tmp/rch.sock` | `rchd &` |
+| Hook missing | `grep rch ~/.claude/settings.json` | `rch hook install` |
+| No workers | `rch workers status` | Check SSH, firewall, config |
 
-| Check | Issue | Fix |
-|-------|-------|-----|
-| `prerequisites` | Missing tools | Install rsync, zstd, ssh-agent |
-| `config` | No config file | `rch init` or create manually |
-| `ssh_keys` | Agent not running | `eval $(ssh-agent) && ssh-add` |
-| `daemon` | rchd not running | `rchd` or `systemctl start rchd` |
-| `hooks` | Hook not installed | `rch hook install` |
-| `workers` | No reachable workers | Check SSH, firewall, worker config |
+### Common Fixes
 
-### Common Issues
-
-**"Connection refused" to worker:**
 ```bash
-# Check SSH directly
-ssh -i ~/.ssh/key worker1 "echo ok"
+# SSH agent not running
+eval $(ssh-agent) && ssh-add ~/.ssh/your_key
 
-# Check if worker has required tools
-ssh worker1 "which rustc rsync zstd"
-```
+# Daemon socket stale
+rm /tmp/rch.sock && rchd &
 
-**"Hook not triggering":**
-```bash
-# Verify hook is installed
-cat ~/.claude/settings.json | grep -A5 PreToolUse
-
-# Reinstall hook
+# Hook not triggering
 rch hook install --force
+
+# Test hook directly
+echo '{"tool":"Bash","input":{"command":"cargo check"}}' | rch hook
 ```
 
-**"Daemon not responding":**
-```bash
-# Check socket
-ls -la /tmp/rch.sock
-
-# Restart daemon
-pkill rchd && rchd
-```
-
-## Claude Code Hook Setup
-
-RCH integrates via PreToolUse hook:
+## Hook Setup
 
 ```bash
-# Install hook (updates ~/.claude/settings.json)
-rch hook install
-
-# Verify installation
-rch hook status
-
-# Test interception (dry run)
-RCH_DRY_RUN=1 cargo check
+rch hook install       # Add to ~/.claude/settings.json
+rch hook status        # Verify
+RCH_DRY_RUN=1 cargo check  # Test without remote execution
 ```
 
 ## Validation
 
 ```bash
-# Full diagnostic
-rch doctor --verbose
-
-# JSON output for scripting
-rch doctor --json
-
-# Expected: all checks pass
-rch doctor && echo "RCH ready!"
+rch doctor --verbose   # Full diagnostics
+rch doctor --json      # For scripting
 ```
 
 ## References
 
-- [WORKERS.md](references/WORKERS.md) - Advanced worker configuration
-- [TROUBLESHOOTING.md](references/TROUBLESHOOTING.md) - Detailed diagnostics
-- [HOOKS.md](references/HOOKS.md) - Claude Code hook internals
+| Topic | Reference |
+|-------|-----------|
+| Worker schema, selection, tags | [WORKERS.md](references/WORKERS.md) |
+| All error symptoms & fixes | [TROUBLESHOOTING.md](references/TROUBLESHOOTING.md) |
+| Hook protocol, classification | [HOOKS.md](references/HOOKS.md) |

@@ -1,208 +1,112 @@
-# Claude Code Hook Integration
+# Hook Integration
 
-## How RCH Hooks Work
-
-RCH uses Claude Code's PreToolUse hook to intercept compilation commands:
+## Flow
 
 ```
-Claude Code Agent
-       │
-       ▼
- ┌─────────────────┐
- │  PreToolUse     │◄── rch binary receives JSON
- │  Hook           │
- └────────┬────────┘
-          │
-          ▼
-   ┌──────────────┐
-   │ Is it Bash?  │──No──► Pass through
-   └──────┬───────┘
-          │Yes
-          ▼
-   ┌──────────────┐
-   │ Compilation? │──No──► Pass through
-   └──────┬───────┘
-          │Yes
-          ▼
-   ┌──────────────┐
-   │ Execute      │
-   │ Remotely     │
-   └──────┬───────┘
-          │
-          ▼
-   Return artifacts locally
-   (agent sees local results)
+Claude Code → PreToolUse Hook → rch
+                                 │
+                    ┌────────────┴────────────┐
+                    │ Bash tool?              │
+                    │   └─ Compilation cmd?   │
+                    │       └─ Yes → Remote   │
+                    │       └─ No → Local     │
+                    │   └─ No → Pass through  │
+                    └─────────────────────────┘
 ```
 
-## Hook Installation
+## Installation
 
 ```bash
-# Install hook (modifies ~/.claude/settings.json)
-rch hook install
-
-# What this adds:
-# {
-#   "hooks": {
-#     "PreToolUse": [
-#       {
-#         "matcher": "Bash",
-#         "command": "/path/to/rch hook"
-#       }
-#     ]
-#   }
-# }
+rch hook install      # Modifies ~/.claude/settings.json
+rch hook status       # Verify
+rch hook uninstall    # Remove
 ```
 
-## Hook Protocol
-
-RCH receives JSON on stdin:
-
+Adds to settings:
 ```json
-{
-  "tool": "Bash",
-  "input": {
-    "command": "cargo build --release"
-  }
-}
+{"hooks":{"PreToolUse":[{"matcher":"Bash","command":"/path/to/rch hook"}]}}
 ```
 
-RCH responds with one of:
+## Protocol
 
-**Allow (pass through):**
+**Input** (stdin):
 ```json
-{"allow": true}
+{"tool":"Bash","input":{"command":"cargo build --release"}}
 ```
 
-**Intercept and handle:**
-```json
-{
-  "allow": true,
-  "output": "   Compiling myproject v0.1.0\n    Finished release [optimized] target(s) in 45.2s"
-}
-```
+**Output** (stdout):
 
-**Block (rarely used):**
-```json
-{
-  "allow": false,
-  "reason": "Worker unavailable"
-}
-```
+| Response | JSON | Meaning |
+|----------|------|---------|
+| Pass through | `{"allow":true}` | Run locally |
+| Intercept | `{"allow":true,"output":"..."}` | Return captured output |
+| Block | `{"allow":false,"reason":"..."}` | Prevent execution |
 
-## Command Classification
+## Classification (5-tier, <5ms total)
 
-RCH uses a 5-tier classification system:
-
-| Tier | Time | Purpose |
-|------|------|---------|
+| Tier | Time | Check |
+|------|------|-------|
 | 1 | <100μs | Keyword bloom filter |
 | 2 | <200μs | Quick regex scan |
 | 3 | <500μs | Full command parse |
 | 4 | <1ms | Context extraction |
 | 5 | <5ms | Worker selection |
 
-### Intercepted Commands
+### Intercepted
 
-```rust
-// Rust
-"cargo build", "cargo test", "cargo check", "cargo run", "rustc"
-
-// TypeScript/Bun
-"bun test", "bun typecheck"
-
-// C/C++
-"gcc", "g++", "clang", "clang++", "cc"
-
-// Build systems
-"make", "cmake --build", "ninja", "meson compile"
+```
+cargo build/test/check/run, rustc
+bun test, bun typecheck
+gcc, g++, clang, clang++, cc
+make, cmake --build, ninja, meson compile
 ```
 
 ### Never Intercepted
 
-```rust
-// Package management (modifies local node_modules)
-"bun install", "bun add", "bun remove"
-
-// Local execution (needs local ports/env)
-"bun run", "bun dev", "bun build"
-
-// Piped/redirected commands
-"cargo build | tee log"
-"cargo build > output.txt"
-
-// Background commands
-"cargo build &"
+```
+bun install/add/remove     # Modifies node_modules
+bun run/dev/build          # Needs local ports
+cargo build | tee log      # Piped
+cargo build &              # Background
 ```
 
-## Manual Hook Testing
-
-Test the hook directly:
+## Testing
 
 ```bash
-# Test with compilation command
+# Test classification
 echo '{"tool":"Bash","input":{"command":"cargo build"}}' | rch hook
-# Should return {"allow":true,"output":"..."}
+# → {"allow":true,"output":"..."}
 
-# Test with non-compilation
 echo '{"tool":"Bash","input":{"command":"ls -la"}}' | rch hook
-# Should return {"allow":true}
+# → {"allow":true}
 
-# Dry run mode (logs but doesn't execute remotely)
-RCH_DRY_RUN=1 rch hook < test-input.json
+# Dry run (logs but no remote execution)
+RCH_DRY_RUN=1 cargo check
+
+# Debug logging
+RCH_LOG=debug cargo build
+RCH_LOG=trace cargo build  # Maximum detail
 ```
 
-## Hook Configuration
+## Configuration
 
-In `~/.config/rch/config.toml`:
-
+`~/.config/rch/config.toml`:
 ```toml
 [hook]
-# Timeout for classification (ms)
-classify_timeout_ms = 5
+classify_timeout_ms = 5      # Classification budget
+pipeline_timeout_s = 300     # Full pipeline timeout
+fail_open = true             # On error → allow local execution
 
-# Timeout for full pipeline (seconds)
-pipeline_timeout_s = 300
-
-# Fail open on errors (allow local execution)
-fail_open = true
-
-# Commands to always run locally
-local_patterns = [
+local_patterns = [           # Force local execution
     "cargo fmt",
     "cargo doc"
 ]
 ```
 
-## Debugging Hooks
+## Security
 
-```bash
-# Enable hook debug logging
-export RCH_LOG=debug
-
-# Run a command - logs will show hook decisions
-cargo build
-
-# Or trace every step
-RCH_LOG=trace cargo check
-
-# Check hook is being invoked
-ps aux | grep rch
-```
-
-## Uninstalling Hook
-
-```bash
-# Remove hook from settings
-rch hook uninstall
-
-# Manual removal
-# Edit ~/.claude/settings.json and remove the PreToolUse entry
-```
-
-## Security Considerations
-
-- Hook runs with user permissions
-- SSH keys should use ssh-agent (not plaintext paths)
-- Workers should be trusted machines you control
-- RCH never modifies source code, only reads and transfers
-- Artifacts are transferred back via secure rsync
+- Runs with user permissions
+- SSH keys via ssh-agent (recommended)
+- Workers should be trusted machines
+- Never modifies source code
+- Artifacts transferred via secure rsync

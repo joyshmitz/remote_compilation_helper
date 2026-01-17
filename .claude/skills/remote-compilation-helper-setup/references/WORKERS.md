@@ -1,36 +1,34 @@
-# Worker Configuration Reference
+# Worker Configuration
 
-## Worker Definition Schema
+## Schema
 
 ```toml
 [[workers]]
-id = "unique-name"           # Required: identifier for this worker
+id = "unique-name"           # Required
 host = "192.168.1.100"       # Required: IP or hostname
-user = "ubuntu"              # Required: SSH username
-identity_file = "~/.ssh/key" # Required: path to SSH private key
-total_slots = 16             # Required: max concurrent jobs (usually CPU cores)
-priority = 100               # Optional: selection weight (default: 50)
-tags = ["rust", "fast"]      # Optional: capability/group tags
-enabled = true               # Optional: disable without removing (default: true)
+user = "ubuntu"              # Required: SSH user
+identity_file = "~/.ssh/key" # Required: SSH key path
+total_slots = 16             # Required: max concurrent jobs (≈ CPU cores - 2)
+priority = 100               # Optional: selection weight (default: 50, higher = preferred)
+tags = ["rust", "fast"]      # Optional: capability tags
+enabled = true               # Optional: set false to disable (default: true)
 ```
 
-## Worker Selection Algorithm
+## Selection Algorithm
 
-RCH selects workers based on:
+```
+score = available_slots × priority × locality_bonus
+```
 
 1. **Available slots**: `total_slots - active_jobs`
-2. **Priority**: Higher priority preferred when slots equal
-3. **Project locality**: Workers with cached project data preferred
-4. **Tag matching**: Project can require specific tags
-
-Formula: `score = available_slots * priority * locality_bonus`
+2. **Priority**: tiebreaker when slots equal
+3. **Locality**: bonus for workers with cached project data
+4. **Tags**: project can require specific tags via `.rch.toml`
 
 ## Multi-Worker Example
 
 ```toml
-# ~/.config/rch/workers.toml
-
-# Primary fast worker - prefer this
+# Primary (fast, high priority)
 [[workers]]
 id = "fast-builder"
 host = "build-server.local"
@@ -40,135 +38,76 @@ total_slots = 48
 priority = 100
 tags = ["fast", "rust", "bun"]
 
-# Secondary worker - use when primary busy
+# Secondary (fallback when primary busy)
 [[workers]]
-id = "backup-builder"
+id = "backup"
 host = "192.168.1.50"
 user = "ubuntu"
 identity_file = "~/.ssh/id_ed25519"
 total_slots = 8
 priority = 50
 tags = ["rust"]
-
-# Specialized TypeScript worker
-[[workers]]
-id = "ts-builder"
-host = "ts.internal"
-user = "node"
-identity_file = "~/.ssh/ts_key"
-total_slots = 16
-priority = 75
-tags = ["bun", "typescript"]
 ```
 
-## Discovery from SSH Config
-
-RCH can auto-discover workers from `~/.ssh/config`:
+## SSH Config Discovery
 
 ```bash
-# Preview discovered workers
-rch workers discover --from-ssh-config --dry-run
-
-# Add discovered workers to config
-rch workers discover --from-ssh-config
-
-# Filter by pattern
-rch workers discover --from-ssh-config --filter "build*"
+rch workers discover --from-ssh-config --dry-run   # Preview
+rch workers discover --from-ssh-config             # Add to config
+rch workers discover --from-ssh-config --filter "build*"  # Filter by pattern
 ```
 
-### SSH Config Requirements
+**Required SSH config fields**: `Host`, `HostName`, `User`, `IdentityFile`
 
-Only entries with ALL of these are discovered:
-- `Host` (the alias)
-- `HostName` (actual IP/domain)
-- `User`
-- `IdentityFile`
-
-Example SSH config entry:
+**Optional RCH hints** (in SSH config comments):
 ```
 Host build-server
     HostName 192.168.1.100
     User ubuntu
     IdentityFile ~/.ssh/build_key
-    # Optional RCH hints (parsed as comments)
     # rch-slots: 16
     # rch-priority: 90
     # rch-tags: rust,bun
 ```
 
-## Worker Probing
-
-Test worker connectivity and detect capabilities:
+## Probing & Monitoring
 
 ```bash
-# Probe single worker
-rch workers probe fast-builder --verbose
-
-# Probe all workers
-rch workers probe --all
-
-# Output shows:
-# - SSH connectivity
-# - Detected toolchains (rustc, cargo, bun, gcc, etc.)
-# - Available disk space
-# - Current load
+rch workers probe worker1 --verbose  # Test connectivity + detect toolchains
+rch workers probe --all              # Probe all workers
+rch workers status                   # Current state
+rch workers status --json            # For monitoring tools
+watch -n 5 'rch workers status'      # Continuous monitoring
 ```
 
-## Worker Tags
+Probe output shows: SSH connectivity, detected toolchains (rustc, cargo, bun, gcc), disk space, load.
 
-Tags enable project-specific worker selection:
+## Tags
 
+Workers declare capabilities:
 ```toml
-# In workers.toml
-[[workers]]
-id = "rust-only"
-tags = ["rust"]
-# ...
-
 [[workers]]
 id = "polyglot"
 tags = ["rust", "bun", "cpp"]
-# ...
 ```
 
-Projects can require tags in `.rch.toml`:
+Projects require tags:
 ```toml
 # .rch.toml in project root
 required_tags = ["rust", "fast"]
 ```
 
-## Slot Management
-
-`total_slots` should match available CPU cores:
+## Slot Sizing
 
 ```bash
-# Check cores on worker
-ssh worker1 "nproc"
-
-# Recommended: leave 1-2 cores for system
-# For 16-core machine: total_slots = 14
+ssh worker1 "nproc"  # Check cores
+# Rule: total_slots = cores - 2 (leave headroom for system)
 ```
 
-## Disabling Workers
-
-Temporarily disable without removing:
+## Disable/Enable
 
 ```toml
 [[workers]]
-id = "maintenance"
+id = "under-maintenance"
 enabled = false  # Won't be selected
-# ...
-```
-
-## Health Monitoring
-
-```bash
-# Check all worker status
-rch workers status
-
-# JSON output for monitoring
-rch workers status --json
-
-# Continuous monitoring
-watch -n 5 'rch workers status'
 ```
