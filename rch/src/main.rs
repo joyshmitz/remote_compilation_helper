@@ -107,6 +107,36 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Interactive first-time setup wizard
+    #[command(after_help = r#"EXAMPLES:
+    rch init              # Start interactive setup wizard
+    rch init --yes        # Accept all defaults without prompting
+    rch init --skip-test  # Skip the test compilation step
+
+The wizard will guide you through:
+  1. Detecting potential workers from SSH config
+  2. Selecting which hosts to use as workers
+  3. Probing hosts for connectivity
+  4. Deploying rch-wkr binary to workers
+  5. Synchronizing Rust toolchain
+  6. Starting the daemon
+  7. Installing the Claude Code hook
+  8. Running a test compilation
+
+For more control, use the individual commands:
+  rch workers discover --add
+  rch workers setup --all
+  rch daemon start
+  rch hook install"#)]
+    Init {
+        /// Accept all defaults without prompting
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Skip the test compilation step
+        #[arg(long)]
+        skip_test: bool,
+    },
+
     /// Start, stop, and manage the local RCH daemon
     #[command(after_help = r#"EXAMPLES:
     rch daemon start      # Start the daemon in background
@@ -407,8 +437,29 @@ enum ConfigAction {
         #[arg(long)]
         sources: bool,
     },
-    /// Initialize project config
-    Init,
+    /// Initialize configuration files with optional interactive wizard
+    #[command(after_help = r#"EXAMPLES:
+    rch config init               # Create config files with defaults
+    rch config init --wizard      # Interactive wizard with prompts
+    rch config init --wizard --non-interactive  # Wizard with defaults (no prompts)
+    rch config init --wizard --defaults         # Same as above
+
+The wizard helps you configure:
+  • General settings (log level, socket path)
+  • Compilation thresholds (confidence, min local time)
+  • Transfer settings (compression, exclude patterns)
+  • Worker definitions (host, user, identity file, slots)"#)]
+    Init {
+        /// Run interactive configuration wizard
+        #[arg(long)]
+        wizard: bool,
+        /// Run wizard with defaults (no interactive prompts); requires --wizard
+        #[arg(long, requires = "wizard")]
+        non_interactive: bool,
+        /// Use default values without prompting (alias for --non-interactive); requires --wizard
+        #[arg(long, requires = "wizard")]
+        defaults: bool,
+    },
     /// Validate configuration
     Validate,
     /// Set a configuration value
@@ -530,6 +581,7 @@ async fn main() -> Result<()> {
             hook::run_hook().await
         }
         Some(cmd) => match cmd {
+            Commands::Init { yes, skip_test } => commands::init_wizard(yes, skip_test, &ctx).await,
             Commands::Daemon { action } => handle_daemon(action, &ctx).await,
             Commands::Workers { action } => handle_workers(action, &ctx).await,
             Commands::Status { workers, jobs } => handle_status(workers, jobs, &ctx).await,
@@ -646,8 +698,13 @@ async fn handle_config(action: ConfigAction, ctx: &OutputContext) -> Result<()> 
         ConfigAction::Show { sources } => {
             commands::config_show(sources, ctx)?;
         }
-        ConfigAction::Init => {
-            commands::config_init(ctx)?;
+        ConfigAction::Init {
+            wizard,
+            non_interactive,
+            defaults,
+        } => {
+            let use_defaults = non_interactive || defaults;
+            commands::config_init(ctx, wizard, use_defaults)?;
         }
         ConfigAction::Validate => {
             commands::config_validate(ctx)?;

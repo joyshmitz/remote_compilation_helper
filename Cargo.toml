@@ -61,6 +61,10 @@ thiserror = "2.0"
 anyhow = "1.0"
 miette = { version = "7", features = ["fancy"] }
 
+# Interactive CLI prompts
+dialoguer = { version = "0.11", features = ["fuzzy-select"] }
+console = "0.15"
+
 # Markdown rendering
 pulldown-cmark = "0.12"
 
