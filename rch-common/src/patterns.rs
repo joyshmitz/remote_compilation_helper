@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 /// Keywords that indicate a potential compilation command.
 /// Used for SIMD-accelerated quick filtering (Tier 2).
 pub static COMPILATION_KEYWORDS: &[&str] = &[
-    "cargo", "rustc", "gcc", "g++", "clang", "clang++", "make", "cmake", "ninja", "meson",
+    "cargo", "rustc", "gcc", "g++", "clang", "clang++", "make", "cmake", "ninja", "meson", "cc",
+    "c++",
 ];
 
 /// Commands that should NEVER be intercepted, even if they contain compilation keywords.
@@ -161,6 +162,17 @@ fn check_structure(cmd: &str) -> Option<&'static str> {
         return Some("output redirected");
     }
 
+    // Check for command chaining
+    if contains_unquoted(cmd, ';') {
+        return Some("chained command (;)");
+    }
+    if contains_unquoted_str(cmd, "&&") {
+        return Some("chained command (&&)");
+    }
+    if contains_unquoted_str(cmd, "||") {
+        return Some("chained command (||)");
+    }
+
     // Check for subshell capture
     if cmd.contains("$(") || cmd.contains('`') {
         return Some("subshell capture");
@@ -278,6 +290,23 @@ fn classify_full(cmd: &str) -> Classification {
             || cmd.contains(".cc"))
     {
         return Classification::compilation(CompilationKind::Clangpp, 0.90, "clang++ compilation");
+    }
+
+    // cc (standard C compiler)
+    if cmd.starts_with("cc ")
+        && (cmd.contains(" -c ") || cmd.contains(" -o ") || cmd.contains(".c"))
+    {
+        return Classification::compilation(CompilationKind::Gcc, 0.85, "cc compilation");
+    }
+
+    // c++ (standard C++ compiler)
+    if cmd.starts_with("c++ ")
+        && (cmd.contains(" -c ")
+            || cmd.contains(" -o ")
+            || cmd.contains(".cpp")
+            || cmd.contains(".cc"))
+    {
+        return Classification::compilation(CompilationKind::Gpp, 0.85, "c++ compilation");
     }
 
     // Make

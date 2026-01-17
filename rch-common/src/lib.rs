@@ -6,6 +6,8 @@
 
 pub mod mock;
 pub mod patterns;
+#[cfg(test)]
+mod patterns_security_test;
 pub mod protocol;
 pub mod ssh;
 pub mod toolchain;
