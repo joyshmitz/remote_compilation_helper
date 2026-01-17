@@ -627,6 +627,8 @@ cargo test
 RUST_LOG=debug cargo run --bin rch -- status
 ```
 
+See `docs/TESTING.md` for the full testing guide.
+
 ### Project Structure
 
 ```

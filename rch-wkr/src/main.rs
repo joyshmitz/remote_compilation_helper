@@ -310,8 +310,12 @@ fn probe_capabilities() -> WorkerCapabilities {
 async fn run_benchmark() -> Result<()> {
     info!("Running benchmark...");
 
-    // Create a simple benchmark project
-    let temp_dir = std::env::temp_dir().join("rch-benchmark");
+    // Create a simple benchmark project with a unique name
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp_dir = std::env::temp_dir().join(format!("rch-benchmark-{}", timestamp));
     std::fs::create_dir_all(&temp_dir)?;
 
     // Write a simple Rust project

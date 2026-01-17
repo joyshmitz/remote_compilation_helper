@@ -702,13 +702,18 @@ fn check_ssh_keys(
     }
 
     if !found_key {
+        let default_key = ssh_dir.join("id_ed25519");
         let result = CheckResult {
             category: "ssh".to_string(),
             name: "ssh_keys".to_string(),
             status: CheckStatus::Warning,
             message: "No standard SSH keys found".to_string(),
             details: Some("Checked: ~/.ssh/id_{ed25519,rsa,ecdsa}".to_string()),
-            suggestion: Some("Generate an SSH key: ssh-keygen -t ed25519".to_string()),
+            suggestion: Some(format!(
+                "Generate an SSH key: ssh-keygen -t ed25519 -f {} && ssh-add {}",
+                default_key.display(),
+                default_key.display()
+            )),
             fixable: false,
         };
         print_check_result(&result, ctx);
@@ -877,6 +882,7 @@ fn ssh_worker_suggestion(user: &str, host: &str, key_path: &Path) -> String {
     format!(
         "Copy key: ssh-copy-id -i {key} {user}@{host}; \
 Test: ssh -i {key} {user}@{host} echo \"success\"; \
+Agent: eval $(ssh-agent) && ssh-add {key}; \
 Debug: ssh -vvv -i {key} {user}@{host}",
         key = key,
         user = user,

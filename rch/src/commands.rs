@@ -771,31 +771,46 @@ pub async fn workers_probe(
 }
 
 fn classify_ssh_error(worker: &WorkerConfig, err: &anyhow::Error, timeout: Duration) -> SshError {
-    let message = err.to_string();
-    let message_lower = message.to_lowercase();
     let key_path = ssh_key_path(worker);
+    classify_ssh_error_message(
+        &worker.host,
+        &worker.user,
+        key_path,
+        &err.to_string(),
+        timeout,
+    )
+}
+
+fn classify_ssh_error_message(
+    host: &str,
+    user: &str,
+    key_path: PathBuf,
+    message: &str,
+    timeout: Duration,
+) -> SshError {
+    let message_lower = message.to_lowercase();
 
     if message_lower.contains("permission denied") || message_lower.contains("publickey") {
         return SshError::PermissionDenied {
-            host: worker.host.clone(),
-            user: worker.user.clone(),
-            key_path,
+            host: host.to_string(),
+            user: user.to_string(),
+            key_path: key_path.clone(),
         };
     }
 
     if message_lower.contains("connection refused") {
         return SshError::ConnectionRefused {
-            host: worker.host.clone(),
-            user: worker.user.clone(),
-            key_path,
+            host: host.to_string(),
+            user: user.to_string(),
+            key_path: key_path.clone(),
         };
     }
 
     if message_lower.contains("timed out") || message_lower.contains("timeout") {
         return SshError::ConnectionTimeout {
-            host: worker.host.clone(),
-            user: worker.user.clone(),
-            key_path,
+            host: host.to_string(),
+            user: user.to_string(),
+            key_path: key_path.clone(),
             timeout_secs: timeout.as_secs().max(1),
         };
     }
@@ -804,9 +819,9 @@ fn classify_ssh_error(worker: &WorkerConfig, err: &anyhow::Error, timeout: Durat
         || message_lower.contains("known_hosts")
     {
         return SshError::HostKeyVerificationFailed {
-            host: worker.host.clone(),
-            user: worker.user.clone(),
-            key_path,
+            host: host.to_string(),
+            user: user.to_string(),
+            key_path: key_path.clone(),
         };
     }
 
@@ -814,22 +829,27 @@ fn classify_ssh_error(worker: &WorkerConfig, err: &anyhow::Error, timeout: Durat
         || (message_lower.contains("agent") && message_lower.contains("no identities"))
     {
         return SshError::AgentUnavailable {
-            host: worker.host.clone(),
-            user: worker.user.clone(),
-            key_path,
+            host: host.to_string(),
+            user: user.to_string(),
+            key_path: key_path.clone(),
         };
     }
 
     SshError::ConnectionFailed {
-        host: worker.host.clone(),
-        user: worker.user.clone(),
+        host: host.to_string(),
+        user: user.to_string(),
         key_path,
-        message,
+        message: message.to_string(),
     }
 }
 
 fn ssh_key_path(worker: &WorkerConfig) -> PathBuf {
-    PathBuf::from(shellexpand::tilde(&worker.identity_file).to_string())
+    ssh_key_path_from_identity(Some(worker.identity_file.as_str()))
+}
+
+fn ssh_key_path_from_identity(identity_file: Option<&str>) -> PathBuf {
+    let path = identity_file.unwrap_or("~/.ssh/id_rsa");
+    PathBuf::from(shellexpand::tilde(path).to_string())
 }
 
 fn format_ssh_report(error: SshError) -> String {
@@ -894,21 +914,30 @@ pub async fn workers_benchmark(ctx: &OutputContext) -> Result<()> {
             );
         }
 
-        let mut client = SshClient::new(worker.clone(), SshOptions::default());
+        let ssh_options = SshOptions::default();
+        let mut client = SshClient::new(worker.clone(), ssh_options.clone());
 
         match client.connect().await {
             Ok(()) => {
+                let bench_id = uuid::Uuid::new_v4();
+                let bench_dir = format!("rch_bench_{}", bench_id);
+
                 // Run a simple benchmark: compile a hello world Rust program
-                let benchmark_cmd = r###"#
+                // Uses a unique directory and cleans up afterwards
+                let benchmark_cmd = format!(
+                    r###"#
                     cd /tmp && \
-                    mkdir -p rch_bench && \
-                    cd rch_bench && \
-                    echo 'fn main() { println!("hello"); }' > main.rs && \
-                    time rustc main.rs -o hello 2>&1 | grep real || echo 'rustc not found'
-                "###;
+                    mkdir -p {0} && \
+                    cd {0} && \
+                    echo 'fn main() {{ println!("hello"); }}' > main.rs && \
+                    (time rustc main.rs -o hello) 2>&1 | grep real || echo 'rustc not found'; \
+                    cd .. && rm -rf {0}
+                "###,
+                    bench_dir
+                );
 
                 let start = std::time::Instant::now();
-                let result = client.execute(benchmark_cmd).await;
+                let result = client.execute(&benchmark_cmd).await;
                 let duration = start.elapsed();
 
                 match result {
@@ -949,19 +978,21 @@ pub async fn workers_benchmark(ctx: &OutputContext) -> Result<()> {
                         }
                     }
                     Err(e) => {
+                        let ssh_error = classify_ssh_error(worker, &e, ssh_options.command_timeout);
+                        let report = format_ssh_report(ssh_error);
                         if ctx.is_json() {
                             results.push(WorkerBenchmarkResult {
                                 id: worker.id.as_str().to_string(),
                                 host: worker.host.clone(),
                                 status: "error".to_string(),
                                 duration_ms: None,
-                                error: Some(e.to_string()),
+                                error: Some(report),
                             });
                         } else {
                             println!(
-                                "{} {}",
+                                "{}\n{}",
                                 StatusIndicator::Error.display(style),
-                                style.error(&e.to_string())
+                                indent_lines(&report, "    ")
                             );
                         }
                     }
@@ -969,19 +1000,21 @@ pub async fn workers_benchmark(ctx: &OutputContext) -> Result<()> {
                 let _ = client.disconnect().await;
             }
             Err(e) => {
+                let ssh_error = classify_ssh_error(worker, &e, ssh_options.connect_timeout);
+                let report = format_ssh_report(ssh_error);
                 if ctx.is_json() {
                     results.push(WorkerBenchmarkResult {
                         id: worker.id.as_str().to_string(),
                         host: worker.host.clone(),
                         status: "connection_failed".to_string(),
                         duration_ms: None,
-                        error: Some(e.to_string()),
+                        error: Some(report),
                     });
                 } else {
                     println!(
-                        "{} {}",
+                        "{}\n{}",
                         StatusIndicator::Error.with_label(style, "Connection failed:"),
-                        style.muted(&e.to_string())
+                        indent_lines(&report, "    ")
                     );
                 }
             }
@@ -2815,7 +2848,22 @@ echo "ARCH:$(uname -m 2>/dev/null || echo unknown)""#;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("SSH failed: {}", stderr.trim());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let message = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        let key_path = ssh_key_path_from_identity(host.identity_file.as_deref());
+        let ssh_error = classify_ssh_error_message(
+            &host.hostname,
+            &host.user,
+            key_path,
+            message,
+            Duration::from_secs(10),
+        );
+        let report = format_ssh_report(ssh_error);
+        bail!(report);
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);

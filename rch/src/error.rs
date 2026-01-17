@@ -266,7 +266,7 @@ Run 'rch doctor' for comprehensive SSH diagnostics."
     },
 
     /// SSH agent is unavailable or has no keys.
-    #[error("SSH agent unavailable for key {key_path}")]
+    #[error("SSH agent unavailable for key {key_path:?}")]
     #[diagnostic(
         code(rch::ssh::agent_unavailable),
         help(

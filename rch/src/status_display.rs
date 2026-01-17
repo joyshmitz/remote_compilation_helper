@@ -9,6 +9,7 @@
 use crate::status_types::{DaemonFullStatusResponse, extract_json_body, format_duration};
 use crate::ui::theme::Theme;
 use anyhow::{Context, Result};
+use std::io::Write;
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -66,32 +67,47 @@ pub fn render_full_status(
     show_jobs: bool,
     style: &Theme,
 ) {
-    println!("{}", style.format_header("RCH Status"));
-    println!();
+    let mut stdout = std::io::stdout();
+    let _ = render_full_status_to(&mut stdout, status, show_workers, show_jobs, style);
+}
+
+fn render_full_status_to<W: Write>(
+    out: &mut W,
+    status: &DaemonFullStatusResponse,
+    show_workers: bool,
+    show_jobs: bool,
+    style: &Theme,
+) -> std::io::Result<()> {
+    writeln!(out, "{}", style.format_header("RCH Status"))?;
+    writeln!(out)?;
 
     // Daemon info
-    println!(
+    writeln!(
+        out,
         "  {} {} {} (PID {})",
         style.key("Daemon"),
         style.muted(":"),
         style.success("Running"),
         style.highlight(&status.daemon.pid.to_string())
-    );
-    println!(
+    )?;
+    writeln!(
+        out,
         "  {} {} {}",
         style.key("Uptime"),
         style.muted(":"),
         style.info(&format_duration(status.daemon.uptime_secs))
-    );
-    println!(
+    )?;
+    writeln!(
+        out,
         "  {} {} {}",
         style.key("Version"),
         style.muted(":"),
         style.info(&status.daemon.version)
-    );
+    )?;
 
     // Worker summary
-    println!(
+    writeln!(
+        out,
         "  {} {} {}/{} healthy, {}/{} slots available",
         style.key("Workers"),
         style.muted(":"),
@@ -99,7 +115,7 @@ pub fn render_full_status(
         status.daemon.workers_total,
         style.highlight(&status.daemon.slots_available.to_string()),
         status.daemon.slots_total
-    );
+    )?;
 
     // Build stats
     let success_rate = if status.stats.total_builds > 0 {
@@ -107,17 +123,19 @@ pub fn render_full_status(
     } else {
         100.0
     };
-    println!(
+    writeln!(
+        out,
         "  {} {} {} total, {:.0}% success rate",
         style.key("Builds"),
         style.muted(":"),
         style.highlight(&status.stats.total_builds.to_string()),
         success_rate
-    );
+    )?;
 
     // Hook status (check locally)
     let hook_installed = check_hook_installed();
-    println!(
+    writeln!(
+        out,
         "  {} {} {}",
         style.key("Hook"),
         style.muted(":"),
@@ -126,48 +144,61 @@ pub fn render_full_status(
         } else {
             style.warning("Not installed")
         }
-    );
+    )?;
 
     // Issues section if any
     if !status.issues.is_empty() {
-        println!("\n{}", style.format_header("Issues"));
+        writeln!(out, "\n{}", style.format_header("Issues"))?;
         for issue in &status.issues {
             let severity_style = match issue.severity.as_str() {
                 "critical" | "error" => style.error(&issue.severity),
                 "warning" => style.warning(&issue.severity),
                 _ => style.info(&issue.severity),
             };
-            println!(
+            writeln!(
+                out,
                 "  {} [{}] {}",
                 style.symbols.bullet_filled, severity_style, issue.summary
-            );
+            )?;
             if let Some(remediation) = &issue.remediation {
-                println!("    {} {}", style.muted("Fix:"), style.info(remediation));
+                writeln!(
+                    out,
+                    "    {} {}",
+                    style.muted("Fix:"),
+                    style.info(remediation)
+                )?;
             }
         }
     }
 
     // Workers section
     if show_workers {
-        render_workers_table(status, style);
+        render_workers_table_to(out, status, style)?;
     }
 
     // Jobs/builds section
     if show_jobs {
-        render_builds_section(status, style);
+        render_builds_section_to(out, status, style)?;
     }
+
+    Ok(())
 }
 
 /// Render the workers table.
-fn render_workers_table(status: &DaemonFullStatusResponse, style: &Theme) {
-    println!("\n{}", style.format_header("Workers"));
+fn render_workers_table_to<W: Write>(
+    out: &mut W,
+    status: &DaemonFullStatusResponse,
+    style: &Theme,
+) -> std::io::Result<()> {
+    writeln!(out, "\n{}", style.format_header("Workers"))?;
     if status.workers.is_empty() {
-        println!("  {}", style.muted("(none configured)"));
-        return;
+        writeln!(out, "  {}", style.muted("(none configured)"))?;
+        return Ok(());
     }
 
     // Table header
-    println!(
+    writeln!(
+        out,
         "  {:12} {:8} {:10} {:6} {:10} {:8}",
         style.key("ID"),
         style.key("Status"),
@@ -175,11 +206,12 @@ fn render_workers_table(status: &DaemonFullStatusResponse, style: &Theme) {
         style.key("Slots"),
         style.key("Speed"),
         style.key("Host")
-    );
-    println!(
+    )?;
+    writeln!(
+        out,
         "  {:12} {:8} {:10} {:6} {:10} {:8}",
         "────────────", "────────", "──────────", "──────", "──────────", "────────"
-    );
+    )?;
 
     for worker in &status.workers {
         let status_display = match worker.status.as_str() {
@@ -205,7 +237,8 @@ fn render_workers_table(status: &DaemonFullStatusResponse, style: &Theme) {
         let slots = format!("{}/{}", worker.used_slots, worker.total_slots);
         let speed = format!("{:.1}", worker.speed_score);
 
-        println!(
+        writeln!(
+            out,
             "  {:12} {:8} {:10} {:6} {:10} {}@{}",
             style.highlight(&worker.id),
             status_display,
@@ -214,17 +247,23 @@ fn render_workers_table(status: &DaemonFullStatusResponse, style: &Theme) {
             speed,
             style.muted(&worker.user),
             style.info(&worker.host)
-        );
+        )?;
 
         // Show detailed circuit info for workers with issues
         if worker.circuit_state != "closed" {
-            render_circuit_details(worker, style);
+            render_circuit_details_to(out, worker, style)?;
         }
     }
+
+    Ok(())
 }
 
 /// Render detailed circuit breaker information for a worker.
-fn render_circuit_details(worker: &crate::status_types::WorkerStatusFromApi, style: &Theme) {
+fn render_circuit_details_to<W: Write>(
+    out: &mut W,
+    worker: &crate::status_types::WorkerStatusFromApi,
+    style: &Theme,
+) -> std::io::Result<()> {
     let (state_name, explanation, help_text) = circuit_state_explanation(
         &worker.circuit_state,
         worker.consecutive_failures,
@@ -233,7 +272,8 @@ fn render_circuit_details(worker: &crate::status_types::WorkerStatusFromApi, sty
     );
 
     // Show explanation
-    println!(
+    writeln!(
+        out,
         "    {} {}",
         style.muted("Circuit:"),
         match worker.circuit_state.as_str() {
@@ -241,18 +281,19 @@ fn render_circuit_details(worker: &crate::status_types::WorkerStatusFromApi, sty
             "half_open" => style.warning(state_name),
             _ => style.muted(state_name),
         }
-    );
-    println!("      {}", style.muted(&explanation));
+    )?;
+    writeln!(out, "      {}", style.muted(&explanation))?;
 
     // Show failure history if available
     if !worker.failure_history.is_empty() {
         let history_visual = format_failure_history(&worker.failure_history);
-        println!(
+        writeln!(
+            out,
             "    {} {} {}",
             style.muted("History:"),
             history_visual,
             style.muted(&format!("(last {} attempts)", worker.failure_history.len()))
-        );
+        )?;
     }
 
     // Show last error if available
@@ -262,25 +303,37 @@ fn render_circuit_details(worker: &crate::status_types::WorkerStatusFromApi, sty
         } else {
             error.clone()
         };
-        println!(
+        writeln!(
+            out,
             "    {} {}",
             style.muted("Reason:"),
             style.error(&error_truncated)
-        );
+        )?;
     }
 
     // Show help text for non-closed circuits
     if !help_text.is_empty() {
-        println!("    {} {}", style.muted("Help:"), style.info(help_text));
+        writeln!(
+            out,
+            "    {} {}",
+            style.muted("Help:"),
+            style.info(help_text)
+        )?;
     }
+
+    Ok(())
 }
 
 /// Render the builds section (active and recent).
-fn render_builds_section(status: &DaemonFullStatusResponse, style: &Theme) {
+fn render_builds_section_to<W: Write>(
+    out: &mut W,
+    status: &DaemonFullStatusResponse,
+    style: &Theme,
+) -> std::io::Result<()> {
     // Active builds
-    println!("\n{}", style.format_header("Active Builds"));
+    writeln!(out, "\n{}", style.format_header("Active Builds"))?;
     if status.active_builds.is_empty() {
-        println!("  {}", style.muted("(no active builds)"));
+        writeln!(out, "  {}", style.muted("(no active builds)"))?;
     } else {
         for build in &status.active_builds {
             let cmd_display = if build.command.len() > 50 {
@@ -288,20 +341,21 @@ fn render_builds_section(status: &DaemonFullStatusResponse, style: &Theme) {
             } else {
                 build.command.clone()
             };
-            println!(
+            writeln!(
+                out,
                 "  {} #{} on {} - {}",
                 style.symbols.bullet_filled,
                 style.highlight(&build.id.to_string()),
                 style.info(&build.worker_id),
                 style.muted(&cmd_display)
-            );
+            )?;
         }
     }
 
     // Recent builds
-    println!("\n{}", style.format_header("Recent Builds"));
+    writeln!(out, "\n{}", style.format_header("Recent Builds"))?;
     if status.recent_builds.is_empty() {
-        println!("  {}", style.muted("(no recent builds)"));
+        writeln!(out, "  {}", style.muted("(no recent builds)"))?;
     } else {
         for build in status.recent_builds.iter().take(10) {
             let status_indicator = if build.exit_code == 0 {
@@ -321,7 +375,8 @@ fn render_builds_section(status: &DaemonFullStatusResponse, style: &Theme) {
                 build.command.clone()
             };
 
-            println!(
+            writeln!(
+                out,
                 "  {} {} {:8} {} {}",
                 status_indicator,
                 style.muted(&duration),
@@ -332,9 +387,11 @@ fn render_builds_section(status: &DaemonFullStatusResponse, style: &Theme) {
                     .map(|w| style.highlight(w))
                     .unwrap_or_else(|| style.muted("-")),
                 style.muted(&cmd_display)
-            );
+            )?;
         }
     }
+
+    Ok(())
 }
 
 /// Check if the Claude Code hook is installed.
@@ -415,11 +472,22 @@ pub fn circuit_state_explanation(
 
 /// Render basic status when daemon is not running.
 pub fn render_basic_status(daemon_running: bool, show_workers: bool, style: &Theme) {
-    println!("{}", style.format_header("RCH Status"));
-    println!();
+    let mut stdout = std::io::stdout();
+    let _ = render_basic_status_to(&mut stdout, daemon_running, show_workers, style);
+}
+
+fn render_basic_status_to<W: Write>(
+    out: &mut W,
+    daemon_running: bool,
+    show_workers: bool,
+    style: &Theme,
+) -> std::io::Result<()> {
+    writeln!(out, "{}", style.format_header("RCH Status"))?;
+    writeln!(out)?;
 
     // Daemon status
-    println!(
+    writeln!(
+        out,
         "  {} {} {}",
         style.key("Daemon"),
         style.muted(":"),
@@ -428,27 +496,30 @@ pub fn render_basic_status(daemon_running: bool, show_workers: bool, style: &The
         } else {
             style.error("Stopped")
         }
-    );
+    )?;
 
     if !daemon_running {
-        println!(
+        writeln!(
+            out,
             "    {} {}",
             style.symbols.bullet_filled,
             style.muted("Start with: rch daemon start")
-        );
+        )?;
     }
 
     // Worker count from config - use a simple message since we don't have load_workers_from_config here
-    println!(
+    writeln!(
+        out,
         "  {} {} {}",
         style.key("Workers"),
         style.muted(":"),
         style.muted("(check config for details)")
-    );
+    )?;
 
     // Hook status
     let hook_installed = check_hook_installed();
-    println!(
+    writeln!(
+        out,
         "  {} {} {}",
         style.key("Hook"),
         style.muted(":"),
@@ -457,28 +528,129 @@ pub fn render_basic_status(daemon_running: bool, show_workers: bool, style: &The
         } else {
             style.warning("Not installed")
         }
-    );
+    )?;
 
     if show_workers {
-        println!("\n{}", style.format_header("Workers"));
-        println!(
+        writeln!(out, "\n{}", style.format_header("Workers"))?;
+        writeln!(
+            out,
             "  {} {}",
             style.symbols.info,
             style.muted("Start daemon for worker status: rch daemon start")
-        );
+        )?;
     }
 
-    println!();
-    println!(
+    writeln!(out)?;
+    writeln!(
+        out,
         "  {} {}",
         style.symbols.info,
         style.warning("Start daemon for live status: rch daemon start")
-    );
+    )?;
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::status_types::{
+        ActiveBuildFromApi, BuildRecordFromApi, BuildStatsFromApi, DaemonFullStatusResponse,
+        DaemonInfoFromApi, IssueFromApi, WorkerStatusFromApi,
+    };
+    use tracing::info;
+
+    fn sample_status() -> DaemonFullStatusResponse {
+        DaemonFullStatusResponse {
+            daemon: DaemonInfoFromApi {
+                pid: 4242,
+                uptime_secs: 90,
+                version: "0.1.0".to_string(),
+                socket_path: rch_common::default_socket_path(),
+                started_at: "2026-01-17T00:00:00Z".to_string(),
+                workers_total: 2,
+                workers_healthy: 1,
+                slots_total: 16,
+                slots_available: 8,
+            },
+            workers: vec![
+                WorkerStatusFromApi {
+                    id: "worker-a".to_string(),
+                    host: "10.0.0.1".to_string(),
+                    user: "ubuntu".to_string(),
+                    status: "healthy".to_string(),
+                    circuit_state: "closed".to_string(),
+                    used_slots: 2,
+                    total_slots: 8,
+                    speed_score: 92.5,
+                    last_error: None,
+                    consecutive_failures: 0,
+                    recovery_in_secs: None,
+                    failure_history: vec![true, true],
+                },
+                WorkerStatusFromApi {
+                    id: "worker-b".to_string(),
+                    host: "10.0.0.2".to_string(),
+                    user: "ubuntu".to_string(),
+                    status: "unhealthy".to_string(),
+                    circuit_state: "open".to_string(),
+                    used_slots: 8,
+                    total_slots: 8,
+                    speed_score: 12.3,
+                    last_error: Some("SSH timeout".to_string()),
+                    consecutive_failures: 3,
+                    recovery_in_secs: Some(30),
+                    failure_history: vec![false, false, true],
+                },
+            ],
+            active_builds: vec![ActiveBuildFromApi {
+                id: 1,
+                project_id: "proj".to_string(),
+                worker_id: "worker-a".to_string(),
+                command: "cargo build".to_string(),
+                started_at: "2026-01-17T00:00:01Z".to_string(),
+            }],
+            recent_builds: vec![
+                BuildRecordFromApi {
+                    id: 2,
+                    started_at: "2026-01-17T00:00:02Z".to_string(),
+                    completed_at: "2026-01-17T00:00:03Z".to_string(),
+                    project_id: "proj".to_string(),
+                    worker_id: Some("worker-a".to_string()),
+                    command: "cargo test --release".to_string(),
+                    exit_code: 0,
+                    duration_ms: 1250,
+                    location: "remote".to_string(),
+                    bytes_transferred: Some(2048),
+                },
+                BuildRecordFromApi {
+                    id: 3,
+                    started_at: "2026-01-17T00:00:04Z".to_string(),
+                    completed_at: "2026-01-17T00:00:05Z".to_string(),
+                    project_id: "proj".to_string(),
+                    worker_id: None,
+                    command: "cargo check".to_string(),
+                    exit_code: 1,
+                    duration_ms: 540,
+                    location: "local".to_string(),
+                    bytes_transferred: None,
+                },
+            ],
+            issues: vec![IssueFromApi {
+                severity: "warning".to_string(),
+                summary: "worker-b unreachable".to_string(),
+                remediation: Some("Check SSH connectivity".to_string()),
+            }],
+            stats: BuildStatsFromApi {
+                total_builds: 2,
+                success_count: 1,
+                failure_count: 1,
+                remote_count: 1,
+                local_count: 1,
+                avg_duration_ms: 895,
+            },
+        }
+    }
 
     #[test]
     fn test_format_failure_history_empty() {
@@ -542,5 +714,83 @@ mod tests {
         let (state, explanation, _help) = circuit_state_explanation("weird_state", 0, None, None);
         assert_eq!(state, "UNKNOWN");
         assert!(explanation.contains("Unknown"));
+    }
+
+    #[test]
+    fn test_render_full_status_includes_workers_and_circuits() {
+        info!("TEST: test_render_full_status_includes_workers_and_circuits");
+        let status = sample_status();
+        let style = Theme::new(false, true, false);
+        let mut buf = Vec::new();
+        render_full_status_to(&mut buf, &status, true, false, &style).expect("render");
+        let output = String::from_utf8(buf).expect("utf8 output");
+
+        assert!(output.contains("worker-a"));
+        assert!(output.contains("healthy"));
+        assert!(output.contains("worker-b"));
+        assert!(output.contains("unhealthy"));
+        assert!(output.contains("open (30s)"));
+        info!("PASS: workers and circuit states rendered");
+    }
+
+    #[test]
+    fn test_render_full_status_includes_build_sections() {
+        info!("TEST: test_render_full_status_includes_build_sections");
+        let status = sample_status();
+        let style = Theme::new(false, true, false);
+        let mut buf = Vec::new();
+        render_full_status_to(&mut buf, &status, false, true, &style).expect("render");
+        let output = String::from_utf8(buf).expect("utf8 output");
+
+        assert!(output.contains("Active Builds"));
+        assert!(output.contains("Recent Builds"));
+        assert!(output.contains("cargo build"));
+        assert!(output.contains("cargo test --release"));
+        assert!(output.contains("✓"));
+        assert!(output.contains("✗"));
+        info!("PASS: build sections rendered with status indicators");
+    }
+
+    #[test]
+    fn test_render_full_status_includes_circuit_details() {
+        info!("TEST: test_render_full_status_includes_circuit_details");
+        let status = sample_status();
+        let style = Theme::new(false, true, false);
+        let mut buf = Vec::new();
+        render_full_status_to(&mut buf, &status, true, false, &style).expect("render");
+        let output = String::from_utf8(buf).expect("utf8 output");
+
+        assert!(output.contains("Circuit:"));
+        assert!(output.contains("History:"));
+        assert!(output.contains("Reason:"));
+        assert!(output.contains("Help:"));
+        info!("PASS: circuit details rendered");
+    }
+
+    #[test]
+    fn test_render_basic_status_stopped() {
+        info!("TEST: test_render_basic_status_stopped");
+        let style = Theme::new(false, true, false);
+        let mut buf = Vec::new();
+        render_basic_status_to(&mut buf, false, true, &style).expect("render");
+        let output = String::from_utf8(buf).expect("utf8 output");
+
+        assert!(output.contains("Stopped"));
+        assert!(output.contains("Start with: rch daemon start"));
+        assert!(output.contains("Start daemon for worker status"));
+        info!("PASS: basic status stopped message rendered");
+    }
+
+    #[test]
+    fn test_render_basic_status_running() {
+        info!("TEST: test_render_basic_status_running");
+        let style = Theme::new(false, true, false);
+        let mut buf = Vec::new();
+        render_basic_status_to(&mut buf, true, false, &style).expect("render");
+        let output = String::from_utf8(buf).expect("utf8 output");
+
+        assert!(output.contains("Running (not responding)"));
+        assert!(!output.contains("Start with: rch daemon start"));
+        info!("PASS: basic status running message rendered");
     }
 }
