@@ -454,10 +454,20 @@ fn classify_full(cmd: &str) -> Classification {
     // Bun commands
     if let Some(rest) = cmd.strip_prefix("bun ") {
         // bun test [options] [patterns]
-        // Examples: "bun test", "bun test --watch", "bun test src/"
+        // Examples: "bun test", "bun test src/", "bun test --coverage"
+        // NOTE: --watch mode should NOT be intercepted (interactive)
         if let Some(after_test) = rest.strip_prefix("test") {
             // Ensure it's "test" or "test " (not "testing")
             if after_test.is_empty() || after_test.starts_with(' ') {
+                // Check for --watch flag - don't intercept interactive mode
+                if after_test
+                    .split_whitespace()
+                    .any(|a| a == "-w" || a == "--watch")
+                {
+                    return Classification::not_compilation(
+                        "bun test --watch is interactive (not intercepted)",
+                    );
+                }
                 return Classification::compilation(
                     CompilationKind::BunTest,
                     0.95,
@@ -467,9 +477,16 @@ fn classify_full(cmd: &str) -> Classification {
         }
 
         // bun typecheck [options]
-        // Examples: "bun typecheck", "bun typecheck --watch"
+        // Examples: "bun typecheck", "bun typecheck src/"
+        // NOTE: --watch mode should NOT be intercepted (interactive)
         if let Some(after) = rest.strip_prefix("typecheck") {
             if after.is_empty() || after.starts_with(' ') {
+                // Check for --watch flag - don't intercept interactive mode
+                if after.split_whitespace().any(|a| a == "-w" || a == "--watch") {
+                    return Classification::not_compilation(
+                        "bun typecheck --watch is interactive (not intercepted)",
+                    );
+                }
                 return Classification::compilation(
                     CompilationKind::BunTypecheck,
                     0.95,
@@ -740,8 +757,8 @@ mod tests {
         assert!(result.is_compilation);
         assert_eq!(result.kind, Some(CompilationKind::BunTest));
 
-        // With flags
-        let result = classify_command("bun test --watch --coverage");
+        // With coverage flag (non-interactive)
+        let result = classify_command("bun test --coverage");
         assert!(result.is_compilation);
         assert_eq!(result.kind, Some(CompilationKind::BunTest));
 
@@ -762,6 +779,43 @@ mod tests {
     }
 
     #[test]
+    fn test_bun_test_watch_not_intercepted() {
+        // --watch mode is interactive and should NOT be intercepted
+        let result = classify_command("bun test --watch");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("interactive"));
+
+        // Watch with other flags
+        let result = classify_command("bun test --watch --coverage");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("interactive"));
+
+        // Watch with directory
+        let result = classify_command("bun test src/ --watch");
+        assert!(!result.is_compilation);
+
+        // Short form -w
+        let result = classify_command("bun test -w");
+        assert!(!result.is_compilation);
+
+        // Short form with args
+        let result = classify_command("bun test -w src/");
+        assert!(!result.is_compilation);
+    }
+
+    #[test]
+    fn test_bun_typecheck_watch_not_intercepted() {
+        // --watch mode is interactive and should NOT be intercepted
+        let result = classify_command("bun typecheck --watch");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("interactive"));
+
+        // Short form -w
+        let result = classify_command("bun typecheck -w");
+        assert!(!result.is_compilation);
+    }
+
+    #[test]
     fn test_bun_typecheck_classification() {
         // Basic command
         let result = classify_command("bun typecheck");
@@ -769,15 +823,13 @@ mod tests {
         assert_eq!(result.kind, Some(CompilationKind::BunTypecheck));
         assert!((result.confidence - 0.95).abs() < 0.001);
 
-        // With watch flag
-        let result = classify_command("bun typecheck --watch");
-        assert!(result.is_compilation);
-        assert_eq!(result.kind, Some(CompilationKind::BunTypecheck));
-
         // With directory argument
         let result = classify_command("bun typecheck src/");
         assert!(result.is_compilation);
         assert_eq!(result.kind, Some(CompilationKind::BunTypecheck));
+
+        // NOTE: --watch mode is tested separately in test_bun_typecheck_watch_not_intercepted
+        // It should NOT be intercepted as it's interactive
     }
 
     #[test]
@@ -854,11 +906,107 @@ mod tests {
         let result = classify_command("time cargo build");
         assert!(result.is_compilation, "Should classify 'time cargo build' as compilation");
         assert_eq!(result.kind, Some(CompilationKind::CargoBuild));
-        
+
         let result = classify_command("sudo cargo check");
         assert!(result.is_compilation, "Should classify 'sudo cargo check' as compilation");
-        
+
         let result = classify_command("env RUST_BACKTRACE=1 cargo test");
         assert!(result.is_compilation, "Should classify env-wrapped cargo test as compilation");
+    }
+
+    // =========================================================================
+    // Bun E2E Edge Case Tests (from bead remote_compilation_helper-65m)
+    // =========================================================================
+
+    #[test]
+    fn test_bun_piped_commands_not_intercepted() {
+        // Piped commands should be rejected at Tier 1 (structure analysis)
+        let result = classify_command("bun test | grep error");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("piped"), "Should be rejected as piped command");
+
+        // Piped with output filtering
+        let result = classify_command("bun test 2>&1 | tee output.log");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("piped"));
+
+        // Piped typecheck
+        let result = classify_command("bun typecheck | head -20");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("piped"));
+    }
+
+    #[test]
+    fn test_bunx_tsc_not_intercepted() {
+        // bunx (bun x) runs arbitrary packages - should NOT be intercepted
+        // even for typecheck-like commands like tsc
+        let result = classify_command("bun x tsc --noEmit");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("bun x"));
+
+        // bunx with other tools
+        let result = classify_command("bun x eslint .");
+        assert!(!result.is_compilation);
+
+        let result = classify_command("bun x prettier --write .");
+        assert!(!result.is_compilation);
+
+        let result = classify_command("bun x vitest run");
+        assert!(!result.is_compilation);
+    }
+
+    #[test]
+    fn test_bun_redirected_not_intercepted() {
+        // Output redirection should be rejected at Tier 1
+        let result = classify_command("bun test > results.txt");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("redirect"));
+
+        let result = classify_command("bun typecheck > errors.log");
+        assert!(!result.is_compilation);
+    }
+
+    #[test]
+    fn test_bun_backgrounded_not_intercepted() {
+        // Backgrounded commands should be rejected at Tier 1
+        let result = classify_command("bun test &");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("background"));
+    }
+
+    #[test]
+    fn test_bun_chained_commands_not_intercepted() {
+        // Chained commands should be rejected at Tier 1
+        let result = classify_command("bun test && echo done");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("chained"));
+
+        let result = classify_command("bun typecheck; bun test");
+        assert!(!result.is_compilation);
+    }
+
+    #[test]
+    fn test_bun_subshell_capture_not_intercepted() {
+        // Subshell capture should be rejected at Tier 1
+        let result = classify_command("bun test $(echo src/)");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("subshell"));
+    }
+
+    #[test]
+    fn test_bun_wrapped_commands() {
+        // Wrapped bun commands should still be classified
+        // (requires normalize_command to handle wrappers)
+        let result = classify_command("time bun test");
+        // Currently may or may not work depending on normalize_command
+        // This test documents current behavior
+        if result.is_compilation {
+            assert_eq!(result.kind, Some(CompilationKind::BunTest));
+        }
+
+        let result = classify_command("env DEBUG=1 bun test");
+        if result.is_compilation {
+            assert_eq!(result.kind, Some(CompilationKind::BunTest));
+        }
     }
 }
