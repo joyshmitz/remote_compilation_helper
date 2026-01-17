@@ -3,7 +3,7 @@
 //! This module contains the actual business logic for each CLI subcommand.
 
 use crate::ui::context::OutputContext;
-use crate::ui::theme::{StatusIndicator, Theme};
+use crate::ui::theme::StatusIndicator;
 use anyhow::{Context, Result, bail};
 use directories::ProjectDirs;
 use rch_common::{RchConfig, SshClient, SshOptions, WorkerConfig, WorkerId};
@@ -26,6 +26,7 @@ const DEFAULT_SOCKET_PATH: &str = "/tmp/rch.sock";
 pub const JSON_ENVELOPE_VERSION: &str = "1";
 
 /// Standard error codes for JSON responses.
+#[allow(dead_code)]
 pub mod error_codes {
     pub const WORKER_UNREACHABLE: &str = "WORKER_UNREACHABLE";
     pub const WORKER_NOT_FOUND: &str = "WORKER_NOT_FOUND";
@@ -54,6 +55,7 @@ pub struct JsonError {
     pub suggestions: Option<Vec<String>>,
 }
 
+#[allow(dead_code)]
 impl JsonError {
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
@@ -213,6 +215,23 @@ pub struct ConfigShowResponse {
     pub compilation: ConfigCompilationSection,
     pub transfer: ConfigTransferSection,
     pub sources: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_sources: Option<Vec<ConfigValueSource>>,
+}
+
+/// Source information for a single configuration value.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigValueSource {
+    pub key: String,
+    pub value: String,
+    pub source: String,
+}
+
+/// Configuration export response for JSON output.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigExportResponse {
+    pub format: String,
+    pub content: String,
 }
 
 /// General configuration section.
@@ -296,19 +315,6 @@ pub struct ClassificationTestResult {
     pub confidence: f64,
     pub expected_intercept: bool,
     pub passed: bool,
-}
-
-/// Create a style for terminal output.
-///
-/// Detects terminal capabilities and creates appropriate styling.
-fn terminal_style() -> Theme {
-    let is_tty = is_terminal::is_terminal(std::io::stdout());
-    let supports_unicode = is_tty
-        && std::env::var("LANG")
-            .map(|l| l.contains("UTF"))
-            .unwrap_or(true);
-    let supports_hyperlinks = crate::ui::adaptive::detect_hyperlink_support();
-    Theme::new(is_tty, supports_unicode, supports_hyperlinks)
 }
 
 /// Get the RCH config directory path.
@@ -822,25 +828,23 @@ pub async fn workers_drain(worker_id: &str, ctx: &OutputContext) -> Result<()> {
                         style.muted(&response)
                     );
                 }
+            } else if ctx.is_json() {
+                let _ = ctx.json(&JsonResponse::ok("workers drain", WorkerActionResponse {
+                    worker_id: worker_id.to_string(),
+                    action: "drain".to_string(),
+                    success: true,
+                    message: Some("Worker is now draining".to_string()),
+                }));
             } else {
-                if ctx.is_json() {
-                    let _ = ctx.json(&JsonResponse::ok("workers drain", WorkerActionResponse {
-                        worker_id: worker_id.to_string(),
-                        action: "drain".to_string(),
-                        success: true,
-                        message: Some("Worker is now draining".to_string()),
-                    }));
-                } else {
-                    println!(
-                        "{} Worker {} is now draining.",
-                        StatusIndicator::Success.display(style),
-                        style.highlight(worker_id)
-                    );
-                    println!(
-                        "  {} No new jobs will be sent. Existing jobs will complete.",
-                        StatusIndicator::Info.display(style)
-                    );
-                }
+                println!(
+                    "{} Worker {} is now draining.",
+                    StatusIndicator::Success.display(style),
+                    style.highlight(worker_id)
+                );
+                println!(
+                    "  {} No new jobs will be sent. Existing jobs will complete.",
+                    StatusIndicator::Info.display(style)
+                );
             }
         }
         Err(e) => {
@@ -897,21 +901,19 @@ pub async fn workers_enable(worker_id: &str, ctx: &OutputContext) -> Result<()> 
                         style.muted(&response)
                     );
                 }
+            } else if ctx.is_json() {
+                let _ = ctx.json(&JsonResponse::ok("workers enable", WorkerActionResponse {
+                    worker_id: worker_id.to_string(),
+                    action: "enable".to_string(),
+                    success: true,
+                    message: Some("Worker is now enabled".to_string()),
+                }));
             } else {
-                if ctx.is_json() {
-                    let _ = ctx.json(&JsonResponse::ok("workers enable", WorkerActionResponse {
-                        worker_id: worker_id.to_string(),
-                        action: "enable".to_string(),
-                        success: true,
-                        message: Some("Worker is now enabled".to_string()),
-                    }));
-                } else {
-                    println!(
-                        "{} Worker {} is now enabled.",
-                        StatusIndicator::Success.display(style),
-                        style.highlight(worker_id)
-                    );
-                }
+                println!(
+                    "{} Worker {} is now enabled.",
+                    StatusIndicator::Success.display(style),
+                    style.highlight(worker_id)
+                );
             }
         }
         Err(e) => {
@@ -1097,25 +1099,23 @@ pub async fn daemon_start(ctx: &OutputContext) -> Result<()> {
                         style.value(DEFAULT_SOCKET_PATH)
                     );
                 }
+            } else if ctx.is_json() {
+                let _ = ctx.json(&JsonResponse::ok("daemon start", DaemonActionResponse {
+                    action: "start".to_string(),
+                    success: false,
+                    socket_path: DEFAULT_SOCKET_PATH.to_string(),
+                    message: Some("Process started but socket not found".to_string()),
+                }));
             } else {
-                if ctx.is_json() {
-                    let _ = ctx.json(&JsonResponse::ok("daemon start", DaemonActionResponse {
-                        action: "start".to_string(),
-                        success: false,
-                        socket_path: DEFAULT_SOCKET_PATH.to_string(),
-                        message: Some("Process started but socket not found".to_string()),
-                    }));
-                } else {
-                    println!(
-                        "{} Daemon process started but socket not found.",
-                        StatusIndicator::Warning.display(style)
-                    );
-                    println!(
-                        "  {} Check logs with: {}",
-                        StatusIndicator::Info.display(style),
-                        style.highlight("rch daemon logs")
-                    );
-                }
+                println!(
+                    "{} Daemon process started but socket not found.",
+                    StatusIndicator::Warning.display(style)
+                );
+                println!(
+                    "  {} Check logs with: {}",
+                    StatusIndicator::Info.display(style),
+                    style.highlight("rch daemon logs")
+                );
             }
         }
         Err(e) => {
@@ -1204,7 +1204,9 @@ pub async fn daemon_stop(ctx: &OutputContext) -> Result<()> {
             }
         }
         Err(_) => {
-            if !ctx.is_json() {
+            if ctx.is_json() {
+                let _ = ctx.json(&JsonResponse::<()>::err("daemon stop", "Could not send shutdown command"));
+            } else {
                 println!(
                     "{} Could not send shutdown command.",
                     StatusIndicator::Warning.display(style)
@@ -1336,18 +1338,22 @@ pub fn daemon_logs(lines: usize, ctx: &OutputContext) -> Result<()> {
             StatusIndicator::Warning.display(style)
         );
         println!("\n{}", style.key("Checked locations:"));
-        for path in &log_paths {
+        println!(
+            "{}",
+            style.muted("# Configuration sources (in priority order):")
+        );
+        println!("{}", style.muted("# 1. Environment variables (RCH_*)"));
+        println!("{}", style.muted("# 2. Project config: .rch/config.toml"));
+        if let Some(dir) = config_dir() {
             println!(
-                "  {} {}",
-                style.muted("-"),
-                style.muted(&path.display().to_string())
+                "{}",
+                style.muted(&format!(
+                    "# 3. User config: {}",
+                    dir.join("config.toml").display()
+                ))
             );
         }
-        println!(
-            "\n{} The daemon may log to stderr. Try running in foreground: {}",
-            StatusIndicator::Info.display(style),
-            style.highlight("rchd")
-        );
+        println!("{}", style.muted("# 4. Built-in defaults"));
     }
 
     Ok(())
@@ -1358,11 +1364,12 @@ pub fn daemon_logs(lines: usize, ctx: &OutputContext) -> Result<()> {
 // =============================================================================
 
 /// Show effective configuration.
-pub fn config_show(ctx: &OutputContext) -> Result<()> {
+pub fn config_show(show_sources: bool, ctx: &OutputContext) -> Result<()> {
     let style = ctx.theme();
 
     // Load user config
     let config = crate::config::load_config()?;
+    let defaults = RchConfig::default();
 
     // Build sources list
     let mut sources = vec![
@@ -1376,6 +1383,13 @@ pub fn config_show(ctx: &OutputContext) -> Result<()> {
         ));
     }
     sources.push("Built-in defaults".to_string());
+
+    // Determine source for each value
+    let value_sources = if show_sources {
+        Some(determine_value_sources(&config, &defaults))
+    } else {
+        None
+    };
 
     // JSON output mode
     if ctx.is_json() {
@@ -1394,48 +1408,83 @@ pub fn config_show(ctx: &OutputContext) -> Result<()> {
                 exclude_patterns: config.transfer.exclude_patterns.clone(),
             },
             sources,
+            value_sources,
         };
         let _ = ctx.json(&JsonResponse::ok("config show", response));
-        return Ok(())
+        return Ok(());
     }
 
     println!("{}", style.format_header("Effective RCH Configuration"));
     println!();
 
+    // Helper closure to format value with source
+    let format_with_source = |key: &str, value: &str, sources: &Option<Vec<ConfigValueSource>>| -> String {
+        if let Some(vs) = sources {
+            if let Some(s) = vs.iter().find(|v| v.key == key) {
+                return format!("{} {}", value, style.muted(&format!("# from {}", s.source)));
+            }
+        }
+        value.to_string()
+    };
+
     println!("{}", style.highlight("[general]"));
     println!(
         "  {} = {}",
         style.key("enabled"),
-        style.value(&config.general.enabled.to_string())
+        format_with_source(
+            "general.enabled",
+            &style.value(&config.general.enabled.to_string()),
+            &value_sources
+        )
     );
     println!(
         "  {} = {}",
         style.key("log_level"),
-        style.value(&format!("\"{}\"", config.general.log_level))
+        format_with_source(
+            "general.log_level",
+            &style.value(&format!("\"{}\"", config.general.log_level)),
+            &value_sources
+        )
     );
     println!(
         "  {} = {}",
         style.key("socket_path"),
-        style.value(&format!("\"{}\"", config.general.socket_path))
+        format_with_source(
+            "general.socket_path",
+            &style.value(&format!("\"{}\"", config.general.socket_path)),
+            &value_sources
+        )
     );
 
     println!("\n{}", style.highlight("[compilation]"));
     println!(
         "  {} = {}",
         style.key("confidence_threshold"),
-        style.value(&config.compilation.confidence_threshold.to_string())
+        format_with_source(
+            "compilation.confidence_threshold",
+            &style.value(&config.compilation.confidence_threshold.to_string()),
+            &value_sources
+        )
     );
     println!(
         "  {} = {}",
         style.key("min_local_time_ms"),
-        style.value(&config.compilation.min_local_time_ms.to_string())
+        format_with_source(
+            "compilation.min_local_time_ms",
+            &style.value(&config.compilation.min_local_time_ms.to_string()),
+            &value_sources
+        )
     );
 
     println!("\n{}", style.highlight("[transfer]"));
     println!(
         "  {} = {}",
         style.key("compression_level"),
-        style.value(&config.transfer.compression_level.to_string())
+        format_with_source(
+            "transfer.compression_level",
+            &style.value(&config.transfer.compression_level.to_string()),
+            &value_sources
+        )
     );
     println!("  {} = [", style.key("exclude_patterns"));
     for pattern in &config.transfer.exclude_patterns {
@@ -1462,6 +1511,130 @@ pub fn config_show(ctx: &OutputContext) -> Result<()> {
     println!("{}", style.muted("# 4. Built-in defaults"));
 
     Ok(())
+}
+
+/// Determine the source of each configuration value.
+fn determine_value_sources(config: &RchConfig, defaults: &RchConfig) -> Vec<ConfigValueSource> {
+    let mut sources = Vec::new();
+    let project_config_exists = PathBuf::from(".rch/config.toml").exists();
+    let user_config_exists = config_dir()
+        .map(|d| d.join("config.toml").exists())
+        .unwrap_or(false);
+
+    // Check each value and determine its source
+    // Priority: env > project > user > default
+
+    // general.enabled
+    let enabled_source = if std::env::var("RCH_ENABLED").is_ok() {
+        "env:RCH_ENABLED"
+    } else if project_config_exists && config.general.enabled != defaults.general.enabled {
+        "project:.rch/config.toml"
+    } else if user_config_exists && config.general.enabled != defaults.general.enabled {
+        "user:~/.config/rch/config.toml"
+    } else {
+        "default"
+    };
+    sources.push(ConfigValueSource {
+        key: "general.enabled".to_string(),
+        value: config.general.enabled.to_string(),
+        source: enabled_source.to_string(),
+    });
+
+    // general.log_level
+    let log_level_source = if std::env::var("RCH_LOG_LEVEL").is_ok() {
+        "env:RCH_LOG_LEVEL"
+    } else if project_config_exists && config.general.log_level != defaults.general.log_level {
+        "project:.rch/config.toml"
+    } else if user_config_exists && config.general.log_level != defaults.general.log_level {
+        "user:~/.config/rch/config.toml"
+    } else {
+        "default"
+    };
+    sources.push(ConfigValueSource {
+        key: "general.log_level".to_string(),
+        value: config.general.log_level.clone(),
+        source: log_level_source.to_string(),
+    });
+
+    // general.socket_path
+    let socket_source = if std::env::var("RCH_SOCKET_PATH").is_ok() {
+        "env:RCH_SOCKET_PATH"
+    } else if project_config_exists && config.general.socket_path != defaults.general.socket_path {
+        "project:.rch/config.toml"
+    } else if user_config_exists && config.general.socket_path != defaults.general.socket_path {
+        "user:~/.config/rch/config.toml"
+    } else {
+        "default"
+    };
+    sources.push(ConfigValueSource {
+        key: "general.socket_path".to_string(),
+        value: config.general.socket_path.clone(),
+        source: socket_source.to_string(),
+    });
+
+    // compilation.confidence_threshold
+    let threshold_source = if std::env::var("RCH_CONFIDENCE_THRESHOLD").is_ok() {
+        "env:RCH_CONFIDENCE_THRESHOLD"
+    } else if project_config_exists
+        && (config.compilation.confidence_threshold - defaults.compilation.confidence_threshold)
+            .abs()
+            > f64::EPSILON
+    {
+        "project:.rch/config.toml"
+    } else if user_config_exists
+        && (config.compilation.confidence_threshold - defaults.compilation.confidence_threshold)
+            .abs()
+            > f64::EPSILON
+    {
+        "user:~/.config/rch/config.toml"
+    } else {
+        "default"
+    };
+    sources.push(ConfigValueSource {
+        key: "compilation.confidence_threshold".to_string(),
+        value: config.compilation.confidence_threshold.to_string(),
+        source: threshold_source.to_string(),
+    });
+
+    // compilation.min_local_time_ms
+    let min_local_source = if project_config_exists
+        && config.compilation.min_local_time_ms != defaults.compilation.min_local_time_ms
+    {
+        "project:.rch/config.toml"
+    } else if user_config_exists
+        && config.compilation.min_local_time_ms != defaults.compilation.min_local_time_ms
+    {
+        "user:~/.config/rch/config.toml"
+    } else {
+        "default"
+    };
+    sources.push(ConfigValueSource {
+        key: "compilation.min_local_time_ms".to_string(),
+        value: config.compilation.min_local_time_ms.to_string(),
+        source: min_local_source.to_string(),
+    });
+
+    // transfer.compression_level
+    let compression_source = if std::env::var("RCH_COMPRESSION").is_ok() {
+        "env:RCH_COMPRESSION"
+    } else if project_config_exists
+        && config.transfer.compression_level != defaults.transfer.compression_level
+    {
+        "project:.rch/config.toml"
+    } else if user_config_exists
+        && config.transfer.compression_level != defaults.transfer.compression_level
+    {
+        "user:~/.config/rch/config.toml"
+    } else {
+        "default"
+    };
+    sources.push(ConfigValueSource {
+        key: "transfer.compression_level".to_string(),
+        value: config.transfer.compression_level.to_string(),
+        source: compression_source.to_string(),
+    });
+
+    sources
 }
 
 /// Initialize configuration files.
@@ -1883,6 +2056,84 @@ fn config_set_at(config_path: &Path, key: &str, value: &str, ctx: &OutputContext
     Ok(())
 }
 
+/// Export configuration as shell environment variables or .env format.
+pub fn config_export(format: &str, ctx: &OutputContext) -> Result<()> {
+    let config = crate::config::load_config()?;
+
+    match format {
+        "shell" => {
+            // Shell export format (for sourcing)
+            println!("# RCH configuration export");
+            println!("# Source this file: source <(rch config export)");
+            println!();
+            println!("export RCH_ENABLED={}", config.general.enabled);
+            println!("export RCH_LOG_LEVEL=\"{}\"", config.general.log_level);
+            println!("export RCH_DAEMON_SOCKET=\"{}\"", config.general.socket_path);
+            println!(
+                "export RCH_CONFIDENCE_THRESHOLD={}",
+                config.compilation.confidence_threshold
+            );
+            println!(
+                "export RCH_MIN_LOCAL_TIME_MS={}",
+                config.compilation.min_local_time_ms
+            );
+            println!(
+                "export RCH_TRANSFER_ZSTD_LEVEL={}",
+                config.transfer.compression_level
+            );
+        }
+        "env" => {
+            // .env file format
+            println!("# RCH configuration");
+            println!("# Save to .rch.env in your project");
+            println!();
+            println!("RCH_ENABLED={}", config.general.enabled);
+            println!("RCH_LOG_LEVEL={}", config.general.log_level);
+            println!("RCH_DAEMON_SOCKET={}", config.general.socket_path);
+            println!(
+                "RCH_CONFIDENCE_THRESHOLD={}",
+                config.compilation.confidence_threshold
+            );
+            println!(
+                "RCH_MIN_LOCAL_TIME_MS={}",
+                config.compilation.min_local_time_ms
+            );
+            println!(
+                "RCH_TRANSFER_ZSTD_LEVEL={}",
+                config.transfer.compression_level
+            );
+        }
+        "json" => {
+            // JSON format (ignore ctx.is_json() since user explicitly requested JSON)
+            let _ = ctx.json(&JsonResponse::ok_cmd(
+                "config export",
+                serde_json::json!({
+                    "general": {
+                        "enabled": config.general.enabled,
+                        "log_level": config.general.log_level,
+                        "socket_path": config.general.socket_path,
+                    },
+                    "compilation": {
+                        "confidence_threshold": config.compilation.confidence_threshold,
+                        "min_local_time_ms": config.compilation.min_local_time_ms,
+                    },
+                    "transfer": {
+                        "compression_level": config.transfer.compression_level,
+                        "exclude_patterns": config.transfer.exclude_patterns,
+                    }
+                }),
+            ));
+        }
+        _ => {
+            bail!(
+                "Unknown export format '{}'. Supported: shell, env, json",
+                format
+            );
+        }
+    }
+    Ok(())
+}
+
 fn parse_bool(value: &str, key: &str) -> Result<bool> {
     value
         .trim()
@@ -1959,7 +2210,7 @@ pub fn hook_install(ctx: &OutputContext) -> Result<()> {
     let style = ctx.theme();
 
     // Claude Code hooks are configured in ~/.claude/settings.json
-    let claude_config_dir = dirs::home_dir() 
+    let claude_config_dir = dirs::home_dir()
         .map(|h| h.join(".claude"))
         .context("Could not find home directory")?;
 
@@ -2084,20 +2335,18 @@ pub fn hook_uninstall(ctx: &OutputContext) -> Result<()> {
                 style.highlight(&settings_path.display().to_string())
             );
         }
+    } else if ctx.is_json() {
+        let _ = ctx.json(&JsonResponse::ok("hook uninstall", HookActionResponse {
+            action: "uninstall".to_string(),
+            success: false,
+            settings_path: settings_path.display().to_string(),
+            message: Some("Hook was not found".to_string()),
+        }));
     } else {
-        if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::ok("hook uninstall", HookActionResponse {
-                action: "uninstall".to_string(),
-                success: false,
-                settings_path: settings_path.display().to_string(),
-                message: Some("Hook was not found".to_string()),
-            }));
-        } else {
-            println!(
-                "{} Hook not found in settings.",
-                StatusIndicator::Info.display(style)
-            );
-        }
+        println!(
+            "{} Hook not found in settings.",
+            StatusIndicator::Info.display(style)
+        );
     }
 
     Ok(())

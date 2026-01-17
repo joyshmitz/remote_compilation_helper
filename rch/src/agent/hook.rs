@@ -2,12 +2,12 @@
 //!
 //! Provides idempotent hook installation and management for supported agents.
 
-use super::types::{AgentKind, HookSupport};
+use super::types::AgentKind;
 use crate::state::primitives::{atomic_write, create_backup, IdempotentResult};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Status of RCH hook for an agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

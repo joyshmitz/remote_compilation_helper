@@ -184,8 +184,8 @@ mod tests {
     #[test]
     fn test_get_current_version() {
         let version = get_current_version().unwrap();
-        // Should parse successfully
-        assert!(version.major >= 0);
+        // Should parse successfully - checking the struct is valid
+        assert!(!version.to_string().is_empty());
     }
 
     #[test]

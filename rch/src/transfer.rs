@@ -301,6 +301,15 @@ impl TransferPipeline {
             ));
         }
 
+        // Prune empty directories to prevent cluttering local project with
+        // empty parents of excluded files (side effect of --include="*/")
+        cmd.arg("--prune-empty-dirs");
+
+        // Essential: Include all directories so rsync can traverse to match patterns.
+        // Without this, the final --exclude "*" prevents rsync from entering directories
+        // like "target/" to check for matches.
+        cmd.arg("--include").arg("*/");
+
         // Include only specified artifact patterns
         for pattern in artifact_patterns {
             cmd.arg("--include").arg(pattern);

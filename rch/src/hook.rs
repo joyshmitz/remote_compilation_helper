@@ -10,7 +10,7 @@ use crate::transfer::{
 };
 use anyhow::Result;
 use rch_common::{
-    HookInput, HookOutput, ReleaseRequest, SelectedWorker, SelectionResponse, ToolchainInfo,
+    HookInput, HookOutput, SelectedWorker, SelectionResponse, ToolchainInfo,
     TransferConfig, WorkerConfig, WorkerId, classify_command,
 };
 use std::io::{self, BufRead, Write};

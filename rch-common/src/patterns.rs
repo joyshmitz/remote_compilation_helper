@@ -135,8 +135,12 @@ pub fn classify_command(cmd: &str) -> Classification {
 
     // Tier 3: Negative pattern check - never intercept these
     for pattern in NEVER_INTERCEPT {
-        if cmd.starts_with(pattern) {
-            return Classification::not_compilation(format!("matches never-intercept: {pattern}"));
+        if let Some(rest) = cmd.strip_prefix(pattern) {
+            // Ensure exact match or boundary match (e.g. "cargo clean" matches "cargo clean"
+            // or "cargo clean ", but NOT "cargo cleanup")
+            if rest.is_empty() || rest.starts_with(' ') {
+                return Classification::not_compilation(format!("matches never-intercept: {pattern}"));
+            }
         }
     }
 

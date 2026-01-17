@@ -9,6 +9,7 @@
 pub mod agent;
 mod commands;
 mod config;
+mod doctor;
 pub mod error;
 mod hook;
 pub mod state;
@@ -31,7 +32,56 @@ use ui::{ColorChoice, OutputConfig, OutputContext};
 #[command(
     author,
     version,
-    about = "Remote Compilation Helper - transparent compilation offloading"
+    about = "Remote Compilation Helper - transparent compilation offloading",
+    long_about = "Remote Compilation Helper (RCH) transparently offloads compilation commands \
+                  to remote workers. When invoked without a subcommand, RCH runs as a Claude Code \
+                  PreToolUse hook, intercepting build commands and routing them to faster remote machines.",
+    after_help = r#"EXAMPLES:
+    # Quick start - install hook and start daemon
+    rch hook install && rch daemon start
+
+    # Check system status
+    rch status --workers --jobs
+
+    # Probe worker connectivity
+    rch workers probe --all
+
+    # Show where config values come from
+    rch config show --sources
+
+    # Test hook with a sample cargo build
+    rch hook test
+
+    # Generate shell completions
+    rch completions bash > ~/.local/share/bash-completion/completions/rch
+
+HOOK MODE:
+    When invoked without arguments, RCH acts as a PreToolUse hook for Claude Code.
+    It reads JSON from stdin, decides whether to intercept the command, and writes
+    JSON to stdout. This is automatic when installed via 'rch hook install'.
+
+ENVIRONMENT VARIABLES:
+    RCH_PROFILE           Profile to use: dev, prod, test (sets defaults below)
+    RCH_LOG_LEVEL         Logging level: trace, debug, info, warn, error, off
+    RCH_LOG_FORMAT        Log format: pretty, json, compact
+    RCH_DAEMON_SOCKET     Path to daemon Unix socket
+    RCH_DAEMON_TIMEOUT_MS Timeout for daemon communication (default: 5000)
+    RCH_SSH_KEY           Path to SSH private key for worker connections
+    RCH_TRANSFER_ZSTD_LEVEL  Compression level 1-22 (default: 3)
+    RCH_MOCK_SSH          Enable mock SSH for testing (set to 1)
+    RCH_TEST_MODE         Enable test mode (set to 1)
+    RCH_ENABLE_METRICS    Enable metrics collection (set to true)
+
+CONFIG PRECEDENCE (highest to lowest):
+    1. Command-line arguments
+    2. Environment variables
+    3. Profile defaults (RCH_PROFILE)
+    4. .env / .rch.env files
+    5. Project config (.rch/config.toml)
+    6. User config (~/.config/rch/config.toml)
+    7. Built-in defaults
+
+For more information, see: https://github.com/anthropics/rch"#
 )]
 struct Cli {
     #[command(subcommand)]
@@ -56,19 +106,36 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the local daemon
+    /// Start, stop, and manage the local RCH daemon
+    #[command(after_help = r#"EXAMPLES:
+    rch daemon start      # Start the daemon in background
+    rch daemon status     # Check if daemon is running
+    rch daemon logs -n 100  # View last 100 log lines
+    rch daemon restart    # Restart after config changes"#)]
     Daemon {
         #[command(subcommand)]
         action: DaemonAction,
     },
 
-    /// Manage remote workers
+    /// Manage remote compilation workers
+    #[command(after_help = r#"EXAMPLES:
+    rch workers list          # Show all configured workers
+    rch workers probe --all   # Test connectivity to all workers
+    rch workers probe css     # Probe specific worker
+    rch workers benchmark     # Run speed tests on all workers
+    rch workers drain css     # Stop sending jobs to worker
+    rch workers enable css    # Resume sending jobs to worker"#)]
     Workers {
         #[command(subcommand)]
         action: WorkersAction,
     },
 
-    /// Show system status
+    /// Show system status overview
+    #[command(after_help = r#"EXAMPLES:
+    rch status                  # Quick overview
+    rch status --workers        # Include worker details
+    rch status --jobs           # Show active compilations
+    rch status --workers --jobs # Full status report"#)]
     Status {
         /// Show worker details
         #[arg(long)]
@@ -79,32 +146,94 @@ enum Commands {
         jobs: bool,
     },
 
-    /// Manage configuration
+    /// View and manage RCH configuration
+    #[command(after_help = r#"EXAMPLES:
+    rch config show           # Display effective config
+    rch config show --sources # Show where each value comes from
+    rch config init           # Create project .rch/config.toml
+    rch config validate       # Check for config errors
+    rch config set log_level debug  # Update a setting
+    rch config export --format=env  # Export as .env format"#)]
     Config {
         #[command(subcommand)]
         action: ConfigAction,
     },
 
-    /// Manage the Claude Code hook
+    /// Install and manage the Claude Code PreToolUse hook
+    #[command(after_help = r#"EXAMPLES:
+    rch hook install    # Register RCH as PreToolUse hook
+    rch hook uninstall  # Remove the hook
+    rch hook test       # Test with a sample 'cargo build' command
+
+The hook intercepts Bash tool calls and transparently offloads
+compilation commands to remote workers."#)]
     Hook {
         #[command(subcommand)]
         action: HookAction,
     },
 
-    /// Detect and manage AI coding agents
+    /// Detect and manage AI coding agents (Claude Code, Gemini CLI, etc.)
+    #[command(after_help = r#"EXAMPLES:
+    rch agents list               # Show detected agents
+    rch agents list --all         # Include non-installed agents
+    rch agents status             # Check hook status for all agents
+    rch agents status claude-code # Check specific agent
+    rch agents install-hook gemini-cli --dry-run  # Preview hook install"#)]
     Agents {
         #[command(subcommand)]
         action: AgentsAction,
     },
 
-    /// Generate shell completions
+    /// Generate shell completion scripts
+    #[command(after_help = r#"EXAMPLES:
+    # Bash (add to ~/.bashrc)
+    rch completions bash > ~/.local/share/bash-completion/completions/rch
+
+    # Zsh (add to ~/.zshrc: fpath=(~/.zsh/completion $fpath))
+    rch completions zsh > ~/.zsh/completion/_rch
+
+    # Fish
+    rch completions fish > ~/.config/fish/completions/rch.fish"#)]
     Completions {
         /// Shell to generate completions for
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
 
-    /// Update RCH binaries
+    /// Run comprehensive diagnostics and optionally auto-fix issues
+    #[command(after_help = r#"EXAMPLES:
+    rch doctor              # Run all diagnostic checks
+    rch doctor --fix        # Attempt to fix safe issues
+    rch doctor -v           # Show detailed output
+    rch doctor --json       # Output as JSON for scripting
+
+CHECKS PERFORMED:
+    Prerequisites   - rsync, zstd, ssh, rustup, cargo
+    Configuration   - config.toml, workers.toml validity
+    SSH Keys        - Identity files exist with correct permissions
+    Daemon          - Socket exists and responds
+    Hooks           - Claude Code hook installed
+    Workers         - Connectivity (with --verbose)"#)]
+    Doctor {
+        /// Attempt to fix safe issues (e.g., key permissions)
+        #[arg(long)]
+        fix: bool,
+
+        /// Allow installing missing prerequisites (requires confirmation)
+        #[arg(long)]
+        install_deps: bool,
+    },
+
+    /// Update RCH binaries on local machine and/or workers
+    #[command(after_help = r#"EXAMPLES:
+    rch update --check          # Check for available updates
+    rch update                  # Update to latest stable
+    rch update --channel=beta   # Update to beta channel
+    rch update --version=v0.3.0 # Install specific version
+    rch update --fleet          # Update all workers too
+    rch update --dry-run        # Preview what would happen
+    rch update --rollback       # Restore previous version
+    rch update --verify         # Check installation integrity"#)]
     Update {
         /// Check for updates without installing
         #[arg(long)]
@@ -193,13 +322,23 @@ enum WorkersAction {
 #[derive(Subcommand)]
 enum ConfigAction {
     /// Show effective configuration
-    Show,
+    Show {
+        /// Show where each value comes from (env, project, user, default)
+        #[arg(long)]
+        sources: bool,
+    },
     /// Initialize project config
     Init,
     /// Validate configuration
     Validate,
     /// Set a configuration value
     Set { key: String, value: String },
+    /// Export configuration as shell script (for sourcing)
+    Export {
+        /// Output format: shell (default) or env
+        #[arg(long, default_value = "shell")]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -291,6 +430,9 @@ async fn main() -> Result<()> {
                 generate_completions(shell);
                 Ok(())
             }
+            Commands::Doctor { fix, install_deps } => {
+                handle_doctor(fix, install_deps, &ctx).await
+            }
             Commands::Update {
                 check,
                 version,
@@ -373,8 +515,8 @@ async fn handle_status(workers: bool, jobs: bool, _ctx: &OutputContext) -> Resul
 
 async fn handle_config(action: ConfigAction, ctx: &OutputContext) -> Result<()> {
     match action {
-        ConfigAction::Show => {
-            commands::config_show(ctx)?;
+        ConfigAction::Show { sources } => {
+            commands::config_show(sources, ctx)?;
         }
         ConfigAction::Init => {
             commands::config_init(ctx)?;
@@ -384,6 +526,9 @@ async fn handle_config(action: ConfigAction, ctx: &OutputContext) -> Result<()> 
         }
         ConfigAction::Set { key, value } => {
             commands::config_set(&key, &value, ctx)?;
+        }
+        ConfigAction::Export { format } => {
+            commands::config_export(&format, ctx)?;
         }
     }
     Ok(())
@@ -420,6 +565,16 @@ async fn handle_agents(action: AgentsAction, ctx: &OutputContext) -> Result<()> 
         }
     }
     Ok(())
+}
+
+async fn handle_doctor(fix: bool, install_deps: bool, ctx: &OutputContext) -> Result<()> {
+    use crate::doctor::DoctorOptions;
+    let options = DoctorOptions {
+        fix,
+        install_deps,
+        verbose: ctx.is_verbose(),
+    };
+    crate::doctor::run_doctor(ctx, options).await
 }
 
 async fn handle_update(

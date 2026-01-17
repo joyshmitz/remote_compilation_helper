@@ -1,7 +1,6 @@
 //! Checksum and signature verification.
 
 use super::types::UpdateError;
-use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
 
 /// Result of verification.
@@ -13,7 +12,7 @@ pub struct VerificationResult {
 
 /// Verify SHA256 checksum of a file.
 pub async fn verify_checksum(
-    file_path: &PathBuf,
+    file_path: &std::path::Path,
     expected: &str,
 ) -> Result<VerificationResult, UpdateError> {
     let mut file = tokio::fs::File::open(file_path)
@@ -59,11 +58,11 @@ pub async fn verify_checksum(
 }
 
 /// Compute SHA256 hash of a file.
-async fn compute_sha256(file_path: &PathBuf) -> Result<String, UpdateError> {
+async fn compute_sha256(file_path: &std::path::Path) -> Result<String, UpdateError> {
     use std::io::Read;
 
     // Use blocking I/O wrapped in spawn_blocking for SHA256
-    let path = file_path.clone();
+    let path = file_path.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let mut file = std::fs::File::open(&path)
             .map_err(|e| UpdateError::InstallFailed(format!("Failed to open file: {}", e)))?;

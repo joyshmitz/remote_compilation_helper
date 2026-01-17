@@ -317,12 +317,10 @@ impl Style {
     pub fn link(&self, text: &str, url: &str) -> String {
         if self.supports_hyperlinks {
             format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, text)
+        } else if text == url {
+            url.to_string()
         } else {
-            if text == url {
-                url.to_string()
-            } else {
-                format!("{} ({})", text, url)
-            }
+            format!("{} ({})", text, url)
         }
     }
 }

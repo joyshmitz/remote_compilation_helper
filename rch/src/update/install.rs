@@ -175,7 +175,7 @@ fn find_latest_backup() -> Result<PathBuf, UpdateError> {
 }
 
 /// Backup current installation.
-fn backup_current_installation(install_dir: &PathBuf, backup_dir: &PathBuf) -> Result<(), UpdateError> {
+fn backup_current_installation(install_dir: &std::path::Path, backup_dir: &std::path::Path) -> Result<(), UpdateError> {
     std::fs::create_dir_all(backup_dir)
         .map_err(|e| UpdateError::InstallFailed(format!("Failed to create backup dir: {}", e)))?;
 
@@ -192,7 +192,7 @@ fn backup_current_installation(install_dir: &PathBuf, backup_dir: &PathBuf) -> R
 }
 
 /// Extract archive to destination.
-fn extract_archive(archive: &PathBuf, dest: &PathBuf) -> Result<(), UpdateError> {
+fn extract_archive(archive: &std::path::Path, dest: &std::path::Path) -> Result<(), UpdateError> {
     std::fs::create_dir_all(dest)
         .map_err(|e| UpdateError::InstallFailed(format!("Failed to create extract dir: {}", e)))?;
 
@@ -212,7 +212,7 @@ fn extract_archive(archive: &PathBuf, dest: &PathBuf) -> Result<(), UpdateError>
 }
 
 /// Replace binaries in install directory.
-fn replace_binaries(src_dir: &PathBuf, install_dir: &PathBuf) -> Result<(), UpdateError> {
+fn replace_binaries(src_dir: &std::path::Path, install_dir: &std::path::Path) -> Result<(), UpdateError> {
     std::fs::create_dir_all(install_dir)
         .map_err(|e| UpdateError::InstallFailed(format!("Failed to create install dir: {}", e)))?;
 
@@ -255,7 +255,7 @@ fn replace_binaries(src_dir: &PathBuf, install_dir: &PathBuf) -> Result<(), Upda
 }
 
 /// Verify the installation by checking binary versions.
-fn verify_installation(install_dir: &PathBuf) -> Result<(), UpdateError> {
+fn verify_installation(install_dir: &std::path::Path) -> Result<(), UpdateError> {
     let rch = install_dir.join("rch");
 
     let output = Command::new(&rch)
@@ -273,7 +273,7 @@ fn verify_installation(install_dir: &PathBuf) -> Result<(), UpdateError> {
 }
 
 /// Restore from backup.
-fn restore_from_backup(backup_dir: &PathBuf, install_dir: &PathBuf) -> Result<(), UpdateError> {
+fn restore_from_backup(backup_dir: &std::path::Path, install_dir: &std::path::Path) -> Result<(), UpdateError> {
     for binary in &["rch", "rchd", "rch-wkr"] {
         let src = backup_dir.join(binary);
         if src.exists() {

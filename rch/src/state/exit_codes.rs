@@ -110,13 +110,13 @@ mod tests {
         assert_eq!(USAGE, 64);
         assert_eq!(CONFIG, 78);
 
-        // RCH-specific codes are in 100-127 range
-        assert!(NEEDS_SETUP >= 100 && NEEDS_SETUP <= 127);
-        assert!(DAEMON_DOWN >= 100 && DAEMON_DOWN <= 127);
-        assert!(NO_WORKERS >= 100 && NO_WORKERS <= 127);
-        assert!(ALREADY_CURRENT >= 100 && ALREADY_CURRENT <= 127);
-        assert!(LOCKED >= 100 && LOCKED <= 127);
-        assert!(NEEDS_MIGRATION >= 100 && NEEDS_MIGRATION <= 127);
+        // RCH-specific codes have explicit values in 100-127 range
+        assert_eq!(NEEDS_SETUP, 100);
+        assert_eq!(DAEMON_DOWN, 101);
+        assert_eq!(NO_WORKERS, 102);
+        assert_eq!(ALREADY_CURRENT, 103);
+        assert_eq!(LOCKED, 104);
+        assert_eq!(NEEDS_MIGRATION, 105);
     }
 
     #[test]

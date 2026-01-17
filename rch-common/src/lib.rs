@@ -2,8 +2,11 @@
 //!
 //! Shared types, patterns, and utilities used by rch, rchd, and rch-wkr.
 
-#![forbid(unsafe_code)]
+// Use deny instead of forbid to allow specific overrides for env var manipulation
+// in tests and profile defaults (env::set_var/remove_var are unsafe in Rust 2024)
+#![deny(unsafe_code)]
 
+pub mod config;
 pub mod mock;
 pub mod patterns;
 #[cfg(test)]
@@ -21,4 +24,10 @@ pub use types::{
     BuildLocation, BuildRecord, BuildStats, CircuitBreakerConfig, CircuitState, CircuitStats,
     CompilationConfig, GeneralConfig, RchConfig, ReleaseRequest, SelectedWorker, SelectionReason,
     SelectionRequest, SelectionResponse, TransferConfig, WorkerConfig, WorkerId, WorkerStatus,
+};
+
+// Config module re-exports
+pub use config::{
+    ConfigSource, ConfigWarning, EnvError, EnvParser, Profile, Severity, Sourced,
+    validate_config,
 };
