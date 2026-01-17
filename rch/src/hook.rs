@@ -10,8 +10,8 @@ use crate::transfer::{
 };
 use anyhow::Result;
 use rch_common::{
-    HookInput, HookOutput, SelectedWorker, SelectionResponse, ToolchainInfo, TransferConfig,
-    WorkerConfig, WorkerId, classify_command,
+    CompilationKind, HookInput, HookOutput, RequiredRuntime, SelectedWorker, SelectionResponse,
+    ToolchainInfo, TransferConfig, WorkerConfig, WorkerId, classify_command,
 };
 use std::io::{self, BufRead, Write};
 use std::path::Path;
@@ -131,11 +131,29 @@ async fn process_hook(input: HookInput) -> HookOutput {
         None
     };
 
+    // Determine required runtime
+    let required_runtime = match classification.kind {
+        Some(k) => match k {
+            CompilationKind::CargoBuild
+            | CompilationKind::CargoTest
+            | CompilationKind::CargoCheck
+            | CompilationKind::CargoClippy
+            | CompilationKind::CargoDoc
+            | CompilationKind::Rustc => RequiredRuntime::Rust,
+
+            CompilationKind::BunTest | CompilationKind::BunTypecheck => RequiredRuntime::Bun,
+
+            _ => RequiredRuntime::None,
+        },
+        None => RequiredRuntime::None,
+    };
+
     match query_daemon(
         &config.general.socket_path,
         &project,
         estimated_cores,
         toolchain.as_ref(),
+        required_runtime,
     )
     .await
     {
@@ -223,6 +241,7 @@ async fn query_daemon(
     project: &str,
     cores: u32,
     toolchain: Option<&ToolchainInfo>,
+    required_runtime: RequiredRuntime,
 ) -> Result<SelectionResponse> {
     // Check if socket exists
     if !Path::new(socket_path).exists() {
@@ -240,6 +259,15 @@ async fn query_daemon(
         if let Ok(json) = serde_json::to_string(tc) {
             query.push_str(&format!("&toolchain={}", urlencoding_encode(&json)));
         }
+    }
+
+    if required_runtime != RequiredRuntime::None {
+        // Serialize to lowercase string (rust, bun, node)
+        // Since it's an enum with lowercase serialization, serde_json::to_string gives "rust" (with quotes)
+        // We want just the string.
+        let json = serde_json::to_string(&required_runtime).unwrap_or_default();
+        let raw = json.trim_matches('"');
+        query.push_str(&format!("&runtime={}", urlencoding_encode(raw)));
     }
 
     // Send request
@@ -578,6 +606,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compilation_detected() {
+        let _lock = test_lock().lock().await;
         let input = HookInput {
             tool_name: "Bash".to_string(),
             tool_input: ToolInput {
@@ -720,7 +749,7 @@ mod tests {
     #[tokio::test]
     async fn test_daemon_query_missing_socket() {
         // Query a non-existent socket should fail gracefully
-        let result = query_daemon("/tmp/nonexistent_rch_test.sock", "testproj", 4, None).await;
+        let result = query_daemon("/tmp/nonexistent_rch_test.sock", "testproj", 4, None, RequiredRuntime::None).await;
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("not found") || err_msg.contains("No such file"));
@@ -787,7 +816,7 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Query the mock daemon
-        let result = query_daemon(&socket_path, "test-project", 4, None).await;
+        let result = query_daemon(&socket_path, "test-project", 4, None, RequiredRuntime::None).await;
 
         // Clean up
         daemon_handle.await.expect("Daemon task panicked");
@@ -844,7 +873,7 @@ mod tests {
 
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        let result = query_daemon(&socket_path, "my project/test", 2, None).await;
+        let result = query_daemon(&socket_path, "my project/test", 2, None, RequiredRuntime::None).await;
         daemon_handle.await.expect("Daemon task");
         let _ = std::fs::remove_file(&socket_path_clone);
 
@@ -857,6 +886,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fail_open_on_invalid_json() {
+        let _lock = test_lock().lock().await;
         // If hook input is invalid JSON, should allow (fail-open)
         // This tests the run_hook behavior implicitly through process_hook
         // We can't easily test run_hook directly as it reads stdin
@@ -879,6 +909,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fail_open_on_config_error() {
+        let _lock = test_lock().lock().await;
         // If config is missing or invalid, should allow
         // This is tested implicitly by process_hook when config can't load
         // The current implementation falls back to allow

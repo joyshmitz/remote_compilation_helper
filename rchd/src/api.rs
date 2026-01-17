@@ -240,6 +240,7 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
     let mut project = None;
     let mut cores = None;
     let mut toolchain = None;
+    let mut required_runtime = RequiredRuntime::default();
 
     for param in query.split('&') {
         if param.is_empty() {
@@ -256,6 +257,15 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
                 let json = urlencoding_decode(value);
                 toolchain = serde_json::from_str(&json).ok();
             }
+            "runtime" => {
+                // Parse required runtime (rust, bun, node)
+                let rt_str = urlencoding_decode(value);
+                // Use serde_json to parse the enum variant string (e.g. "bun")
+                // We wrap in quotes to make it valid JSON string for the enum
+                required_runtime = serde_json::from_str(&format!("\"{}\"", rt_str))
+                    .ok()
+                    .unwrap_or_default();
+            }
             _ => {} // Ignore unknown parameters
         }
     }
@@ -268,7 +278,7 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
         estimated_cores,
         preferred_workers: vec![],
         toolchain,
-        required_runtime: RequiredRuntime::default(),
+        required_runtime,
     }))
 }
 
@@ -564,6 +574,31 @@ mod tests {
         let tc = req.toolchain.unwrap();
         assert_eq!(tc.channel, "nightly");
         assert_eq!(tc.date, Some("2024-01-01".to_string()));
+    }
+
+    #[test]
+    fn test_parse_request_with_runtime() {
+        let query = "GET /select-worker?project=test&runtime=bun";
+        let req = parse_request(query).unwrap();
+        let ApiRequest::SelectWorker(req) = req else {
+            panic!("expected select-worker request");
+        };
+        assert_eq!(req.required_runtime, RequiredRuntime::Bun);
+
+        let query = "GET /select-worker?project=test&runtime=rust";
+        let req = parse_request(query).unwrap();
+        let ApiRequest::SelectWorker(req) = req else {
+            panic!("expected select-worker request");
+        };
+        assert_eq!(req.required_runtime, RequiredRuntime::Rust);
+
+        // Invalid runtime should default to None
+        let query = "GET /select-worker?project=test&runtime=invalid";
+        let req = parse_request(query).unwrap();
+        let ApiRequest::SelectWorker(req) = req else {
+            panic!("expected select-worker request");
+        };
+        assert_eq!(req.required_runtime, RequiredRuntime::None);
     }
 
     #[test]

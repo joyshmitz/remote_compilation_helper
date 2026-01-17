@@ -9,6 +9,7 @@
 
 use memchr::memmem;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 /// Keywords that indicate a potential compilation command.
 /// Used for SIMD-accelerated quick filtering (Tier 2).
@@ -167,9 +168,13 @@ pub fn classify_command(cmd: &str) -> Classification {
         return Classification::not_compilation("no compilation keyword");
     }
 
+    // Normalize command for Tier 3 and 4
+    let normalized_cow = normalize_command(cmd);
+    let normalized = normalized_cow.as_ref();
+
     // Tier 3: Negative pattern check - never intercept these
     for pattern in NEVER_INTERCEPT {
-        if let Some(rest) = cmd.strip_prefix(pattern) {
+        if let Some(rest) = normalized.strip_prefix(pattern) {
             // Ensure exact match or boundary match (e.g. "cargo clean" matches "cargo clean"
             // or "cargo clean ", but NOT "cargo cleanup")
             if rest.is_empty() || rest.starts_with(' ') {
@@ -181,7 +186,77 @@ pub fn classify_command(cmd: &str) -> Classification {
     }
 
     // Tier 4: Full classification
-    classify_full(cmd)
+    classify_full(normalized)
+}
+
+/// Normalize a command by stripping common wrappers (sudo, time, env, etc.)
+pub fn normalize_command(cmd: &str) -> Cow<'_, str> {
+    let mut result = cmd.trim();
+
+    // Strip common command prefixes/wrappers
+    let wrappers = [
+        "sudo ",
+        "env ",
+        "time ",
+        "nice ",
+        "ionice ",
+        "strace ",
+        "ltrace ",
+        "perf ",
+        "taskset ",
+        "numactl ",
+    ];
+
+    loop {
+        let mut changed = false;
+        for wrapper in wrappers {
+            if let Some(rest) = result.strip_prefix(wrapper) {
+                result = rest.trim_start();
+                changed = true;
+            }
+        }
+        
+        // Handle env VAR=val syntax
+        // Logic: if result starts with VAR=val, strip it
+        // We look for the first space, and check if the part before it contains '='
+        if let Some(space_idx) = result.find(' ') {
+            let first_word = &result[..space_idx];
+            if first_word.contains('=') && !first_word.contains('"') && !first_word.contains('\'') {
+                result = result[space_idx..].trim_start();
+                changed = true;
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+
+    // Strip absolute paths: /usr/bin/cargo -> cargo
+    // We assume the command is the first word
+    if result.starts_with('/') {
+        if let Some(space_idx) = result.find(' ') {
+             let cmd_part = &result[..space_idx];
+             if let Some(last_slash) = cmd_part.rfind('/') {
+                 // Reconstruct: <stripped_cmd> <rest>
+                 // This is tricky with Cow, so we'll just return Owned if we modify
+                 let stripped_cmd = &cmd_part[last_slash+1..];
+                 let rest = &result[space_idx..];
+                 return Cow::Owned(format!("{}{}", stripped_cmd, rest));
+             }
+         } else {
+             // Single word command
+              if let Some(last_slash) = result.rfind('/') {
+                 result = &result[last_slash+1..];
+             }
+         }
+    }
+
+    if result == cmd {
+        Cow::Borrowed(cmd)
+    } else {
+        Cow::Owned(result.to_string())
+    }
 }
 
 /// Check command structure for patterns that shouldn't be intercepted.
@@ -770,5 +845,20 @@ mod tests {
         assert_ne!(CompilationKind::BunTest, CompilationKind::BunTypecheck);
         // BunTest is different from CargoTest (different ecosystems)
         assert_ne!(CompilationKind::BunTest, CompilationKind::CargoTest);
+    }
+
+    #[test]
+    fn test_wrapped_command_classification_repro() {
+        // This fails currently because classify_full expects command to start with "cargo"
+        // Wrapper tools like "time", "sudo", "env" break this logic
+        let result = classify_command("time cargo build");
+        assert!(result.is_compilation, "Should classify 'time cargo build' as compilation");
+        assert_eq!(result.kind, Some(CompilationKind::CargoBuild));
+        
+        let result = classify_command("sudo cargo check");
+        assert!(result.is_compilation, "Should classify 'sudo cargo check' as compilation");
+        
+        let result = classify_command("env RUST_BACKTRACE=1 cargo test");
+        assert!(result.is_compilation, "Should classify env-wrapped cargo test as compilation");
     }
 }
