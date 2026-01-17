@@ -180,8 +180,18 @@ rch daemon start              # Background (systemd/launchd)
 
 ```bash
 rch workers list              # Show configured workers
-rch workers probe --all       # Test SSH connectivity
+rch workers probe --all       # Test SSH connectivity and detect capabilities
 rch workers benchmark         # Measure worker speeds
+```
+
+Worker probing automatically detects installed toolchains (Rust, Bun, Node.js). For Bun/TypeScript projects, verify workers have Bun installed:
+
+```bash
+# Check capabilities on a specific worker
+ssh worker1 "bun --version"   # Should show Bun version
+
+# Or probe via RCH (requires rch-wkr installed on worker)
+rch workers probe worker1 --verbose   # Shows detected capabilities
 ```
 
 ### 3. Use Claude Code Normally

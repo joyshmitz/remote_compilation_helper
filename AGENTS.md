@@ -155,6 +155,9 @@ RCH must identify compilation commands with high precision:
 - Watch modes: `bun test --watch`, `bun typecheck --watch`
 - Piped/redirected/backgrounded commands
 
+**Rationale for Bun Interception:**
+Bun's `test` and `typecheck` commands are CPU-intensive operations (running tests, type-checking large codebases) that benefit from remote execution, similar to `cargo test` and `cargo check`. Package management and dev servers must run locally because they modify `node_modules/` or bind to local ports.
+
 **Pattern Matching Strategy:**
 1. Quick keyword filter (SIMD-accelerated)
 2. Full regex classification
