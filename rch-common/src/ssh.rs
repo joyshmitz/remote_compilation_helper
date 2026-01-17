@@ -182,55 +182,70 @@ impl SshClient {
             .await
             .with_context(|| format!("Failed to spawn command on {}", self.config.id))?;
 
-        // Read stdout and stderr concurrently to avoid deadlock if one pipe fills.
-        let stdout_handle = child.stdout().take();
-        let stderr_handle = child.stderr().take();
+        let execution_future = async {
+            // Read stdout and stderr concurrently to avoid deadlock if one pipe fills.
+            let stdout_handle = child.stdout().take();
+            let stderr_handle = child.stderr().take();
 
-        let stdout_fut = async {
-            if let Some(out) = stdout_handle {
-                let mut reader = BufReader::new(out);
-                let mut buf = String::new();
-                reader.read_to_string(&mut buf).await?;
-                Ok::<String, anyhow::Error>(buf)
-            } else {
-                Ok(String::new())
-            }
+            let stdout_fut = async {
+                if let Some(out) = stdout_handle {
+                    let mut reader = BufReader::new(out);
+                    let mut buf = String::new();
+                    reader.read_to_string(&mut buf).await?;
+                    Ok::<String, anyhow::Error>(buf)
+                } else {
+                    Ok(String::new())
+                }
+            };
+
+            let stderr_fut = async {
+                if let Some(err) = stderr_handle {
+                    let mut reader = BufReader::new(err);
+                    let mut buf = String::new();
+                    reader.read_to_string(&mut buf).await?;
+                    Ok::<String, anyhow::Error>(buf)
+                } else {
+                    Ok(String::new())
+                }
+            };
+
+            let (stdout, stderr) = tokio::try_join!(stdout_fut, stderr_fut)?;
+
+            let status = child
+                .wait()
+                .await
+                .with_context(|| "Failed to wait for command completion")?;
+            
+            Ok((status, stdout, stderr))
         };
 
-        let stderr_fut = async {
-            if let Some(err) = stderr_handle {
-                let mut reader = BufReader::new(err);
-                let mut buf = String::new();
-                reader.read_to_string(&mut buf).await?;
-                Ok::<String, anyhow::Error>(buf)
-            } else {
-                Ok(String::new())
+        match tokio::time::timeout(self.options.command_timeout, execution_future).await {
+            Ok(result) => {
+                let (status, stdout, stderr) = result?;
+                let duration = start.elapsed();
+                let exit_code = status.code().unwrap_or(-1);
+
+                debug!(
+                    "Command completed on {} (exit={}, duration={}ms)",
+                    self.config.id,
+                    exit_code,
+                    duration.as_millis()
+                );
+
+                Ok(CommandResult {
+                    exit_code,
+                    stdout,
+                    stderr,
+                    duration_ms: duration.as_millis() as u64,
+                })
             }
-        };
-
-        let (stdout, stderr) = tokio::try_join!(stdout_fut, stderr_fut)?;
-
-        let status = child
-            .wait()
-            .await
-            .with_context(|| "Failed to wait for command completion")?;
-
-        let duration = start.elapsed();
-        let exit_code = status.code().unwrap_or(-1);
-
-        debug!(
-            "Command completed on {} (exit={}, duration={}ms)",
-            self.config.id,
-            exit_code,
-            duration.as_millis()
-        );
-
-        Ok(CommandResult {
-            exit_code,
-            stdout,
-            stderr,
-            duration_ms: duration.as_millis() as u64,
-        })
+            Err(_) => {
+                // Timeout occurred
+                let _ = child.kill().await;
+                warn!("Command timed out on {} after {:?}", self.config.id, self.options.command_timeout);
+                anyhow::bail!("Command timed out after {:?}", self.options.command_timeout);
+            }
+        }
     }
 
     /// Execute a command and stream output in real-time.
@@ -272,53 +287,67 @@ impl SshClient {
         let mut stdout_acc = String::new();
         let mut stderr_acc = String::new();
 
-        while !stdout_done || !stderr_done {
-            tokio::select! {
-                result = async {
-                    if let Some(reader) = stdout_reader.as_mut() {
-                        reader.read_line(&mut stdout_buf).await
-                    } else {
-                        Ok(0)
+        let streaming_future = async {
+            while !stdout_done || !stderr_done {
+                tokio::select! {
+                    result = async {
+                        if let Some(reader) = stdout_reader.as_mut() {
+                            reader.read_line(&mut stdout_buf).await
+                        } else {
+                            Ok(0)
+                        }
+                    }, if !stdout_done => {
+                        let n = result?;
+                        if n == 0 {
+                            stdout_done = true;
+                        } else {
+                            on_stdout(&stdout_buf);
+                            stdout_acc.push_str(&stdout_buf);
+                            stdout_buf.clear();
+                        }
                     }
-                }, if !stdout_done => {
-                    let n = result?;
-                    if n == 0 {
-                        stdout_done = true;
-                    } else {
-                        on_stdout(&stdout_buf);
-                        stdout_acc.push_str(&stdout_buf);
-                        stdout_buf.clear();
-                    }
-                }
-                result = async {
-                    if let Some(reader) = stderr_reader.as_mut() {
-                        reader.read_line(&mut stderr_buf).await
-                    } else {
-                        Ok(0)
-                    }
-                }, if !stderr_done => {
-                    let n = result?;
-                    if n == 0 {
-                        stderr_done = true;
-                    } else {
-                        on_stderr(&stderr_buf);
-                        stderr_acc.push_str(&stderr_buf);
-                        stderr_buf.clear();
+                    result = async {
+                        if let Some(reader) = stderr_reader.as_mut() {
+                            reader.read_line(&mut stderr_buf).await
+                        } else {
+                            Ok(0)
+                        }
+                    }, if !stderr_done => {
+                        let n = result?;
+                        if n == 0 {
+                            stderr_done = true;
+                        } else {
+                            on_stderr(&stderr_buf);
+                            stderr_acc.push_str(&stderr_buf);
+                            stderr_buf.clear();
+                        }
                     }
                 }
             }
+
+            let status = child.wait().await?;
+            Ok(status)
+        };
+
+        match tokio::time::timeout(self.options.command_timeout, streaming_future).await {
+            Ok(result) => {
+                let status = result?;
+                let duration = start.elapsed();
+                let exit_code = status.code().unwrap_or(-1);
+
+                Ok(CommandResult {
+                    exit_code,
+                    stdout: stdout_acc,
+                    stderr: stderr_acc,
+                    duration_ms: duration.as_millis() as u64,
+                })
+            }
+            Err(_) => {
+                let _ = child.kill().await;
+                warn!("Command (streaming) timed out on {} after {:?}", self.config.id, self.options.command_timeout);
+                anyhow::bail!("Command timed out after {:?}", self.options.command_timeout);
+            }
         }
-
-        let status = child.wait().await?;
-        let duration = start.elapsed();
-        let exit_code = status.code().unwrap_or(-1);
-
-        Ok(CommandResult {
-            exit_code,
-            stdout: stdout_acc,
-            stderr: stderr_acc,
-            duration_ms: duration.as_millis() as u64,
-        })
     }
 
     /// Check if the worker is reachable via SSH.
