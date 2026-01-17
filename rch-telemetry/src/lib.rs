@@ -8,3 +8,6 @@
 pub mod collect;
 
 pub use collect::memory::{MemoryInfo, MemoryPressureStall, MemoryTelemetry};
+pub use collect::network::{
+    NetDevStats, NetworkCollector, NetworkError, NetworkMetrics, NetworkTelemetry,
+};

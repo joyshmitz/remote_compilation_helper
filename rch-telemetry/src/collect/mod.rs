@@ -4,3 +4,4 @@
 //! filesystem (Linux) for worker telemetry.
 
 pub mod memory;
+pub mod network;
