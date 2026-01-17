@@ -474,9 +474,7 @@ fn test_unknown_endpoint() {
     let socket_path = setup_daemon_configs(&harness).unwrap();
 
     // Start the daemon
-    harness
-        .start_daemon(&["--foreground", "--metrics-port", "0"])
-        .unwrap();
+    start_daemon_with_socket(&harness, &socket_path, &[]).unwrap();
     harness
         .wait_for_socket(&socket_path, Duration::from_secs(10))
         .unwrap();
@@ -505,9 +503,7 @@ fn test_invalid_method() {
     let socket_path = setup_daemon_configs(&harness).unwrap();
 
     // Start the daemon
-    harness
-        .start_daemon(&["--foreground", "--metrics-port", "0"])
-        .unwrap();
+    start_daemon_with_socket(&harness, &socket_path, &[]).unwrap();
     harness
         .wait_for_socket(&socket_path, Duration::from_secs(10))
         .unwrap();
