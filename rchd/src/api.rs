@@ -7,10 +7,33 @@
 use crate::selection::{SelectionWeights, select_worker};
 use crate::workers::WorkerPool;
 use anyhow::{Result, anyhow};
-use rch_common::{SelectedWorker, SelectionReason, SelectionRequest, SelectionResponse};
+use rch_common::{
+    SelectedWorker, SelectionReason, SelectionRequest, SelectionResponse, WorkerStatus,
+};
+use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tracing::{debug, warn};
+
+/// Parsed API request variants.
+#[derive(Debug)]
+enum ApiRequest {
+    SelectWorker(SelectionRequest),
+    Status,
+}
+
+/// Response payload for GET /status.
+#[derive(Debug, Serialize)]
+struct DaemonStatus {
+    workers_total: usize,
+    workers_healthy: usize,
+    workers_degraded: usize,
+    workers_unreachable: usize,
+    workers_draining: usize,
+    workers_disabled: usize,
+    slots_total: u32,
+    slots_available: u32,
+}
 
 /// Handle an incoming connection on the Unix socket.
 pub async fn handle_connection(stream: UnixStream, pool: WorkerPool) -> Result<()> {
@@ -28,28 +51,23 @@ pub async fn handle_connection(stream: UnixStream, pool: WorkerPool) -> Result<(
     debug!("Received request: {}", line);
 
     // Parse and handle the request
-    let response = match parse_request(line) {
-        Ok(request) => handle_select_worker(&pool, request).await,
-        Err(e) => Err(e),
+    let response_json = match parse_request(line) {
+        Ok(ApiRequest::SelectWorker(request)) => {
+            let response = handle_select_worker(&pool, request).await?;
+            serde_json::to_string(&response)?
+        }
+        Ok(ApiRequest::Status) => {
+            let status = handle_status(&pool).await?;
+            serde_json::to_string(&status)?
+        }
+        Err(e) => return Err(e),
     };
 
     // Send the response
-    let response_bytes = match response {
-        Ok(resp) => {
-            let json = serde_json::to_string(&resp)?;
-            format!(
-                "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{}\n",
-                json
-            )
-        }
-        Err(e) => {
-            let error_json = serde_json::json!({ "error": e.to_string() });
-            format!(
-                "HTTP/1.0 400 Bad Request\r\nContent-Type: application/json\r\n\r\n{}\n",
-                error_json
-            )
-        }
-    };
+    let response_bytes = format!(
+        "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{}\n",
+        response_json
+    );
 
     writer.write_all(response_bytes.as_bytes()).await?;
     writer.flush().await?;
@@ -57,8 +75,8 @@ pub async fn handle_connection(stream: UnixStream, pool: WorkerPool) -> Result<(
     Ok(())
 }
 
-/// Parse a request line into a SelectionRequest.
-fn parse_request(line: &str) -> Result<SelectionRequest> {
+/// Parse a request line into an ApiRequest.
+fn parse_request(line: &str) -> Result<ApiRequest> {
     // Expected format: GET /select-worker?project=X&cores=N
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() < 2 {
@@ -70,6 +88,10 @@ fn parse_request(line: &str) -> Result<SelectionRequest> {
 
     if method != "GET" {
         return Err(anyhow!("Only GET method supported"));
+    }
+
+    if path == "/status" {
+        return Ok(ApiRequest::Status);
     }
 
     if !path.starts_with("/select-worker") {
@@ -101,12 +123,12 @@ fn parse_request(line: &str) -> Result<SelectionRequest> {
     let project = project.ok_or_else(|| anyhow!("Missing 'project' parameter"))?;
     let estimated_cores = cores.unwrap_or(1);
 
-    Ok(SelectionRequest {
+    Ok(ApiRequest::SelectWorker(SelectionRequest {
         project,
         estimated_cores,
         preferred_workers: vec![],
         toolchain: None,
-    })
+    }))
 }
 
 /// URL percent-decoding.
@@ -212,6 +234,44 @@ async fn handle_select_worker(
     })
 }
 
+/// Handle a status request.
+async fn handle_status(pool: &WorkerPool) -> Result<DaemonStatus> {
+    let workers = pool.all_workers().await;
+
+    let mut workers_healthy = 0;
+    let mut workers_degraded = 0;
+    let mut workers_unreachable = 0;
+    let mut workers_draining = 0;
+    let mut workers_disabled = 0;
+    let mut slots_total = 0u32;
+    let mut slots_available = 0u32;
+
+    for worker in &workers {
+        let status = worker.status().await;
+        match status {
+            WorkerStatus::Healthy => workers_healthy += 1,
+            WorkerStatus::Degraded => workers_degraded += 1,
+            WorkerStatus::Unreachable => workers_unreachable += 1,
+            WorkerStatus::Draining => workers_draining += 1,
+            WorkerStatus::Disabled => workers_disabled += 1,
+        }
+
+        slots_total = slots_total.saturating_add(worker.config.total_slots);
+        slots_available = slots_available.saturating_add(worker.available_slots());
+    }
+
+    Ok(DaemonStatus {
+        workers_total: workers.len(),
+        workers_healthy,
+        workers_degraded,
+        workers_unreachable,
+        workers_draining,
+        workers_disabled,
+        slots_total,
+        slots_available,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,6 +279,9 @@ mod tests {
     #[test]
     fn test_parse_request_basic() {
         let req = parse_request("GET /select-worker?project=myproject&cores=4").unwrap();
+        let ApiRequest::SelectWorker(req) = req else {
+            panic!("expected select-worker request");
+        };
         assert_eq!(req.project, "myproject");
         assert_eq!(req.estimated_cores, 4);
     }
@@ -226,6 +289,9 @@ mod tests {
     #[test]
     fn test_parse_request_project_only() {
         let req = parse_request("GET /select-worker?project=test").unwrap();
+        let ApiRequest::SelectWorker(req) = req else {
+            panic!("expected select-worker request");
+        };
         assert_eq!(req.project, "test");
         assert_eq!(req.estimated_cores, 1); // Default
     }
@@ -233,8 +299,20 @@ mod tests {
     #[test]
     fn test_parse_request_with_spaces() {
         let req = parse_request("GET /select-worker?project=my%20project&cores=2").unwrap();
+        let ApiRequest::SelectWorker(req) = req else {
+            panic!("expected select-worker request");
+        };
         assert_eq!(req.project, "my project");
         assert_eq!(req.estimated_cores, 2);
+    }
+
+    #[test]
+    fn test_parse_request_status() {
+        let req = parse_request("GET /status").unwrap();
+        match req {
+            ApiRequest::Status => {}
+            _ => panic!("expected status request"),
+        }
     }
 
     #[test]
@@ -406,5 +484,33 @@ mod tests {
         let response = handle_select_worker(&pool, request).await.unwrap();
         assert!(response.worker.is_none());
         assert_eq!(response.reason, SelectionReason::AllWorkersBusy);
+    }
+
+    #[tokio::test]
+    async fn test_handle_status_summary() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_test_worker("worker1", 4)).await;
+        pool.add_worker(make_test_worker("worker2", 8)).await;
+
+        // Set worker2 to degraded to verify status counts
+        pool.set_status(&WorkerId::new("worker2"), WorkerStatus::Degraded)
+            .await;
+
+        // Reserve some slots
+        let worker1 = pool.get(&WorkerId::new("worker1")).await.unwrap();
+        let worker2 = pool.get(&WorkerId::new("worker2")).await.unwrap();
+        assert!(worker1.reserve_slots(2));
+        assert!(worker2.reserve_slots(3));
+
+        let status = handle_status(&pool).await.unwrap();
+
+        assert_eq!(status.workers_total, 2);
+        assert_eq!(status.workers_healthy, 1);
+        assert_eq!(status.workers_degraded, 1);
+        assert_eq!(status.workers_unreachable, 0);
+        assert_eq!(status.workers_draining, 0);
+        assert_eq!(status.workers_disabled, 0);
+        assert_eq!(status.slots_total, 12);
+        assert_eq!(status.slots_available, 7);
     }
 }
