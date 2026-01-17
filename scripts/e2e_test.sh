@@ -437,10 +437,25 @@ run_e2e() {
         run_scenario "artifact_fail" "deny" "artifacts"
         run_scenario "remote_exit" "deny" "remote-exit"
 
-        # Toolchain synchronization scenarios
+        # Toolchain synchronization scenarios with explicit toolchain specification
         log "INFO" "E2E" "Running toolchain synchronization scenarios..."
+
+        # Test 1: Nightly toolchain with date - install failure should fall back
+        run_toolchain_scenario "tc_nightly_install_fail" "nightly-2024-01-15" "allow" "toolchain-install"
+
+        # Test 2: Stable toolchain - no rustup should fall back
+        run_toolchain_scenario "tc_stable_no_rustup" "stable" "allow" "no-rustup"
+
+        # Test 3: Beta with date - install failure should fall back
+        run_toolchain_scenario "tc_beta_install_fail" "beta-2024-02-01" "allow" "toolchain-install"
+
+        # Test 4: Specific version - no rustup should fall back
+        run_toolchain_scenario "tc_version_no_rustup" "1.75.0" "allow" "no-rustup"
+
+        # Legacy tests without explicit toolchain (backward compatibility)
         run_scenario "toolchain_install_fail" "allow" "toolchain-install"
         run_scenario "no_rustup" "allow" "no-rustup"
+
         log "INFO" "E2E" "Toolchain scenarios complete"
         return
     fi

@@ -132,24 +132,31 @@ async fn process_hook(input: HookInput) -> HookOutput {
 
             // Execute remote compilation pipeline
             match execute_remote_compilation(&worker, command, config.transfer.clone()).await {
-                Ok(exit_code) => {
-                    if exit_code == 0 {
+                Ok(result) => {
+                    if result.exit_code == 0 {
                         // Command succeeded remotely - deny local execution
                         // The agent sees output via stderr, artifacts are local
                         info!("Remote compilation succeeded, denying local execution");
                         HookOutput::deny(
                             "RCH: Command executed successfully on remote worker".to_string(),
                         )
+                    } else if is_toolchain_failure(&result.stderr, result.exit_code) {
+                        // Toolchain failure - fall back to local execution
+                        warn!(
+                            "Remote toolchain failure detected (exit {}), falling back to local",
+                            result.exit_code
+                        );
+                        HookOutput::allow()
                     } else {
                         // Command failed remotely - still deny to prevent re-execution
                         // The agent saw the error output via stderr
                         info!(
                             "Remote compilation failed (exit {}), denying local execution",
-                            exit_code
+                            result.exit_code
                         );
                         HookOutput::deny(format!(
                             "RCH: Remote compilation failed with exit code {}",
-                            exit_code
+                            result.exit_code
                         ))
                     }
                 }
