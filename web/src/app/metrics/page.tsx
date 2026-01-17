@@ -215,6 +215,7 @@ export default function MetricsPage() {
                   <Progress
                     value={Math.min((budget.p95_ms / budget.budget_ms) * 100, 100)}
                     className="h-1"
+                    aria-label={`${budget.name} budget utilization`}
                   />
                 </div>
               </div>
