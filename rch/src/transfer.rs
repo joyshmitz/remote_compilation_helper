@@ -393,27 +393,29 @@ fn parse_rsync_files(output: &str) -> u32 {
 
 /// Compute a hash of the project for cache invalidation.
 pub fn compute_project_hash(project_path: &Path) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+    let mut hasher = blake3::Hasher::new();
 
-    let mut hasher = DefaultHasher::new();
+    // Hash path
+    hasher.update(project_path.to_string_lossy().as_bytes());
 
-    // Hash path and modification time of key files
+    // Hash modification time of key files to detect configuration changes
     if let Ok(metadata) = std::fs::metadata(project_path.join("Cargo.toml")) {
         if let Ok(modified) = metadata.modified() {
-            modified.hash(&mut hasher);
+            if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+                hasher.update(&duration.as_nanos().to_le_bytes());
+            }
         }
     }
 
     if let Ok(metadata) = std::fs::metadata(project_path.join("Cargo.lock")) {
         if let Ok(modified) = metadata.modified() {
-            modified.hash(&mut hasher);
+            if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+                hasher.update(&duration.as_nanos().to_le_bytes());
+            }
         }
     }
 
-    project_path.hash(&mut hasher);
-
-    format!("{:016x}", hasher.finish())
+    hasher.finalize().to_hex()[..16].to_string()
 }
 
 /// Get the project identifier from a path.
