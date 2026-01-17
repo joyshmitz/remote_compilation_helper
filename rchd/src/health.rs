@@ -4,13 +4,14 @@
 
 #![allow(dead_code)] // Scaffold code - methods will be used in future beads
 
+use crate::metrics;
 use crate::workers::{WorkerPool, WorkerState};
 use rch_common::mock::{self, MockConfig, MockSshClient};
 use rch_common::{
     CircuitBreakerConfig, CircuitState, CircuitStats, SshClient, SshOptions, WorkerStatus,
 };
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tokio::time::interval;
 use tracing::{debug, info, warn};
@@ -81,6 +82,20 @@ impl HealthCheckResult {
             response_time_ms: 0,
             error: Some(error),
             checked_at: Instant::now(),
+        }
+    }
+
+    /// Record metrics for this health check result.
+    fn record_metrics(&self, worker_id: &str) {
+        if self.healthy {
+            // Record latency histogram
+            metrics::observe_worker_latency(worker_id, self.response_time_ms as f64);
+            // Update last seen timestamp
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0);
+            metrics::set_worker_last_seen(worker_id, now);
         }
     }
 }
@@ -289,6 +304,17 @@ impl HealthMonitor {
                     let worker_id = worker.config.id.as_str().to_string();
                     let result = check_worker_health(&worker, &config).await;
 
+                    // Record health check latency metric
+                    if result.healthy {
+                        metrics::observe_worker_latency(&worker_id, result.response_time_ms as f64);
+                        // Update last seen timestamp
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map(|d| d.as_secs_f64())
+                            .unwrap_or(0.0);
+                        metrics::set_worker_last_seen(&worker_id, now);
+                    }
+
                     // Update health state
                     let mut states = health_states.write().await;
                     let health = states.entry(worker_id.clone()).or_default();
@@ -296,6 +322,29 @@ impl HealthMonitor {
 
                     // Log status changes
                     let new_status = health.status();
+
+                    // Record worker status metric
+                    let status_value = match new_status {
+                        WorkerStatus::Healthy => 1.0,
+                        WorkerStatus::Degraded => 2.0,
+                        WorkerStatus::Draining => 2.0,
+                        WorkerStatus::Unreachable => 0.0,
+                        WorkerStatus::Disabled => 0.0,
+                    };
+                    metrics::set_worker_status(&worker_id, "current", status_value);
+
+                    // Record circuit breaker state
+                    let circuit_state = health.circuit_stats().state();
+                    let circuit_value = match circuit_state {
+                        CircuitState::Closed => 0,
+                        CircuitState::HalfOpen => 1,
+                        CircuitState::Open => 2,
+                    };
+                    metrics::set_circuit_state(&worker_id, circuit_value);
+
+                    // Record slot metrics
+                    metrics::set_worker_slots_total(&worker_id, worker.config.total_slots);
+                    metrics::set_worker_slots_available(&worker_id, worker.available_slots());
                     if result.healthy {
                         debug!(
                             "Worker {} healthy ({}ms)",

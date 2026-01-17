@@ -9,6 +9,8 @@ mod api;
 mod config;
 mod health;
 mod history;
+mod http_api;
+mod metrics;
 mod selection;
 mod workers;
 
@@ -51,6 +53,10 @@ struct Cli {
     /// Run in foreground (don't daemonize)
     #[arg(short, long)]
     foreground: bool,
+
+    /// Port for HTTP metrics/health endpoints (0 to disable)
+    #[arg(long, default_value = "9100")]
+    metrics_port: u16,
 }
 
 /// Shared daemon context passed to all API handlers.
@@ -87,6 +93,12 @@ async fn main() -> Result<()> {
         .init();
 
     info!("Starting RCH daemon...");
+
+    // Register Prometheus metrics
+    if let Err(e) = metrics::register_metrics() {
+        warn!("Failed to register some metrics: {}", e);
+    }
+    metrics::set_daemon_info(env!("CARGO_PKG_VERSION"));
 
     // Load worker configuration
     let workers = config::load_workers(cli.workers_config.as_deref())?;
@@ -148,6 +160,20 @@ async fn main() -> Result<()> {
     let health_monitor = health::HealthMonitor::new(worker_pool.clone(), health_config);
     let health_handle = health_monitor.start();
     info!("Health monitor started");
+
+    // Start HTTP server for metrics/health endpoints (if enabled)
+    let _http_handle = if cli.metrics_port > 0 {
+        let http_state = http_api::HttpState {
+            pool: worker_pool.clone(),
+            version: env!("CARGO_PKG_VERSION"),
+            started_at: context.started_at,
+            pid: context.pid,
+        };
+        Some(http_api::start_server(cli.metrics_port, http_state).await)
+    } else {
+        info!("HTTP metrics endpoint disabled (port 0)");
+        None
+    };
 
     // Shutdown channel
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);

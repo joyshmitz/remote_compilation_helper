@@ -5,6 +5,8 @@
 //! - Response: JSON `SelectionResponse` or error
 
 use crate::DaemonContext;
+use crate::metrics;
+use crate::metrics::budget::{self, BudgetStatusResponse};
 use crate::selection::{SelectionWeights, select_worker_with_config};
 use crate::workers::WorkerPool;
 use anyhow::{Result, anyhow};
@@ -23,6 +25,10 @@ enum ApiRequest {
     SelectWorker(SelectionRequest),
     ReleaseWorker(ReleaseRequest),
     Status,
+    Metrics,
+    Health,
+    Ready,
+    Budget,
     Shutdown,
 }
 
@@ -119,6 +125,33 @@ pub struct Issue {
     pub remediation: Option<String>,
 }
 
+// ============================================================================
+// Health & Ready Response Types (per bead remote_compilation_helper-lia)
+// ============================================================================
+
+/// Health check response.
+#[derive(Debug, Serialize)]
+pub struct HealthResponse {
+    /// Health status: "healthy" or "unhealthy".
+    pub status: String,
+    /// Daemon version.
+    pub version: String,
+    /// Uptime in seconds.
+    pub uptime_seconds: u64,
+}
+
+/// Readiness check response.
+#[derive(Debug, Serialize)]
+pub struct ReadyResponse {
+    /// Ready status: "ready" or "not_ready".
+    pub status: String,
+    /// Whether workers are available.
+    pub workers_available: bool,
+    /// Reason if not ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// Handle an incoming connection on the Unix socket.
 pub async fn handle_connection(
     stream: UnixStream,
@@ -139,30 +172,54 @@ pub async fn handle_connection(
     debug!("Received request: {}", line);
 
     // Parse and handle the request
-    let response_json = match parse_request(line) {
+    let (response_json, content_type) = match parse_request(line) {
         Ok(ApiRequest::SelectWorker(request)) => {
+            metrics::inc_requests("select-worker");
             let response = handle_select_worker(&ctx.pool, request).await?;
-            serde_json::to_string(&response)?
+            (serde_json::to_string(&response)?, "application/json")
         }
         Ok(ApiRequest::ReleaseWorker(request)) => {
+            metrics::inc_requests("release-worker");
             handle_release_worker(&ctx.pool, request).await?;
-            "{}".to_string()
+            ("{}".to_string(), "application/json")
         }
         Ok(ApiRequest::Status) => {
+            metrics::inc_requests("status");
             let status = handle_status(&ctx).await?;
-            serde_json::to_string(&status)?
+            (serde_json::to_string(&status)?, "application/json")
+        }
+        Ok(ApiRequest::Metrics) => {
+            metrics::inc_requests("metrics");
+            let metrics_text = handle_metrics()?;
+            (metrics_text, "text/plain; version=0.0.4")
+        }
+        Ok(ApiRequest::Health) => {
+            metrics::inc_requests("health");
+            let health = handle_health(&ctx);
+            (serde_json::to_string(&health)?, "application/json")
+        }
+        Ok(ApiRequest::Ready) => {
+            metrics::inc_requests("ready");
+            let ready = handle_ready(&ctx).await;
+            (serde_json::to_string(&ready)?, "application/json")
+        }
+        Ok(ApiRequest::Budget) => {
+            metrics::inc_requests("budget");
+            let budget_status = handle_budget();
+            (serde_json::to_string(&budget_status)?, "application/json")
         }
         Ok(ApiRequest::Shutdown) => {
+            metrics::inc_requests("shutdown");
             let _ = shutdown_tx.send(()).await;
-            "{\"status\":\"shutting_down\"}".to_string()
+            ("{\"status\":\"shutting_down\"}".to_string(), "application/json")
         }
         Err(e) => return Err(e),
     };
 
     // Send the response
     let response_bytes = format!(
-        "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{}\n",
-        response_json
+        "HTTP/1.0 200 OK\r\nContent-Type: {}\r\n\r\n{}\n",
+        content_type, response_json
     );
 
     writer.write_all(response_bytes.as_bytes()).await?;
@@ -192,6 +249,22 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
 
     if path == "/status" {
         return Ok(ApiRequest::Status);
+    }
+
+    if path == "/metrics" {
+        return Ok(ApiRequest::Metrics);
+    }
+
+    if path == "/health" {
+        return Ok(ApiRequest::Health);
+    }
+
+    if path == "/ready" {
+        return Ok(ApiRequest::Ready);
+    }
+
+    if path == "/budget" {
+        return Ok(ApiRequest::Budget);
     }
 
     if path.starts_with("/release-worker") {
@@ -379,6 +452,50 @@ async fn handle_release_worker(pool: &WorkerPool, request: ReleaseRequest) -> Re
     );
     pool.release_slots(&request.worker_id, request.slots).await;
     Ok(())
+}
+
+/// Handle a metrics request - returns Prometheus text format.
+fn handle_metrics() -> Result<String> {
+    metrics::encode_metrics()
+}
+
+/// Handle a health check request.
+fn handle_health(ctx: &DaemonContext) -> HealthResponse {
+    HealthResponse {
+        status: "healthy".to_string(),
+        version: ctx.version.to_string(),
+        uptime_seconds: ctx.started_at.elapsed().as_secs(),
+    }
+}
+
+/// Handle a readiness check request.
+async fn handle_ready(ctx: &DaemonContext) -> ReadyResponse {
+    let workers = ctx.pool.all_workers().await;
+
+    // Check if any workers are available
+    let workers_available = workers.iter().any(|w| {
+        // A worker is available if it's healthy and has slots
+        w.available_slots() > 0
+    });
+
+    if workers_available {
+        ReadyResponse {
+            status: "ready".to_string(),
+            workers_available: true,
+            reason: None,
+        }
+    } else {
+        ReadyResponse {
+            status: "not_ready".to_string(),
+            workers_available: false,
+            reason: Some("no_workers_available".to_string()),
+        }
+    }
+}
+
+/// Handle a budget status request.
+fn handle_budget() -> BudgetStatusResponse {
+    budget::get_budget_status()
 }
 
 /// Handle a status request.

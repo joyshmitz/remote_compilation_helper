@@ -59,6 +59,21 @@ toml = "0.8"
 directories = "6.0"
 dirs = "6.0"
 
+# Metrics and Observability
+prometheus = "0.13"
+lazy_static = "1.5"
+
+# OpenTelemetry
+opentelemetry = "0.27"
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["tonic"] }
+tracing-opentelemetry = "0.28"
+
+# HTTP server for metrics endpoint
+axum = { version = "0.8", features = ["http1"] }
+tower = "0.5"
+hyper = { version = "1.5", features = ["full"] }
+
 # Error handling
 thiserror = "2.0"
 anyhow = "1.0"
