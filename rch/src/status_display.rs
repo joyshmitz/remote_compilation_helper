@@ -4,14 +4,11 @@
 //! in both comprehensive (when daemon is running) and basic (when daemon
 //! is stopped) modes.
 
-use crate::status_types::{
-    DaemonFullStatusResponse, extract_json_body, format_duration,
-};
+use crate::status_types::{DaemonFullStatusResponse, extract_json_body, format_duration};
 use crate::ui::style::Style;
 use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use tracing::debug;
 
 /// Default daemon socket path.
 pub const DEFAULT_SOCKET_PATH: &str = "/tmp/rch.sock";

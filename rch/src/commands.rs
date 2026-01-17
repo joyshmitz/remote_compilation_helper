@@ -122,6 +122,41 @@ impl<T: Serialize> JsonResponse<T> {
             error: Some(error),
         }
     }
+
+    /// Set the command name for this response.
+    ///
+    /// Use this to specify the actual command that produced the response,
+    /// e.g., `JsonResponse::ok(data).with_command("workers list")`.
+    pub fn with_command(mut self, command: impl Into<String>) -> Self {
+        self.command = command.into();
+        self
+    }
+
+    /// Create a successful response with explicit command name.
+    pub fn ok_cmd(command: impl Into<String>, data: T) -> Self {
+        Self {
+            version: JSON_ENVELOPE_VERSION,
+            command: command.into(),
+            success: true,
+            data: Some(data),
+            error: None,
+        }
+    }
+
+    /// Create an error response with explicit command name and error code.
+    pub fn err_cmd(
+        command: impl Into<String>,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            version: JSON_ENVELOPE_VERSION,
+            command: command.into(),
+            success: false,
+            data: None,
+            error: Some(JsonError::new(code, message)),
+        }
+    }
 }
 
 /// Worker information for JSON output.
@@ -398,7 +433,7 @@ pub fn workers_list(ctx: &OutputContext) -> Result<()> {
             count: workers.len(),
             workers: workers.iter().map(WorkerInfo::from).collect(),
         };
-        let _ = ctx.json(&JsonResponse::ok(response));
+        let _ = ctx.json(&JsonResponse::ok_cmd("workers list", response));
         return Ok(());
     }
 
@@ -456,7 +491,7 @@ pub async fn workers_probe(
 
     if workers.is_empty() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<Vec<WorkerProbeResult>>::ok(vec![]));
+            let _ = ctx.json(&JsonResponse::<Vec<WorkerProbeResult>>::ok_cmd("workers probe", vec![]));
         }
         return Ok(());
     }
@@ -467,7 +502,11 @@ pub async fn workers_probe(
         workers.iter().filter(|w| w.id.as_str() == id).collect()
     } else {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<()>::err("Specify a worker ID or use --all"));
+            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+                "workers probe",
+                error_codes::CONFIG_INVALID,
+                "Specify a worker ID or use --all",
+            ));
         } else {
             println!(
                 "{} Specify a worker ID or use {} to probe all workers.",
@@ -481,10 +520,11 @@ pub async fn workers_probe(
     if targets.is_empty() {
         if let Some(id) = worker_id {
             if ctx.is_json() {
-                let _ = ctx.json(&JsonResponse::<()>::err(format!(
-                    "Worker '{}' not found",
-                    id
-                )));
+                let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+                    "workers probe",
+                    error_codes::WORKER_NOT_FOUND,
+                    format!("Worker '{}' not found", id),
+                ));
             } else {
                 println!(
                     "{} Worker '{}' not found in configuration.",
@@ -596,7 +636,7 @@ pub async fn workers_probe(
     }
 
     if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok(results));
+        let _ = ctx.json(&JsonResponse::ok_cmd("workers probe", results));
     }
 
     Ok(())
@@ -621,7 +661,7 @@ pub async fn workers_benchmark(ctx: &OutputContext) -> Result<()> {
 
     if workers.is_empty() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<Vec<WorkerBenchmarkResult>>::ok(vec![]));
+            let _ = ctx.json(&JsonResponse::<Vec<WorkerBenchmarkResult>>::ok_cmd("workers benchmark", vec![]));
         }
         return Ok(());
     }
@@ -740,7 +780,7 @@ pub async fn workers_benchmark(ctx: &OutputContext) -> Result<()> {
     }
 
     if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok(results));
+        let _ = ctx.json(&JsonResponse::ok_cmd("workers benchmark", results));
     } else {
         println!(
             "\n{} For accurate speed scores, use longer benchmark runs.",
@@ -2167,7 +2207,7 @@ pub async fn hook_test(ctx: &OutputContext) -> Result<()> {
 /// Falls back to basic status display if daemon is not running.
 pub async fn status_overview(show_workers: bool, show_jobs: bool) -> Result<()> {
     use crate::status_display::{
-        check_hook_installed, query_daemon_full_status, render_basic_status, render_full_status,
+        query_daemon_full_status, render_basic_status, render_full_status,
     };
 
     let style = terminal_style();
