@@ -571,9 +571,7 @@ fn test_daemon_verbose_mode() {
     let socket_path = setup_daemon_configs(&harness).unwrap();
 
     // Start daemon in verbose mode
-    harness
-        .start_daemon(&["--foreground", "--metrics-port", "0", "--verbose"])
-        .unwrap();
+    start_daemon_with_socket(&harness, &socket_path, &["--verbose"]).unwrap();
     harness
         .wait_for_socket(&socket_path, Duration::from_secs(10))
         .unwrap();
@@ -595,9 +593,7 @@ fn test_concurrent_requests() {
     let socket_path = setup_daemon_configs(&harness).unwrap();
 
     // Start the daemon
-    harness
-        .start_daemon(&["--foreground", "--metrics-port", "0"])
-        .unwrap();
+    start_daemon_with_socket(&harness, &socket_path, &[]).unwrap();
     harness
         .wait_for_socket(&socket_path, Duration::from_secs(10))
         .unwrap();
@@ -647,17 +643,10 @@ fn test_daemon_with_history_file() {
     let harness = create_daemon_harness("daemon_history").unwrap();
     let socket_path = setup_daemon_configs(&harness).unwrap();
     let history_file = harness.test_dir().join("history.jsonl");
+    let history_str = history_file.to_string_lossy();
 
     // Start daemon with history file
-    harness
-        .start_daemon(&[
-            "--foreground",
-            "--metrics-port",
-            "0",
-            "--history-file",
-            history_file.to_str().unwrap(),
-        ])
-        .unwrap();
+    start_daemon_with_socket(&harness, &socket_path, &["--history-file", &history_str]).unwrap();
     harness
         .wait_for_socket(&socket_path, Duration::from_secs(10))
         .unwrap();
