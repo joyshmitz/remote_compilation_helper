@@ -3,7 +3,7 @@
 //! This module contains the actual business logic for each CLI subcommand.
 
 use crate::ui::context::OutputContext;
-use crate::ui::style::{StatusIndicator, Style};
+use crate::ui::theme::{StatusIndicator, Theme};
 use anyhow::{Context, Result, bail};
 use directories::ProjectDirs;
 use rch_common::{RchConfig, SshClient, SshOptions, WorkerConfig, WorkerId};
@@ -316,14 +316,14 @@ pub struct ClassificationTestResult {
 /// Create a style for terminal output.
 ///
 /// Detects terminal capabilities and creates appropriate styling.
-fn terminal_style() -> Style {
+fn terminal_style() -> Theme {
     let is_tty = is_terminal::is_terminal(std::io::stdout());
     let supports_unicode = is_tty
         && std::env::var("LANG")
             .map(|l| l.contains("UTF"))
             .unwrap_or(true);
     let supports_hyperlinks = crate::ui::adaptive::detect_hyperlink_support();
-    Style::new(is_tty, supports_unicode, supports_hyperlinks)
+    Theme::new(is_tty, supports_unicode, supports_hyperlinks)
 }
 
 /// Get the RCH config directory path.
@@ -1494,6 +1494,9 @@ pub fn config_init(ctx: &OutputContext) -> Result<()> {
     let config_path = config_dir.join("config.toml");
     let workers_path = config_dir.join("workers.toml");
 
+    let mut created = Vec::new();
+    let mut already_existed = Vec::new();
+
     // Write example config.toml
     if !config_path.exists() {
         let config_content = r#"# RCH Configuration
@@ -1519,19 +1522,25 @@ exclude_patterns = [
 ]
 "#;
         std::fs::write(&config_path, config_content)?;
-        println!(
-            "{} {} {}",
-            StatusIndicator::Success.display(&style),
-            style.muted("Created:"),
-            style.value(&config_path.display().to_string())
-        );
+        created.push(config_path.display().to_string());
+        if !ctx.is_json() {
+            println!(
+                "{} {} {}",
+                StatusIndicator::Success.display(&style),
+                style.muted("Created:"),
+                style.value(&config_path.display().to_string())
+            );
+        }
     } else {
-        println!(
-            "{} {} {}",
-            style.muted("-"),
-            style.muted("Exists:"),
-            style.muted(&config_path.display().to_string())
-        );
+        already_existed.push(config_path.display().to_string());
+        if !ctx.is_json() {
+            println!(
+                "{} {} {}",
+                style.muted("-"),
+                style.muted("Exists:"),
+                style.muted(&config_path.display().to_string())
+            );
+        }
     }
 
     // Write example workers.toml
@@ -1557,19 +1566,36 @@ enabled = true
 # ...
 "#;
         std::fs::write(&workers_path, workers_content)?;
-        println!(
-            "{} {} {}",
-            StatusIndicator::Success.display(&style),
-            style.muted("Created:"),
-            style.value(&workers_path.display().to_string())
-        );
+        created.push(workers_path.display().to_string());
+        if !ctx.is_json() {
+            println!(
+                "{} {} {}",
+                StatusIndicator::Success.display(&style),
+                style.muted("Created:"),
+                style.value(&workers_path.display().to_string())
+            );
+        }
     } else {
-        println!(
-            "{} {} {}",
-            style.muted("-"),
-            style.muted("Exists:"),
-            style.muted(&workers_path.display().to_string())
-        );
+        already_existed.push(workers_path.display().to_string());
+        if !ctx.is_json() {
+            println!(
+                "{} {} {}",
+                style.muted("-"),
+                style.muted("Exists:"),
+                style.muted(&workers_path.display().to_string())
+            );
+        }
+    }
+
+    if ctx.is_json() {
+        let _ = ctx.json(&JsonResponse::ok_cmd(
+            "config init",
+            ConfigInitResponse {
+                created,
+                already_existed,
+            },
+        ));
+        return Ok(());
     }
 
     println!("\n{}", style.format_success("Configuration initialized!"));

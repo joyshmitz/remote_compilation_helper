@@ -14,6 +14,7 @@ mod status_types;
 mod toolchain;
 mod transfer;
 pub mod ui;
+mod update;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -84,6 +85,53 @@ enum Commands {
     Hook {
         #[command(subcommand)]
         action: HookAction,
+    },
+
+    /// Update RCH binaries
+    Update {
+        /// Check for updates without installing
+        #[arg(long)]
+        check: bool,
+
+        /// Install specific version (e.g., v0.2.0)
+        #[arg(long)]
+        version: Option<String>,
+
+        /// Release channel: stable (default), beta, nightly
+        #[arg(long, default_value = "stable")]
+        channel: String,
+
+        /// Update all configured workers
+        #[arg(long)]
+        fleet: bool,
+
+        /// Restore previous version from backup
+        #[arg(long)]
+        rollback: bool,
+
+        /// Verify current installation integrity
+        #[arg(long)]
+        verify: bool,
+
+        /// Skip confirmation prompts
+        #[arg(long, short = 'y')]
+        yes: bool,
+
+        /// Show planned actions without executing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Update binaries but don't restart daemon
+        #[arg(long)]
+        no_restart: bool,
+
+        /// Wait up to N seconds for builds to complete (default: 60)
+        #[arg(long, default_value = "60")]
+        drain_timeout: u64,
+
+        /// Display changelog between current and target version
+        #[arg(long)]
+        show_changelog: bool,
     },
 }
 
@@ -187,6 +235,35 @@ async fn main() -> Result<()> {
             Commands::Status { workers, jobs } => handle_status(workers, jobs, &ctx).await,
             Commands::Config { action } => handle_config(action, &ctx).await,
             Commands::Hook { action } => handle_hook(action, &ctx).await,
+            Commands::Update {
+                check,
+                version,
+                channel,
+                fleet,
+                rollback,
+                verify,
+                yes,
+                dry_run,
+                no_restart,
+                drain_timeout,
+                show_changelog,
+            } => {
+                handle_update(
+                    &ctx,
+                    check,
+                    version,
+                    channel,
+                    fleet,
+                    rollback,
+                    verify,
+                    yes,
+                    dry_run,
+                    no_restart,
+                    drain_timeout,
+                    show_changelog,
+                )
+                .await
+            }
         },
     }
 }
@@ -269,4 +346,40 @@ async fn handle_hook(action: HookAction, ctx: &OutputContext) -> Result<()> {
         }
     }
     Ok(())
+}
+
+async fn handle_update(
+    ctx: &OutputContext,
+    check_only: bool,
+    version: Option<String>,
+    channel: String,
+    fleet: bool,
+    do_rollback: bool,
+    verify_only: bool,
+    yes: bool,
+    dry_run: bool,
+    no_restart: bool,
+    drain_timeout: u64,
+    show_changelog: bool,
+) -> Result<()> {
+    let channel = channel
+        .parse::<update::Channel>()
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    update::run_update(
+        ctx,
+        check_only,
+        version,
+        channel,
+        fleet,
+        do_rollback,
+        verify_only,
+        dry_run,
+        yes,
+        no_restart,
+        drain_timeout,
+        show_changelog,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{}", e))
 }

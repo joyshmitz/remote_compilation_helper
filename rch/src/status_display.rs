@@ -5,7 +5,7 @@
 //! is stopped) modes.
 
 use crate::status_types::{DaemonFullStatusResponse, extract_json_body, format_duration};
-use crate::ui::style::Style;
+use crate::ui::theme::Theme;
 use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -59,7 +59,7 @@ pub fn render_full_status(
     status: &DaemonFullStatusResponse,
     show_workers: bool,
     show_jobs: bool,
-    style: &Style,
+    style: &Theme,
 ) {
     println!("{}", style.format_header("RCH Status"));
     println!();
@@ -156,7 +156,7 @@ pub fn render_full_status(
 }
 
 /// Render the workers table.
-fn render_workers_table(status: &DaemonFullStatusResponse, style: &Style) {
+fn render_workers_table(status: &DaemonFullStatusResponse, style: &Theme) {
     println!("\n{}", style.format_header("Workers"));
     if status.workers.is_empty() {
         println!("  {}", style.muted("(none configured)"));
@@ -213,7 +213,7 @@ fn render_workers_table(status: &DaemonFullStatusResponse, style: &Style) {
 }
 
 /// Render the builds section (active and recent).
-fn render_builds_section(status: &DaemonFullStatusResponse, style: &Style) {
+fn render_builds_section(status: &DaemonFullStatusResponse, style: &Theme) {
     // Active builds
     println!("\n{}", style.format_header("Active Builds"));
     if status.active_builds.is_empty() {
@@ -292,7 +292,7 @@ pub fn check_hook_installed() -> bool {
 }
 
 /// Render basic status when daemon is not running.
-pub fn render_basic_status(daemon_running: bool, show_workers: bool, style: &Style) {
+pub fn render_basic_status(daemon_running: bool, show_workers: bool, style: &Theme) {
     println!("{}", style.format_header("RCH Status"));
     println!();
 

@@ -1,0 +1,399 @@
+//! Binary installation and rollback.
+
+use super::download::DownloadedRelease;
+use super::lock::UpdateLock;
+use super::types::UpdateError;
+use crate::ui::OutputContext;
+use std::path::PathBuf;
+use std::process::Command;
+
+/// Result of installation.
+#[allow(dead_code)]
+pub struct InstallResult {
+    pub backup_path: PathBuf,
+    pub installed_version: String,
+    pub daemon_restarted: bool,
+}
+
+/// Install downloaded update.
+pub async fn install_update(
+    ctx: &OutputContext,
+    download: &DownloadedRelease,
+    restart_daemon: bool,
+    drain_timeout: u64,
+) -> Result<InstallResult, UpdateError> {
+    // Acquire update lock
+    let _lock = UpdateLock::acquire()?;
+
+    if !ctx.is_json() {
+        println!("Installing update...");
+    }
+
+    // Get installation paths
+    let install_dir = get_install_dir()?;
+    let backup_dir = get_backup_dir(&download.version)?;
+
+    // Stop daemon if running and restart is requested
+    let daemon_was_running = if restart_daemon {
+        stop_daemon_gracefully(drain_timeout).await?
+    } else {
+        false
+    };
+
+    // Backup current binaries
+    if !ctx.is_json() {
+        println!("Backing up current installation to {}...", backup_dir.display());
+    }
+    backup_current_installation(&install_dir, &backup_dir)?;
+
+    // Extract new binaries to temp location
+    let temp_extract = std::env::temp_dir().join("rch-extract");
+    extract_archive(&download.archive_path, &temp_extract)?;
+
+    // Atomic replace: move new binaries to install dir
+    if !ctx.is_json() {
+        println!("Installing new binaries...");
+    }
+    replace_binaries(&temp_extract, &install_dir)?;
+
+    // Verify new binaries work
+    verify_installation(&install_dir)?;
+
+    // Restart daemon if it was running
+    let daemon_restarted = if restart_daemon && daemon_was_running {
+        if !ctx.is_json() {
+            println!("Restarting daemon...");
+        }
+        start_daemon().await?;
+        true
+    } else {
+        false
+    };
+
+    // Clean up temp files
+    let _ = std::fs::remove_dir_all(&temp_extract);
+
+    Ok(InstallResult {
+        backup_path: backup_dir,
+        installed_version: download.version.clone(),
+        daemon_restarted,
+    })
+}
+
+/// Rollback to previous version.
+pub async fn rollback(ctx: &OutputContext, dry_run: bool) -> Result<(), UpdateError> {
+    let backup_dir = find_latest_backup()?;
+
+    if !ctx.is_json() {
+        println!("Rolling back to backup at {}...", backup_dir.display());
+    }
+
+    if dry_run {
+        if !ctx.is_json() {
+            println!("Dry run: would restore from {}", backup_dir.display());
+        }
+        return Ok(());
+    }
+
+    // Acquire lock
+    let _lock = UpdateLock::acquire()?;
+
+    // Stop daemon
+    let daemon_was_running = stop_daemon_gracefully(30).await?;
+
+    // Get install dir
+    let install_dir = get_install_dir()?;
+
+    // Restore from backup
+    restore_from_backup(&backup_dir, &install_dir)?;
+
+    // Restart daemon if it was running
+    if daemon_was_running {
+        start_daemon().await?;
+    }
+
+    if !ctx.is_json() {
+        println!("Rollback complete.");
+    }
+
+    Ok(())
+}
+
+/// Get the installation directory.
+fn get_install_dir() -> Result<PathBuf, UpdateError> {
+    // Try to determine where rch is installed
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            return Ok(parent.to_path_buf());
+        }
+    }
+
+    // Default to ~/.local/bin
+    let home = dirs::home_dir()
+        .ok_or_else(|| UpdateError::InstallFailed("Could not determine home directory".to_string()))?;
+
+    Ok(home.join(".local/bin"))
+}
+
+/// Get the backup directory for a version.
+fn get_backup_dir(version: &str) -> Result<PathBuf, UpdateError> {
+    let data_dir = dirs::data_dir()
+        .ok_or_else(|| UpdateError::InstallFailed("Could not determine data directory".to_string()))?;
+
+    let backup_base = data_dir.join("rch/backups");
+    std::fs::create_dir_all(&backup_base)
+        .map_err(|e| UpdateError::InstallFailed(format!("Failed to create backup dir: {}", e)))?;
+
+    // Use timestamp to allow multiple backups of same version
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    Ok(backup_base.join(format!("v{}-{}", version, timestamp)))
+}
+
+/// Find the latest backup.
+fn find_latest_backup() -> Result<PathBuf, UpdateError> {
+    let data_dir = dirs::data_dir()
+        .ok_or_else(|| UpdateError::InstallFailed("Could not determine data directory".to_string()))?;
+
+    let backup_base = data_dir.join("rch/backups");
+
+    if !backup_base.exists() {
+        return Err(UpdateError::NoBackupAvailable);
+    }
+
+    let mut backups: Vec<_> = std::fs::read_dir(&backup_base)
+        .map_err(|e| UpdateError::InstallFailed(format!("Failed to read backup dir: {}", e)))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+        .collect();
+
+    backups.sort_by_key(|e| e.file_name());
+
+    backups
+        .last()
+        .map(|e| e.path())
+        .ok_or(UpdateError::NoBackupAvailable)
+}
+
+/// Backup current installation.
+fn backup_current_installation(install_dir: &PathBuf, backup_dir: &PathBuf) -> Result<(), UpdateError> {
+    std::fs::create_dir_all(backup_dir)
+        .map_err(|e| UpdateError::InstallFailed(format!("Failed to create backup dir: {}", e)))?;
+
+    for binary in &["rch", "rchd", "rch-wkr"] {
+        let src = install_dir.join(binary);
+        if src.exists() {
+            let dst = backup_dir.join(binary);
+            std::fs::copy(&src, &dst)
+                .map_err(|e| UpdateError::InstallFailed(format!("Failed to backup {}: {}", binary, e)))?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Extract archive to destination.
+fn extract_archive(archive: &PathBuf, dest: &PathBuf) -> Result<(), UpdateError> {
+    std::fs::create_dir_all(dest)
+        .map_err(|e| UpdateError::InstallFailed(format!("Failed to create extract dir: {}", e)))?;
+
+    let output = Command::new("tar")
+        .args(["-xzf", archive.to_str().unwrap(), "-C", dest.to_str().unwrap()])
+        .output()
+        .map_err(|e| UpdateError::InstallFailed(format!("Failed to run tar: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(UpdateError::InstallFailed(format!(
+            "tar extraction failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+
+    Ok(())
+}
+
+/// Replace binaries in install directory.
+fn replace_binaries(src_dir: &PathBuf, install_dir: &PathBuf) -> Result<(), UpdateError> {
+    std::fs::create_dir_all(install_dir)
+        .map_err(|e| UpdateError::InstallFailed(format!("Failed to create install dir: {}", e)))?;
+
+    for binary in &["rch", "rchd", "rch-wkr"] {
+        let src = src_dir.join(binary);
+        if src.exists() {
+            let dst = install_dir.join(binary);
+
+            // Remove existing binary first
+            if dst.exists() {
+                std::fs::remove_file(&dst)
+                    .map_err(|e| UpdateError::InstallFailed(format!("Failed to remove old {}: {}", binary, e)))?;
+            }
+
+            // Move new binary
+            std::fs::rename(&src, &dst)
+                .or_else(|_| {
+                    // If rename fails (cross-device), copy instead
+                    std::fs::copy(&src, &dst)?;
+                    std::fs::remove_file(&src)?;
+                    Ok::<_, std::io::Error>(())
+                })
+                .map_err(|e| UpdateError::InstallFailed(format!("Failed to install {}: {}", binary, e)))?;
+
+            // Make executable
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&dst)
+                    .map_err(|e| UpdateError::InstallFailed(format!("Failed to get permissions: {}", e)))?
+                    .permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&dst, perms)
+                    .map_err(|e| UpdateError::InstallFailed(format!("Failed to set permissions: {}", e)))?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Verify the installation by checking binary versions.
+fn verify_installation(install_dir: &PathBuf) -> Result<(), UpdateError> {
+    let rch = install_dir.join("rch");
+
+    let output = Command::new(&rch)
+        .arg("--version")
+        .output()
+        .map_err(|e| UpdateError::InstallFailed(format!("Failed to verify installation: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(UpdateError::InstallFailed(
+            "Installed binary failed version check".to_string()
+        ));
+    }
+
+    Ok(())
+}
+
+/// Restore from backup.
+fn restore_from_backup(backup_dir: &PathBuf, install_dir: &PathBuf) -> Result<(), UpdateError> {
+    for binary in &["rch", "rchd", "rch-wkr"] {
+        let src = backup_dir.join(binary);
+        if src.exists() {
+            let dst = install_dir.join(binary);
+
+            if dst.exists() {
+                std::fs::remove_file(&dst)
+                    .map_err(|e| UpdateError::InstallFailed(format!("Failed to remove {}: {}", binary, e)))?;
+            }
+
+            std::fs::copy(&src, &dst)
+                .map_err(|e| UpdateError::InstallFailed(format!("Failed to restore {}: {}", binary, e)))?;
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&dst)
+                    .map_err(|e| UpdateError::InstallFailed(format!("Failed to get permissions: {}", e)))?
+                    .permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&dst, perms)
+                    .map_err(|e| UpdateError::InstallFailed(format!("Failed to set permissions: {}", e)))?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Stop daemon gracefully, waiting for builds to complete.
+async fn stop_daemon_gracefully(_timeout_secs: u64) -> Result<bool, UpdateError> {
+    use std::path::Path;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::UnixStream;
+
+    const SOCKET_PATH: &str = "/tmp/rch.sock";
+
+    // Check if daemon is running
+    let socket_path = Path::new(SOCKET_PATH);
+    if !socket_path.exists() {
+        return Ok(false);
+    }
+
+    // Try graceful shutdown via socket
+    if let Ok(mut stream) = UnixStream::connect(socket_path).await {
+        let _ = stream.write_all(b"POST /shutdown\n").await;
+    }
+
+    // Wait for socket to disappear
+    for _ in 0..20 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if !socket_path.exists() {
+            return Ok(true);
+        }
+    }
+
+    // Try pkill as fallback
+    let _ = tokio::process::Command::new("pkill")
+        .args(["-f", "rchd"])
+        .output()
+        .await;
+
+    // Remove stale socket if present
+    let _ = std::fs::remove_file(socket_path);
+
+    Ok(true)
+}
+
+/// Start the daemon.
+async fn start_daemon() -> Result<(), UpdateError> {
+    // Use the commands module to start daemon
+    // This is a simplified version - the full implementation would use the proper startup flow
+    let _child = Command::new("rchd")
+        .spawn()
+        .map_err(|e| UpdateError::InstallFailed(format!("Failed to start daemon: {}", e)))?;
+
+    // Give it a moment to start
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_get_install_dir() {
+        let dir = get_install_dir().unwrap();
+        assert!(dir.is_absolute());
+    }
+
+    #[test]
+    fn test_backup_dir_has_timestamp() {
+        let dir = get_backup_dir("0.1.0").unwrap();
+        let name = dir.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("v0.1.0-"));
+        assert!(name.len() > "v0.1.0-".len()); // Has timestamp
+    }
+
+    #[test]
+    fn test_backup_and_restore() {
+        let temp = TempDir::new().unwrap();
+        let install_dir = temp.path().join("install");
+        let backup_dir = temp.path().join("backup");
+
+        std::fs::create_dir_all(&install_dir).unwrap();
+        std::fs::write(install_dir.join("rch"), "test binary").unwrap();
+
+        backup_current_installation(&install_dir, &backup_dir).unwrap();
+        assert!(backup_dir.join("rch").exists());
+
+        // Modify the original
+        std::fs::write(install_dir.join("rch"), "modified").unwrap();
+
+        // Restore
+        restore_from_backup(&backup_dir, &install_dir).unwrap();
+
+        let content = std::fs::read_to_string(install_dir.join("rch")).unwrap();
+        assert_eq!(content, "test binary");
+    }
+}

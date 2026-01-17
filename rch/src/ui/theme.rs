@@ -327,6 +327,10 @@ impl Style {
     }
 }
 
+/// Type alias for backwards compatibility with code expecting Theme.
+/// The Style struct provides all theming functionality.
+pub type Theme = Style;
+
 #[cfg(test)]
 mod tests {
     use super::*;

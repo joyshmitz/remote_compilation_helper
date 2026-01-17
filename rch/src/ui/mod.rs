@@ -52,8 +52,8 @@
 pub mod adaptive;
 pub mod context;
 pub mod progress;
-pub mod style;
 pub mod test_utils;
+pub mod theme;
 pub mod writer;
 
 // Re-export main types for convenience
@@ -68,7 +68,7 @@ pub use progress::{
     MultiProgressManager, Spinner, StepProgress, TransferProgress, with_spinner,
     with_spinner_result,
 };
-pub use style::{SemanticColors, StatusIndicator, Style, Symbols};
+pub use theme::{SemanticColors, StatusIndicator, Theme, Symbols};
 pub use writer::{OutputBuffer, OutputWriter, SharedOutputBuffer};
 
 // Test utilities are public for integration tests

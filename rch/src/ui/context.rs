@@ -8,7 +8,7 @@ use super::adaptive::{
     AdaptiveColor, Background, ColorLevel, detect_background, detect_color_level,
     detect_hyperlink_support,
 };
-use super::style::Style;
+use super::theme::Theme;
 use super::writer::OutputWriter;
 use colored::Color;
 use serde::Serialize;
@@ -203,7 +203,7 @@ pub struct OutputContext {
     /// Terminal capabilities.
     caps: TerminalCaps,
     /// Styling configuration.
-    style: Style,
+    style: Theme,
     /// Thread-safe stdout writer.
     stdout: OutputWriter,
     /// Thread-safe stderr writer.
@@ -233,7 +233,7 @@ impl OutputContext {
         let supports_unicode = caps.supports_unicode;
         let supports_hyperlinks = mode == OutputMode::Human && caps.supports_hyperlinks;
 
-        let style = Style::new(colors_enabled, supports_unicode, supports_hyperlinks);
+        let style = Theme::new(colors_enabled, supports_unicode, supports_hyperlinks);
 
         Self {
             mode,
@@ -363,7 +363,7 @@ impl OutputContext {
     }
 
     /// Get the style configuration.
-    pub fn style(&self) -> &Style {
+    pub fn style(&self) -> &Theme {
         &self.style
     }
 
