@@ -185,9 +185,17 @@ fn render_workers_table(status: &DaemonFullStatusResponse, style: &Theme) {
             "draining" => style.warning("draining"),
             _ => style.muted(&worker.status),
         };
+
+        // Enhanced circuit display with recovery timing
         let circuit_display = match worker.circuit_state.as_str() {
             "closed" => style.success("closed"),
-            "open" => style.error("open"),
+            "open" => {
+                if let Some(secs) = worker.recovery_in_secs {
+                    style.error(&format!("open ({}s)", secs))
+                } else {
+                    style.error("open")
+                }
+            }
             "half_open" => style.warning("half-open"),
             _ => style.muted(&worker.circuit_state),
         };
@@ -203,6 +211,67 @@ fn render_workers_table(status: &DaemonFullStatusResponse, style: &Theme) {
             speed,
             style.muted(&worker.user),
             style.info(&worker.host)
+        );
+
+        // Show detailed circuit info for workers with issues
+        if worker.circuit_state != "closed" {
+            render_circuit_details(worker, style);
+        }
+    }
+}
+
+/// Render detailed circuit breaker information for a worker.
+fn render_circuit_details(worker: &crate::status_types::WorkerStatusFromApi, style: &Theme) {
+    let (state_name, explanation, help_text) = circuit_state_explanation(
+        &worker.circuit_state,
+        worker.consecutive_failures,
+        worker.recovery_in_secs,
+        worker.last_error.as_deref(),
+    );
+
+    // Show explanation
+    println!(
+        "    {} {}",
+        style.muted("Circuit:"),
+        match worker.circuit_state.as_str() {
+            "open" => style.error(state_name),
+            "half_open" => style.warning(state_name),
+            _ => style.muted(state_name),
+        }
+    );
+    println!("      {}", style.muted(&explanation));
+
+    // Show failure history if available
+    if !worker.failure_history.is_empty() {
+        let history_visual = format_failure_history(&worker.failure_history);
+        println!(
+            "    {} {} {}",
+            style.muted("History:"),
+            history_visual,
+            style.muted(&format!("(last {} attempts)", worker.failure_history.len()))
+        );
+    }
+
+    // Show last error if available
+    if let Some(ref error) = worker.last_error {
+        let error_truncated = if error.len() > 60 {
+            format!("{}...", &error[..57])
+        } else {
+            error.clone()
+        };
+        println!(
+            "    {} {}",
+            style.muted("Reason:"),
+            style.error(&error_truncated)
+        );
+    }
+
+    // Show help text for non-closed circuits
+    if !help_text.is_empty() {
+        println!(
+            "    {} {}",
+            style.muted("Help:"),
+            style.info(help_text)
         );
     }
 }
@@ -286,6 +355,73 @@ pub fn check_hook_installed() -> bool {
         .unwrap_or(false)
 }
 
+// ============================================================================
+// Circuit Breaker Display Helpers
+// ============================================================================
+
+/// Format failure history as a visual pattern (e.g., "✗✗✗✓✓").
+///
+/// Uses ✓ for success (true), ✗ for failure (false).
+/// If history is empty, returns "(no history)".
+pub fn format_failure_history(history: &[bool]) -> String {
+    if history.is_empty() {
+        return "(no history)".to_string();
+    }
+    history
+        .iter()
+        .map(|&success| if success { '✓' } else { '✗' })
+        .collect()
+}
+
+/// Get plain language explanation for circuit breaker state.
+///
+/// Returns a tuple of (state_name, explanation, help_text).
+pub fn circuit_state_explanation(
+    state: &str,
+    consecutive_failures: u32,
+    recovery_in_secs: Option<u64>,
+    _last_error: Option<&str>,
+) -> (&'static str, String, &'static str) {
+    match state {
+        "closed" => (
+            "CLOSED",
+            "Normal operation - requests are being routed".to_string(),
+            "",
+        ),
+        "open" => {
+            let reason = if consecutive_failures > 0 {
+                format!("{} consecutive failures", consecutive_failures)
+            } else {
+                "repeated failures".to_string()
+            };
+            let timing = match recovery_in_secs {
+                Some(secs) => format!(" (auto-recovery in {}s)", secs),
+                None => " (cooldown elapsed, awaiting probe)".to_string(),
+            };
+            let explanation = format!(
+                "Circuit open due to {}{}",
+                reason,
+                timing
+            );
+            (
+                "OPEN",
+                explanation,
+                "Wait for auto-recovery or run: rch workers probe <id> --force",
+            )
+        }
+        "half_open" => (
+            "HALF-OPEN",
+            "Testing recovery - limited requests allowed".to_string(),
+            "Probing in progress; success will close circuit",
+        ),
+        _ => (
+            "UNKNOWN",
+            "Unknown circuit state".to_string(),
+            "",
+        ),
+    }
+}
+
 /// Render basic status when daemon is not running.
 pub fn render_basic_status(daemon_running: bool, show_workers: bool, style: &Theme) {
     println!("{}", style.format_header("RCH Status"));
@@ -347,4 +483,73 @@ pub fn render_basic_status(daemon_running: bool, show_workers: bool, style: &The
         style.symbols.info,
         style.warning("Start daemon for live status: rch daemon start")
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_failure_history_empty() {
+        assert_eq!(format_failure_history(&[]), "(no history)");
+    }
+
+    #[test]
+    fn test_format_failure_history_all_success() {
+        assert_eq!(format_failure_history(&[true, true, true]), "✓✓✓");
+    }
+
+    #[test]
+    fn test_format_failure_history_all_failure() {
+        assert_eq!(format_failure_history(&[false, false, false]), "✗✗✗");
+    }
+
+    #[test]
+    fn test_format_failure_history_mixed() {
+        assert_eq!(
+            format_failure_history(&[false, false, true, false, true]),
+            "✗✗✓✗✓"
+        );
+    }
+
+    #[test]
+    fn test_circuit_state_explanation_closed() {
+        let (state, explanation, help) = circuit_state_explanation("closed", 0, None, None);
+        assert_eq!(state, "CLOSED");
+        assert!(explanation.contains("Normal operation"));
+        assert!(help.is_empty());
+    }
+
+    #[test]
+    fn test_circuit_state_explanation_open_with_recovery() {
+        let (state, explanation, help) =
+            circuit_state_explanation("open", 3, Some(45), Some("SSH timeout"));
+        assert_eq!(state, "OPEN");
+        assert!(explanation.contains("3 consecutive failures"));
+        assert!(explanation.contains("auto-recovery in 45s"));
+        assert!(help.contains("rch workers probe"));
+    }
+
+    #[test]
+    fn test_circuit_state_explanation_open_no_recovery() {
+        let (state, explanation, _help) = circuit_state_explanation("open", 5, None, None);
+        assert_eq!(state, "OPEN");
+        assert!(explanation.contains("5 consecutive failures"));
+        assert!(explanation.contains("awaiting probe"));
+    }
+
+    #[test]
+    fn test_circuit_state_explanation_half_open() {
+        let (state, explanation, help) = circuit_state_explanation("half_open", 0, None, None);
+        assert_eq!(state, "HALF-OPEN");
+        assert!(explanation.contains("Testing recovery"));
+        assert!(help.contains("success will close"));
+    }
+
+    #[test]
+    fn test_circuit_state_explanation_unknown() {
+        let (state, explanation, _help) = circuit_state_explanation("weird_state", 0, None, None);
+        assert_eq!(state, "UNKNOWN");
+        assert!(explanation.contains("Unknown"));
+    }
 }

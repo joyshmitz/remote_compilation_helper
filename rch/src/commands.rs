@@ -7,14 +7,14 @@ use crate::ui::theme::StatusIndicator;
 use anyhow::{Context, Result, bail};
 use directories::ProjectDirs;
 use rch_common::{
-    Classification, ClassificationDetails, ClassificationTier, CompilationKind, ConfigValueSource,
+    Classification, ClassificationDetails, ClassificationTier, ConfigValueSource, DiscoveredHost,
     RchConfig, RequiredRuntime, SelectedWorker, SelectionReason, SshClient, SshOptions,
     WorkerConfig, WorkerId, classify_command_detailed, discover_all,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::process::Command;
 use tracing::debug;
@@ -346,6 +346,8 @@ pub struct DiagnoseDaemonStatus {
     pub socket_path: String,
     pub socket_exists: bool,
     pub reachable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3511,9 +3513,12 @@ fn push_value_source(
 }
 
 fn source_label(key: &str, sources: &Option<Vec<ConfigValueSourceInfo>>) -> Option<String> {
-    sources
-        .as_ref()
-        .and_then(|values| values.iter().find(|v| v.key == key).map(|v| v.source.clone()))
+    sources.as_ref().and_then(|values| {
+        values
+            .iter()
+            .find(|v| v.key == key)
+            .map(|v| v.source.clone())
+    })
 }
 
 /// Initialize configuration files with optional interactive wizard.
@@ -4586,34 +4591,43 @@ async fn query_daemon_health(socket_path: &str) -> Result<DaemonHealthResponse> 
     Ok(health)
 }
 
+fn build_diagnose_decision(classification: &Classification, threshold: f64) -> DiagnoseDecision {
+    let would_intercept = classification.is_compilation && classification.confidence >= threshold;
+    let reason = if !classification.is_compilation {
+        format!("not a compilation command ({})", classification.reason)
+    } else if classification.confidence < threshold {
+        format!(
+            "confidence {:.2} below threshold {:.2}",
+            classification.confidence, threshold
+        )
+    } else {
+        "meets confidence threshold".to_string()
+    };
+
+    DiagnoseDecision {
+        would_intercept,
+        reason,
+    }
+}
+
 /// Diagnose command classification and selection decisions.
 pub async fn diagnose(command: &str, ctx: &OutputContext) -> Result<()> {
     let style = ctx.theme();
-    let config = crate::config::load_config()?;
-    let defaults = RchConfig::default();
+    let loaded = crate::config::load_config_with_sources()?;
+    let config = loaded.config;
 
     let details: ClassificationDetails = classify_command_detailed(command);
     let threshold = config.compilation.confidence_threshold;
 
-    let sources = determine_value_sources(&config, &defaults);
-    let threshold_source = sources
+    let value_sources = collect_value_sources(&config, &loaded.sources);
+    let threshold_source = value_sources
         .iter()
         .find(|s| s.key == "compilation.confidence_threshold")
         .map(|s| s.source.clone())
         .unwrap_or_else(|| "default".to_string());
 
-    let would_intercept = details.classification.is_compilation
-        && details.classification.confidence >= threshold;
-    let decision_reason = if !details.classification.is_compilation {
-        format!("not a compilation command ({})", details.classification.reason)
-    } else if details.classification.confidence < threshold {
-        format!(
-            "confidence {:.2} below threshold {:.2}",
-            details.classification.confidence, threshold
-        )
-    } else {
-        "meets confidence threshold".to_string()
-    };
+    let decision = build_diagnose_decision(&details.classification, threshold);
+    let would_intercept = decision.would_intercept;
 
     let required_runtime = required_runtime_for_kind(details.classification.kind);
 
@@ -4623,6 +4637,7 @@ pub async fn diagnose(command: &str, ctx: &OutputContext) -> Result<()> {
         socket_path: socket_path.clone(),
         socket_exists,
         reachable: false,
+        status: None,
         version: None,
         uptime_seconds: None,
         error: None,
@@ -4631,7 +4646,8 @@ pub async fn diagnose(command: &str, ctx: &OutputContext) -> Result<()> {
     if socket_exists {
         match query_daemon_health(&socket_path).await {
             Ok(health) => {
-                daemon_status.reachable = health.status == "healthy";
+                daemon_status.reachable = true;
+                daemon_status.status = Some(health.status);
                 daemon_status.version = Some(health.version);
                 daemon_status.uptime_seconds = Some(health.uptime_seconds);
             }
@@ -4660,14 +4676,15 @@ pub async fn diagnose(command: &str, ctx: &OutputContext) -> Result<()> {
             &project,
             estimated_cores,
             toolchain.as_ref(),
-            required_runtime,
+            required_runtime.clone(),
             0,
         )
         .await
         {
             Ok(response) => {
                 if let Some(worker) = response.worker.as_ref() {
-                    if let Err(err) = release_worker(&socket_path, &worker.id, estimated_cores).await
+                    if let Err(err) =
+                        release_worker(&socket_path, &worker.id, estimated_cores).await
                     {
                         debug!("Failed to release worker slots: {}", err);
                     }
@@ -4679,8 +4696,7 @@ pub async fn diagnose(command: &str, ctx: &OutputContext) -> Result<()> {
                 });
             }
             Err(err) => {
-                daemon_status.error =
-                    Some(format!("selection request failed: {}", err));
+                daemon_status.error = Some(format!("selection request failed: {}", err));
             }
         }
     }
@@ -4692,15 +4708,15 @@ pub async fn diagnose(command: &str, ctx: &OutputContext) -> Result<()> {
             command: details.original.clone(),
             normalized_command: details.normalized.clone(),
             decision: DiagnoseDecision {
-                would_intercept,
-                reason: decision_reason,
+                would_intercept: decision.would_intercept,
+                reason: decision.reason.clone(),
             },
             threshold: DiagnoseThreshold {
                 value: threshold,
                 source: threshold_source,
             },
             daemon: daemon_status,
-            required_runtime,
+            required_runtime: required_runtime.clone(),
             worker_selection,
         };
         let _ = ctx.json(&JsonResponse::ok("diagnose", response));
@@ -4752,7 +4768,11 @@ pub async fn diagnose(command: &str, ctx: &OutputContext) -> Result<()> {
         style.format_warning("WOULD NOT INTERCEPT")
     };
     println!("  {} {}", style.key("Decision:"), decision_label);
-    println!("  {} {}", style.key("Reason:"), style.value(&decision_reason));
+    println!(
+        "  {} {}",
+        style.key("Reason:"),
+        style.value(&decision.reason)
+    );
     println!();
 
     println!("{}", style.highlight("Tier Decisions"));
@@ -4788,6 +4808,9 @@ pub async fn diagnose(command: &str, ctx: &OutputContext) -> Result<()> {
         style.key("Reachable:"),
         style.value(&daemon_status.reachable.to_string())
     );
+    if let Some(status) = &daemon_status.status {
+        println!("  {} {}", style.key("Status:"), style.value(status));
+    }
     if let Some(version) = &daemon_status.version {
         println!("  {} {}", style.key("Version:"), style.value(version));
     }
@@ -4799,11 +4822,7 @@ pub async fn diagnose(command: &str, ctx: &OutputContext) -> Result<()> {
         );
     }
     if let Some(error) = &daemon_status.error {
-        println!(
-            "  {} {}",
-            style.key("Error:"),
-            style.value(error)
-        );
+        println!("  {} {}", style.key("Error:"), style.value(error));
     }
     println!();
 
@@ -4827,11 +4846,7 @@ pub async fn diagnose(command: &str, ctx: &OutputContext) -> Result<()> {
                     style.key("Slots available:"),
                     style.value(&worker.slots_available.to_string())
                 );
-                println!(
-                    "  {} {:.1}",
-                    style.key("Speed score:"),
-                    worker.speed_score
-                );
+                println!("  {} {:.1}", style.key("Speed score:"), worker.speed_score);
                 println!(
                     "  {} {}",
                     style.key("Reason:"),
@@ -5255,6 +5270,7 @@ pub async fn init_wizard(yes: bool, skip_test: bool, ctx: &OutputContext) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rch_common::CompilationKind;
     use serde_json::json;
 
     // -------------------------------------------------------------------------
@@ -5672,6 +5688,60 @@ mod tests {
         let json = serde_json::to_value(&response).unwrap();
         assert_eq!(json["format"], "toml");
         assert!(json["content"].as_str().unwrap().contains("enabled"));
+    }
+
+    #[test]
+    fn diagnose_decision_intercepts_when_confident() {
+        let classification =
+            Classification::compilation(CompilationKind::CargoBuild, 0.95, "cargo build");
+        let decision = build_diagnose_decision(&classification, 0.85);
+        assert!(decision.would_intercept);
+        assert!(decision.reason.contains("meets"));
+    }
+
+    #[test]
+    fn diagnose_decision_rejects_when_below_threshold() {
+        let classification =
+            Classification::compilation(CompilationKind::CargoCheck, 0.80, "cargo check");
+        let decision = build_diagnose_decision(&classification, 0.85);
+        assert!(!decision.would_intercept);
+        assert!(decision.reason.contains("below threshold"));
+    }
+
+    #[test]
+    fn diagnose_response_serializes() {
+        let classification =
+            Classification::compilation(CompilationKind::CargoBuild, 0.95, "cargo build");
+        let response = DiagnoseResponse {
+            classification,
+            tiers: Vec::new(),
+            command: "cargo build".to_string(),
+            normalized_command: "cargo build".to_string(),
+            decision: DiagnoseDecision {
+                would_intercept: true,
+                reason: "meets confidence threshold".to_string(),
+            },
+            threshold: DiagnoseThreshold {
+                value: 0.85,
+                source: "default".to_string(),
+            },
+            daemon: DiagnoseDaemonStatus {
+                socket_path: "/tmp/rch.sock".to_string(),
+                socket_exists: false,
+                reachable: false,
+                status: None,
+                version: None,
+                uptime_seconds: None,
+                error: Some("daemon socket not found".to_string()),
+            },
+            required_runtime: RequiredRuntime::Rust,
+            worker_selection: None,
+        };
+
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["command"], "cargo build");
+        assert_eq!(json["classification"]["confidence"], 0.95);
+        assert_eq!(json["threshold"]["value"], 0.85);
     }
 
     #[test]
