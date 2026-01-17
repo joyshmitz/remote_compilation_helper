@@ -167,6 +167,73 @@ impl Default for HarnessConfig {
     }
 }
 
+/// Clean up stale sockets and test directories from previous test runs.
+///
+/// This function should be called during test harness setup to prevent
+/// leftover sockets from causing connection failures in new tests.
+///
+/// # Arguments
+/// * `base_dir` - The base directory containing test artifacts (e.g., `/tmp/rch_e2e_tests`)
+/// * `max_age` - Maximum age of directories to keep (default: 1 hour)
+pub fn cleanup_stale_test_artifacts(base_dir: &Path, max_age: Duration) {
+    if !base_dir.exists() {
+        return;
+    }
+
+    let now = std::time::SystemTime::now();
+    let mut cleaned_sockets = 0;
+    let mut cleaned_dirs = 0;
+
+    // First pass: clean up stale sockets in all test directories
+    if let Ok(entries) = std::fs::read_dir(base_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+
+            // Check if the directory is old enough to clean
+            let is_stale = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(|modified| {
+                    now.duration_since(modified)
+                        .map(|age| age > max_age)
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+
+            // Clean up sockets in stale directories
+            if is_stale {
+                // Look for socket files
+                if let Ok(dir_entries) = std::fs::read_dir(&path) {
+                    for file_entry in dir_entries.flatten() {
+                        let file_path = file_entry.path();
+                        if file_path.extension().map_or(false, |e| e == "sock") {
+                            if std::fs::remove_file(&file_path).is_ok() {
+                                cleaned_sockets += 1;
+                            }
+                        }
+                    }
+                }
+
+                // Try to remove the stale directory
+                if std::fs::remove_dir_all(&path).is_ok() {
+                    cleaned_dirs += 1;
+                }
+            }
+        }
+    }
+
+    if cleaned_sockets > 0 || cleaned_dirs > 0 {
+        eprintln!(
+            "[e2e::harness] Pre-test cleanup: removed {} stale sockets, {} stale directories",
+            cleaned_sockets, cleaned_dirs
+        );
+    }
+}
+
 /// E2E Test Harness for managing test execution
 pub struct TestHarness {
     pub config: HarnessConfig,
@@ -181,6 +248,9 @@ pub struct TestHarness {
 impl TestHarness {
     /// Create a new test harness with the given configuration
     pub fn new(test_name: &str, config: HarnessConfig) -> HarnessResult<Self> {
+        // Clean up stale artifacts from previous test runs (older than 1 hour)
+        cleanup_stale_test_artifacts(&config.temp_dir, Duration::from_secs(3600));
+
         // Create unique test directory
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S_%3f");
         let test_dir =
@@ -539,13 +609,44 @@ impl TestHarness {
 
     /// Wait for a socket to be available
     pub fn wait_for_socket(&self, socket_path: &Path, timeout: Duration) -> HarnessResult<()> {
+        self.wait_for_socket_with_backoff(socket_path, timeout)
+    }
+
+    /// Wait for a socket using exponential backoff for more reliable detection.
+    ///
+    /// Starts with a 10ms delay and doubles up to a maximum of 500ms per iteration.
+    /// This reduces CPU usage while maintaining responsiveness for fast-starting daemons.
+    pub fn wait_for_socket_with_backoff(
+        &self,
+        socket_path: &Path,
+        max_wait: Duration,
+    ) -> HarnessResult<()> {
         let socket_display = socket_path.display().to_string();
-        self.wait_for(
-            &format!("socket to be available: {socket_display}"),
-            timeout,
-            Duration::from_millis(100),
-            || socket_path.exists(),
-        )
+        self.logger.debug(format!(
+            "Waiting for socket with backoff: {socket_display} (timeout: {max_wait:?})"
+        ));
+
+        let start = std::time::Instant::now();
+        let mut delay = Duration::from_millis(10);
+        let max_delay = Duration::from_millis(500);
+
+        while start.elapsed() < max_wait {
+            if socket_path.exists() {
+                self.logger.info(format!(
+                    "Socket ready after {:?}: {socket_display}",
+                    start.elapsed()
+                ));
+                return Ok(());
+            }
+            std::thread::sleep(delay);
+            delay = (delay * 2).min(max_delay);
+        }
+
+        self.logger.error(format!(
+            "Socket timeout after {:?}: {socket_display}",
+            max_wait
+        ));
+        Err(HarnessError::Timeout(max_wait))
     }
 
     /// Mark the test as passed

@@ -214,7 +214,10 @@ pub struct QuickCheckResult {
 impl QuickCheckResult {
     /// Check if the system is fully operational.
     pub fn is_healthy(&self) -> bool {
-        self.daemon_running && self.worker_count > 0 && self.hook_installed && self.errors.is_empty()
+        self.daemon_running
+            && self.worker_count > 0
+            && self.hook_installed
+            && self.errors.is_empty()
     }
 
     /// Check if there are any issues.

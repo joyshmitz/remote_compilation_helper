@@ -16,10 +16,12 @@ pub mod patterns;
 mod patterns_security_test;
 pub mod protocol;
 pub mod ssh;
+pub mod test_change;
 pub mod toolchain;
 pub mod types;
 
 pub use binary_hash::{BinaryHashResult, binaries_equivalent, binary_contains_marker, compute_binary_hash};
+pub use test_change::{TestChangeGuard, TestCodeChange};
 pub use patterns::{Classification, CompilationKind, classify_command};
 pub use protocol::{HookInput, HookOutput, ToolInput};
 pub use ssh::{CommandResult, KnownHostsPolicy, SshClient, SshOptions, SshPool};

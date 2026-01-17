@@ -240,7 +240,11 @@ mod tests {
         let manager = HistoryManager::with_dir(temp_dir.path().join("history")).unwrap();
 
         // Record deployments for different workers
-        for (worker, version) in [("worker-1", "1.0.0"), ("worker-2", "1.0.0"), ("worker-1", "1.1.0")] {
+        for (worker, version) in [
+            ("worker-1", "1.0.0"),
+            ("worker-2", "1.0.0"),
+            ("worker-1", "1.1.0"),
+        ] {
             manager
                 .record_deployment(&DeploymentHistoryEntry {
                     timestamp: format!("2024-01-15T12:0{}:00Z", version.chars().nth(2).unwrap()),

@@ -195,7 +195,10 @@ mod tests {
         let restored: WorkerBackup = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.worker_id, "test-worker");
         assert_eq!(restored.version, "2.0.0");
-        assert_eq!(restored.backup_path, PathBuf::from("/data/backups/test.bak"));
+        assert_eq!(
+            restored.backup_path,
+            PathBuf::from("/data/backups/test.bak")
+        );
         assert_eq!(restored.created_at, "2024-01-16T10:00:00Z");
     }
 

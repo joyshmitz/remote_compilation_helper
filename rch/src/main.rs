@@ -111,7 +111,9 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Interactive first-time setup wizard
-    #[command(alias = "setup", after_help = r#"EXAMPLES:
+    #[command(
+        alias = "setup",
+        after_help = r#"EXAMPLES:
     rch init              # Start interactive setup wizard
     rch setup             # Same as 'rch init' (alias)
     rch init --yes        # Accept all defaults without prompting
@@ -131,7 +133,8 @@ For more control, use the individual commands:
   rch workers discover --add
   rch workers setup --all
   rch daemon start
-  rch hook install"#)]
+  rch hook install"#
+    )]
     Init {
         /// Accept all defaults without prompting
         #[arg(long, short = 'y')]

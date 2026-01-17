@@ -663,3 +663,169 @@ fn test_daemon_with_history_file() {
 
     harness.mark_passed();
 }
+
+// ============================================================================
+// Stability Hardening Tests (c71)
+// ============================================================================
+
+/// Test cleanup verification: ensures socket and test directory are properly cleaned up
+/// when a test completes successfully.
+#[test]
+fn test_cleanup_verification() {
+    // Create a harness that WILL cleanup on success (create_daemon_harness sets this)
+    let harness = create_daemon_harness("cleanup_test").unwrap();
+
+    let socket_path = setup_daemon_configs(&harness).unwrap();
+    let test_dir = harness.test_dir().to_path_buf();
+
+    harness.logger.info(format!(
+        "TEST: test_cleanup_verification - test_dir={:?}",
+        test_dir
+    ));
+
+    // Start daemon and create resources
+    let pid_result = start_daemon_with_socket(&harness, &socket_path, &[]);
+    assert!(pid_result.is_ok(), "Failed to start daemon: {:?}", pid_result);
+
+    harness
+        .wait_for_socket(&socket_path, Duration::from_secs(10))
+        .unwrap();
+
+    harness.logger.info(format!(
+        "CREATED: socket={:?}, exists={}",
+        socket_path,
+        socket_path.exists()
+    ));
+
+    // Verify resources exist before cleanup
+    assert!(socket_path.exists(), "Socket should exist before cleanup");
+    assert!(test_dir.exists(), "Test dir should exist before cleanup");
+
+    harness.mark_passed();
+
+    // Store paths for verification after harness drops
+    let socket_check = socket_path.clone();
+    let dir_check = test_dir.clone();
+
+    // Drop harness to trigger cleanup
+    drop(harness);
+
+    // Small delay to allow cleanup to complete
+    std::thread::sleep(Duration::from_millis(100));
+
+    // Verify cleanup occurred
+    // Note: The test directory should be removed on successful tests
+    // The socket will be removed when the daemon stops (during cleanup)
+    assert!(
+        !dir_check.exists(),
+        "Test directory should be cleaned up after successful test: {:?}",
+        dir_check
+    );
+    // Socket is inside test_dir, so if dir is gone, socket is also gone
+    assert!(
+        !socket_check.exists(),
+        "Socket should be cleaned up after test: {:?}",
+        socket_check
+    );
+}
+
+/// Test that daemon startup uses exponential backoff effectively.
+/// This test verifies that the wait_for_socket_with_backoff method works correctly.
+#[test]
+fn test_startup_synchronization_backoff() {
+    let harness = create_daemon_harness("startup_backoff").unwrap();
+    let socket_path = setup_daemon_configs(&harness).unwrap();
+
+    harness.logger.info("TEST: test_startup_synchronization_backoff");
+
+    // Record time before starting daemon
+    let start_time = std::time::Instant::now();
+
+    // Start the daemon
+    start_daemon_with_socket(&harness, &socket_path, &[]).unwrap();
+
+    // Wait for socket using the backoff mechanism
+    let wait_result = harness.wait_for_socket(&socket_path, Duration::from_secs(10));
+
+    let elapsed = start_time.elapsed();
+
+    assert!(
+        wait_result.is_ok(),
+        "Socket should be detected: {:?}",
+        wait_result
+    );
+
+    harness.logger.info(format!(
+        "TIMING: Socket detected after {:?}",
+        elapsed
+    ));
+
+    // Verify the socket is actually usable
+    let response = send_socket_request(&socket_path, "GET /health").unwrap();
+    assert!(
+        response.contains("200 OK"),
+        "Daemon should be healthy: {}",
+        response
+    );
+
+    // Startup should typically complete in < 500ms for a healthy system
+    // We log this for monitoring but don't assert as it depends on system load
+    if elapsed > Duration::from_millis(500) {
+        harness.logger.warn(format!(
+            "SLOW STARTUP: {:?} (expected < 500ms)",
+            elapsed
+        ));
+    }
+
+    harness.mark_passed();
+}
+
+/// Test that multiple sequential test runs don't interfere with each other.
+/// This simulates what happens when running `cargo test` repeatedly.
+#[test]
+fn test_isolation_between_runs() {
+    // Run a "test" that creates resources
+    {
+        let harness = create_daemon_harness("isolation_run1").unwrap();
+        let socket_path = setup_daemon_configs(&harness).unwrap();
+
+        start_daemon_with_socket(&harness, &socket_path, &[]).unwrap();
+        harness
+            .wait_for_socket(&socket_path, Duration::from_secs(10))
+            .unwrap();
+
+        // Verify daemon is running
+        let response = send_socket_request(&socket_path, "GET /health").unwrap();
+        assert!(response.contains("200 OK"));
+
+        harness.mark_passed();
+        // harness drops here, cleanup occurs
+    }
+
+    // Small delay between runs
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Run another "test" - should not be affected by previous run
+    {
+        let harness = create_daemon_harness("isolation_run2").unwrap();
+        let socket_path = setup_daemon_configs(&harness).unwrap();
+
+        // This should succeed even if previous test left artifacts
+        let start_result = start_daemon_with_socket(&harness, &socket_path, &[]);
+        assert!(
+            start_result.is_ok(),
+            "Second run should start cleanly: {:?}",
+            start_result
+        );
+
+        harness
+            .wait_for_socket(&socket_path, Duration::from_secs(10))
+            .unwrap();
+
+        // Verify this daemon is independent
+        let response = send_socket_request(&socket_path, "GET /health").unwrap();
+        assert!(response.contains("200 OK"));
+
+        harness.mark_passed();
+    }
+}

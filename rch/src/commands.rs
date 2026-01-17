@@ -2167,7 +2167,10 @@ pub async fn workers_init(yes: bool, ctx: &OutputContext) -> Result<()> {
             println!("  {} Troubleshooting tips:", style.muted("→"));
             println!("      • Check that the hostname is correct");
             println!("      • Verify the SSH key exists and has correct permissions");
-            println!("      • Try: ssh -i {} {}@{}", identity_file, username, hostname);
+            println!(
+                "      • Try: ssh -i {} {}@{}",
+                identity_file, username, hostname
+            );
             return Ok(());
         }
         Err(e) => {
@@ -2184,7 +2187,10 @@ pub async fn workers_init(yes: bool, ctx: &OutputContext) -> Result<()> {
     println!();
 
     // Step 3: Auto-detect system info
-    println!("{}", style.highlight("Step 3/5: Detecting System Capabilities"));
+    println!(
+        "{}",
+        style.highlight("Step 3/5: Detecting System Capabilities")
+    );
 
     let mut cmd = Command::new("ssh");
     cmd.arg("-o").arg("BatchMode=yes");
@@ -2209,7 +2215,11 @@ echo "RUST:$(rustc --version 2>/dev/null || echo none)""#;
                 "CORES" => detected_cores = value.trim().parse().unwrap_or(8),
                 "RUST" => {
                     let v = value.trim();
-                    rust_version = if v == "none" { None } else { Some(v.to_string()) };
+                    rust_version = if v == "none" {
+                        None
+                    } else {
+                        Some(v.to_string())
+                    };
                 }
                 _ => {}
             }
@@ -2321,8 +2331,10 @@ echo "RUST:$(rustc --version 2>/dev/null || echo none)""#;
     if !existing_content.is_empty() {
         new_entry.push('\n');
     }
-    new_entry.push_str(&format!("# Added by: rch workers init ({})\n",
-        chrono::Local::now().format("%Y-%m-%d %H:%M")));
+    new_entry.push_str(&format!(
+        "# Added by: rch workers init ({})\n",
+        chrono::Local::now().format("%Y-%m-%d %H:%M")
+    ));
     new_entry.push_str("[[workers]]\n");
     new_entry.push_str(&format!("id = \"{}\"\n", worker_id));
     new_entry.push_str(&format!("host = \"{}\"\n", hostname));

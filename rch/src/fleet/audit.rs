@@ -279,7 +279,10 @@ mod tests {
             (AuditEventType::WorkerPreflight, "WorkerPreflight"),
             (AuditEventType::WorkerDrainStarted, "WorkerDrainStarted"),
             (AuditEventType::WorkerDrainCompleted, "WorkerDrainCompleted"),
-            (AuditEventType::WorkerTransferStarted, "WorkerTransferStarted"),
+            (
+                AuditEventType::WorkerTransferStarted,
+                "WorkerTransferStarted",
+            ),
             (
                 AuditEventType::WorkerTransferCompleted,
                 "WorkerTransferCompleted",
@@ -318,8 +321,14 @@ mod tests {
 
     #[test]
     fn audit_event_type_equality() {
-        assert_eq!(AuditEventType::DeploymentStarted, AuditEventType::DeploymentStarted);
-        assert_ne!(AuditEventType::DeploymentStarted, AuditEventType::DeploymentCompleted);
+        assert_eq!(
+            AuditEventType::DeploymentStarted,
+            AuditEventType::DeploymentStarted
+        );
+        assert_ne!(
+            AuditEventType::DeploymentStarted,
+            AuditEventType::DeploymentCompleted
+        );
     }
 
     // ========================
@@ -455,10 +464,7 @@ mod tests {
         let entries = logger.entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].deployment_id, deployment_id);
-        assert_eq!(
-            entries[0].event_type,
-            AuditEventType::WorkerTransferStarted
-        );
+        assert_eq!(entries[0].event_type, AuditEventType::WorkerTransferStarted);
         assert_eq!(entries[0].worker_id, Some("worker-1".to_string()));
         assert!(entries[0].details["bytes"] == 1024);
     }
