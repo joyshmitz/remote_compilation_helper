@@ -7,9 +7,11 @@
 //! - Circuit breaker metrics (state, trips, recoveries)
 //! - Decision latency metrics (CRITICAL for AGENTS.md compliance)
 //! - Classification tier metrics (per-tier breakdown)
+//! - OpenTelemetry tracing support (optional)
 
 pub mod budget;
 pub mod latency;
+pub mod tracing;
 
 use anyhow::Result;
 use lazy_static::lazy_static;

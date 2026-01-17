@@ -315,6 +315,7 @@ mod tests {
             preferred_workers: vec![],
             toolchain: None,
             required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
         };
         let weights = SelectionWeights::default();
 
@@ -341,6 +342,7 @@ mod tests {
             preferred_workers: vec![],
             toolchain: None,
             required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
         };
         let weights = SelectionWeights::default();
 
@@ -367,6 +369,7 @@ mod tests {
             preferred_workers: vec![],
             toolchain: None,
             required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
         };
         let weights = SelectionWeights::default();
 
@@ -391,6 +394,7 @@ mod tests {
             preferred_workers: vec![],
             toolchain: None,
             required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
         };
         let weights = SelectionWeights::default();
         let config = CircuitBreakerConfig::default();
@@ -419,6 +423,7 @@ mod tests {
             preferred_workers: vec![],
             toolchain: None,
             required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
         };
         let weights = SelectionWeights::default();
         let config = CircuitBreakerConfig::default();
@@ -445,6 +450,7 @@ mod tests {
             preferred_workers: vec![],
             toolchain: None,
             required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
         };
         let weights = SelectionWeights::default();
         let config = CircuitBreakerConfig {
@@ -486,6 +492,7 @@ mod tests {
             preferred_workers: vec![],
             toolchain: None,
             required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
         };
         let weights = SelectionWeights::default();
 
@@ -516,6 +523,7 @@ mod tests {
             preferred_workers: vec![],
             toolchain: None,
             required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
         };
         let weights = SelectionWeights::default();
         let config = CircuitBreakerConfig::default();
@@ -556,6 +564,7 @@ mod tests {
             preferred_workers: vec![],
             toolchain: None,
             required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
         };
         let config = CircuitBreakerConfig::default();
 

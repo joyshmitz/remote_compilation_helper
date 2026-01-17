@@ -15,6 +15,7 @@ use rch_common::{
 };
 use std::io::{self, BufRead, Write};
 use std::path::Path;
+use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tracing::{debug, info, warn};
@@ -85,19 +86,41 @@ async fn process_hook(input: HookInput) -> HookOutput {
     debug!("Processing command: {}", command);
 
     // Classify the command using 5-tier system
+    // Per AGENTS.md: non-compilation decisions must complete in <1ms, compilation in <5ms
+    let classify_start = Instant::now();
     let classification = classify_command(command);
+    let classification_duration = classify_start.elapsed();
+    let classification_duration_us = classification_duration.as_micros() as u64;
 
     if !classification.is_compilation {
-        debug!(
-            "Not a compilation command: {} ({})",
-            command, classification.reason
-        );
+        // Log non-compilation decision latency (budget: <1ms per AGENTS.md)
+        let duration_ms = classification_duration_us as f64 / 1000.0;
+        if duration_ms > 1.0 {
+            warn!(
+                "Non-compilation decision exceeded 1ms budget: {:.3}ms for '{}'",
+                duration_ms, command
+            );
+        } else {
+            debug!(
+                "Non-compilation decision: {:.3}ms for '{}' ({})",
+                duration_ms, command, classification.reason
+            );
+        }
         return HookOutput::allow();
     }
 
+    // Log compilation decision latency (budget: <5ms per AGENTS.md)
+    let duration_ms = classification_duration_us as f64 / 1000.0;
+    if duration_ms > 5.0 {
+        warn!(
+            "Compilation decision exceeded 5ms budget: {:.3}ms",
+            duration_ms
+        );
+    }
+
     info!(
-        "Compilation detected: {:?} (confidence: {:.2})",
-        classification.kind, classification.confidence
+        "Compilation detected: {:?} (confidence: {:.2}, classified in {:.3}ms)",
+        classification.kind, classification.confidence, duration_ms
     );
 
     // Check confidence threshold
@@ -154,6 +177,7 @@ async fn process_hook(input: HookInput) -> HookOutput {
         estimated_cores,
         toolchain.as_ref(),
         required_runtime,
+        classification_duration_us,
     )
     .await
     {
@@ -242,6 +266,7 @@ async fn query_daemon(
     cores: u32,
     toolchain: Option<&ToolchainInfo>,
     required_runtime: RequiredRuntime,
+    classification_duration_us: u64,
 ) -> Result<SelectionResponse> {
     // Check if socket exists
     if !Path::new(socket_path).exists() {
@@ -269,6 +294,9 @@ async fn query_daemon(
         let raw = json.trim_matches('"');
         query.push_str(&format!("&runtime={}", urlencoding_encode(raw)));
     }
+
+    // Add classification duration for AGENTS.md compliance tracking
+    query.push_str(&format!("&classification_us={}", classification_duration_us));
 
     // Send request
     let request = format!("GET /select-worker?{}\n", query);
@@ -755,6 +783,7 @@ mod tests {
             4,
             None,
             RequiredRuntime::None,
+            100, // 100µs classification time
         )
         .await;
         assert!(result.is_err());
@@ -824,7 +853,7 @@ mod tests {
 
         // Query the mock daemon
         let result =
-            query_daemon(&socket_path, "test-project", 4, None, RequiredRuntime::None).await;
+            query_daemon(&socket_path, "test-project", 4, None, RequiredRuntime::None, 100).await;
 
         // Clean up
         daemon_handle.await.expect("Daemon task panicked");
@@ -887,6 +916,7 @@ mod tests {
             2,
             None,
             RequiredRuntime::None,
+            150, // 150µs classification time
         )
         .await;
         daemon_handle.await.expect("Daemon task");

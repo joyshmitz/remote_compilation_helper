@@ -314,6 +314,7 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
     let mut cores = None;
     let mut toolchain = None;
     let mut required_runtime = RequiredRuntime::default();
+    let mut classification_duration_us = None;
 
     for param in query.split('&') {
         if param.is_empty() {
@@ -339,6 +340,10 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
                     .ok()
                     .unwrap_or_default();
             }
+            "classification_us" => {
+                // Classification latency from hook (for AGENTS.md compliance tracking)
+                classification_duration_us = value.parse().ok();
+            }
             _ => {} // Ignore unknown parameters
         }
     }
@@ -352,6 +357,7 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
         preferred_workers: vec![],
         toolchain,
         required_runtime,
+        classification_duration_us,
     }))
 }
 
@@ -395,6 +401,27 @@ async fn handle_select_worker(
         "Selecting worker for project '{}' with {} cores",
         request.project, request.estimated_cores
     );
+
+    // Record classification latency from hook if provided (AGENTS.md compliance)
+    if let Some(classification_us) = request.classification_duration_us {
+        // Convert microseconds to seconds for the histogram
+        let duration_secs = classification_us as f64 / 1_000_000.0;
+        metrics::DECISION_LATENCY
+            .with_label_values(&["compilation"])
+            .observe(duration_secs);
+
+        // Check for budget violations (compilation budget is 5ms = 0.005s)
+        let duration_ms = classification_us as f64 / 1000.0;
+        if duration_ms > 5.0 {
+            metrics::DECISION_BUDGET_VIOLATIONS
+                .with_label_values(&["compilation"])
+                .inc();
+            warn!(
+                "Classification latency budget violation: {:.3}ms (budget: 5ms)",
+                duration_ms
+            );
+        }
+    }
 
     // Mock support: RCH_MOCK_CIRCUIT_OPEN simulates all circuits open
     if std::env::var("RCH_MOCK_CIRCUIT_OPEN").is_ok() {
@@ -816,6 +843,7 @@ mod tests {
             preferred_workers: vec![],
             toolchain: None,
             required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
         };
 
         let response = handle_select_worker(&pool, request).await.unwrap();
@@ -841,6 +869,7 @@ mod tests {
             preferred_workers: vec![],
             toolchain: None,
             required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
         };
 
         let response = handle_select_worker(&pool, request).await.unwrap();
@@ -863,6 +892,7 @@ mod tests {
             preferred_workers: vec![],
             toolchain: None,
             required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
         };
 
         let response = handle_select_worker(&pool, request).await.unwrap();
@@ -881,6 +911,7 @@ mod tests {
             preferred_workers: vec![],
             toolchain: None,
             required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
         };
 
         let response = handle_select_worker(&pool, request).await.unwrap();
@@ -904,6 +935,7 @@ mod tests {
             preferred_workers: vec![],
             toolchain: None,
             required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
         };
 
         let response = handle_select_worker(&pool, request).await.unwrap();

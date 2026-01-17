@@ -99,6 +99,10 @@ pub struct SelectionRequest {
     /// Required runtime for command execution.
     #[serde(default)]
     pub required_runtime: RequiredRuntime,
+    /// Classification decision latency in microseconds (for AGENTS.md compliance).
+    /// This tracks how long the 5-tier classification took on the hook side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classification_duration_us: Option<u64>,
 }
 
 /// Reason for worker selection result.

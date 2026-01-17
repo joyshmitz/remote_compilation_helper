@@ -100,6 +100,15 @@ async fn main() -> Result<()> {
     }
     metrics::set_daemon_info(env!("CARGO_PKG_VERSION"));
 
+    // Initialize OpenTelemetry tracing (optional, configured via env vars)
+    let _otel_guard = match metrics::tracing::init_otel() {
+        Ok(guard) => guard,
+        Err(e) => {
+            warn!("Failed to initialize OpenTelemetry: {}", e);
+            None
+        }
+    };
+
     // Load worker configuration
     let workers = config::load_workers(cli.workers_config.as_deref())?;
     info!("Loaded {} workers from configuration", workers.len());

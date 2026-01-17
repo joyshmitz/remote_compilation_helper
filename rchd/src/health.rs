@@ -873,6 +873,7 @@ mod tests {
                 preferred_workers: vec![],
                 toolchain: None,
                 required_runtime: RequiredRuntime::default(),
+                classification_duration_us: None,
             }
         }
 
