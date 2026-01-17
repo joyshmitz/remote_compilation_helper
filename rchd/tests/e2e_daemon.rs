@@ -18,14 +18,27 @@ use std::time::Duration;
 
 /// Create a test harness configured for daemon tests.
 fn create_daemon_harness(test_name: &str) -> HarnessResult<TestHarness> {
+    // Get the project root from CARGO_MANIFEST_DIR (points to rchd/)
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."));
+    let project_root = manifest_dir.parent().unwrap_or(&manifest_dir);
+
+    // Build path to binaries in target/debug
+    let target_dir = project_root.join("target/debug");
+
     TestHarnessBuilder::new(test_name)
         .cleanup_on_success(true)
         .cleanup_on_failure(false)
         .default_timeout(Duration::from_secs(30))
+        .rchd_binary(target_dir.join("rchd"))
+        .rch_binary(target_dir.join("rch"))
+        .rch_wkr_binary(target_dir.join("rch-wkr"))
         .build()
 }
 
 /// Setup daemon config files in the harness test directory.
+/// Returns the socket path that should be passed to --socket CLI arg.
 fn setup_daemon_configs(harness: &TestHarness) -> HarnessResult<PathBuf> {
     let socket_path = harness.test_dir().join("rch.sock");
     let daemon_config = DaemonConfigFixture::minimal(&socket_path);
@@ -35,6 +48,24 @@ fn setup_daemon_configs(harness: &TestHarness) -> HarnessResult<PathBuf> {
     harness.create_workers_config(&workers.to_toml())?;
 
     Ok(socket_path)
+}
+
+/// Start the daemon with the socket path.
+fn start_daemon_with_socket(
+    harness: &TestHarness,
+    socket_path: &std::path::Path,
+    extra_args: &[&str],
+) -> HarnessResult<u32> {
+    let socket_str = socket_path.to_string_lossy();
+    let mut args = vec![
+        "--foreground",
+        "--metrics-port",
+        "0",
+        "--socket",
+        &*socket_str,
+    ];
+    args.extend(extra_args);
+    harness.start_daemon(&args)
 }
 
 /// Send a request to the daemon via Unix socket and get the response.
@@ -84,8 +115,8 @@ fn test_daemon_startup_and_socket_creation() {
     let harness = create_daemon_harness("daemon_startup").unwrap();
     let socket_path = setup_daemon_configs(&harness).unwrap();
 
-    // Start the daemon
-    let pid = harness.start_daemon(&["--foreground", "--metrics-port", "0"]);
+    // Start the daemon with socket path
+    let pid = start_daemon_with_socket(&harness, &socket_path, &[]);
     assert!(pid.is_ok(), "Failed to start daemon: {:?}", pid.err());
 
     // Wait for socket to be created
@@ -108,9 +139,7 @@ fn test_daemon_health_endpoint() {
     let socket_path = setup_daemon_configs(&harness).unwrap();
 
     // Start the daemon
-    harness
-        .start_daemon(&["--foreground", "--metrics-port", "0"])
-        .unwrap();
+    start_daemon_with_socket(&harness, &socket_path, &[]).unwrap();
     harness
         .wait_for_socket(&socket_path, Duration::from_secs(10))
         .unwrap();
@@ -136,9 +165,7 @@ fn test_daemon_ready_endpoint() {
     let socket_path = setup_daemon_configs(&harness).unwrap();
 
     // Start the daemon
-    harness
-        .start_daemon(&["--foreground", "--metrics-port", "0"])
-        .unwrap();
+    start_daemon_with_socket(&harness, &socket_path, &[]).unwrap();
     harness
         .wait_for_socket(&socket_path, Duration::from_secs(10))
         .unwrap();
@@ -169,9 +196,7 @@ fn test_daemon_status_endpoint() {
     let socket_path = setup_daemon_configs(&harness).unwrap();
 
     // Start the daemon
-    harness
-        .start_daemon(&["--foreground", "--metrics-port", "0"])
-        .unwrap();
+    start_daemon_with_socket(&harness, &socket_path, &[]).unwrap();
     harness
         .wait_for_socket(&socket_path, Duration::from_secs(10))
         .unwrap();
@@ -206,9 +231,7 @@ fn test_daemon_metrics_endpoint() {
     let socket_path = setup_daemon_configs(&harness).unwrap();
 
     // Start the daemon
-    harness
-        .start_daemon(&["--foreground", "--metrics-port", "0"])
-        .unwrap();
+    start_daemon_with_socket(&harness, &socket_path, &[]).unwrap();
     harness
         .wait_for_socket(&socket_path, Duration::from_secs(10))
         .unwrap();
@@ -237,9 +260,7 @@ fn test_daemon_budget_endpoint() {
     let socket_path = setup_daemon_configs(&harness).unwrap();
 
     // Start the daemon
-    harness
-        .start_daemon(&["--foreground", "--metrics-port", "0"])
-        .unwrap();
+    start_daemon_with_socket(&harness, &socket_path, &[]).unwrap();
     harness
         .wait_for_socket(&socket_path, Duration::from_secs(10))
         .unwrap();

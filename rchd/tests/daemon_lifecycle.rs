@@ -97,7 +97,7 @@ fn test_daemon_startup_creates_socket() -> HarnessResult<()> {
 id = "test-worker"
 host = "localhost"
 user = "test"
-slots = 4
+total_slots = 4
 "#;
     harness.create_workers_config(workers_config)?;
 
@@ -133,7 +133,7 @@ fn test_daemon_health_endpoint() -> HarnessResult<()> {
 id = "test-worker"
 host = "localhost"
 user = "test"
-slots = 4
+total_slots = 4
 "#;
     harness.create_workers_config(workers_config)?;
 
@@ -185,7 +185,7 @@ fn test_daemon_ready_endpoint() -> HarnessResult<()> {
 id = "test-worker"
 host = "localhost"
 user = "test"
-slots = 4
+total_slots = 4
 "#;
     harness.create_workers_config(workers_config)?;
 
@@ -237,13 +237,13 @@ fn test_daemon_status_endpoint() -> HarnessResult<()> {
 id = "test-worker-1"
 host = "localhost"
 user = "test"
-slots = 4
+total_slots = 4
 
 [[workers]]
 id = "test-worker-2"
 host = "remote.example.com"
 user = "builder"
-slots = 8
+total_slots = 8
 "#;
     harness.create_workers_config(workers_config)?;
 
@@ -300,7 +300,7 @@ fn test_daemon_budget_endpoint() -> HarnessResult<()> {
 id = "test-worker"
 host = "localhost"
 user = "test"
-slots = 4
+total_slots = 4
 "#;
     harness.create_workers_config(workers_config)?;
 
@@ -345,7 +345,7 @@ fn test_daemon_graceful_shutdown() -> HarnessResult<()> {
 id = "test-worker"
 host = "localhost"
 user = "test"
-slots = 4
+total_slots = 4
 "#;
     harness.create_workers_config(workers_config)?;
 
@@ -414,7 +414,7 @@ fn test_daemon_metrics_endpoint() -> HarnessResult<()> {
 id = "test-worker"
 host = "localhost"
 user = "test"
-slots = 4
+total_slots = 4
 "#;
     harness.create_workers_config(workers_config)?;
 
@@ -460,7 +460,7 @@ fn test_daemon_unknown_endpoint_error() -> HarnessResult<()> {
 id = "test-worker"
 host = "localhost"
 user = "test"
-slots = 4
+total_slots = 4
 "#;
     harness.create_workers_config(workers_config)?;
 

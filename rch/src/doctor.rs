@@ -200,6 +200,160 @@ pub async fn run_doctor(ctx: &OutputContext, options: DoctorOptions) -> Result<(
     Ok(())
 }
 
+/// Quick health check result for post-hook-install display.
+#[derive(Debug, Clone)]
+pub struct QuickCheckResult {
+    pub daemon_running: bool,
+    pub worker_count: usize,
+    pub workers_healthy: usize,
+    pub hook_installed: bool,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+impl QuickCheckResult {
+    /// Check if the system is fully operational.
+    pub fn is_healthy(&self) -> bool {
+        self.daemon_running && self.worker_count > 0 && self.hook_installed && self.errors.is_empty()
+    }
+
+    /// Check if there are any issues.
+    pub fn has_issues(&self) -> bool {
+        !self.warnings.is_empty() || !self.errors.is_empty()
+    }
+}
+
+/// Run a quick health check (for post-install feedback).
+/// This runs fast checks only (no network probes).
+pub fn run_quick_check() -> QuickCheckResult {
+    let socket_path = Path::new(DEFAULT_SOCKET_PATH);
+    let daemon_running = socket_path.exists();
+
+    // Check workers
+    let (worker_count, workers_healthy) = match load_workers_from_config() {
+        Ok(workers) => (workers.len(), workers.len()), // Assume healthy without probing
+        Err(_) => (0, 0),
+    };
+
+    // Check hook
+    let hook_installed = {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+        let settings_path = home.join(".claude").join("settings.json");
+        if settings_path.exists() {
+            std::fs::read_to_string(&settings_path)
+                .ok()
+                .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+                .map(|settings| {
+                    settings
+                        .get("hooks")
+                        .and_then(|h| h.get("PreToolUse"))
+                        .is_some()
+                })
+                .unwrap_or(false)
+        } else {
+            false
+        }
+    };
+
+    // Collect warnings
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+
+    if !daemon_running {
+        warnings.push("Daemon is not running".to_string());
+    }
+    if worker_count == 0 {
+        warnings.push("No workers configured".to_string());
+    }
+    if !hook_installed {
+        errors.push("Hook not installed".to_string());
+    }
+
+    QuickCheckResult {
+        daemon_running,
+        worker_count,
+        workers_healthy,
+        hook_installed,
+        warnings,
+        errors,
+    }
+}
+
+/// Print a quick health check summary to the console.
+pub fn print_quick_check_summary(result: &QuickCheckResult, ctx: &OutputContext) {
+    let style = ctx.theme();
+
+    println!();
+    println!("{}", style.highlight("Quick Health Check"));
+    println!();
+
+    // Daemon status
+    if result.daemon_running {
+        println!(
+            "  {} Daemon running",
+            StatusIndicator::Success.display(style)
+        );
+    } else {
+        println!(
+            "  {} Daemon not running",
+            StatusIndicator::Warning.display(style)
+        );
+    }
+
+    // Workers status
+    if result.worker_count > 0 {
+        println!(
+            "  {} {} worker(s) configured",
+            StatusIndicator::Success.display(style),
+            result.worker_count
+        );
+    } else {
+        println!(
+            "  {} No workers configured",
+            StatusIndicator::Warning.display(style)
+        );
+    }
+
+    // Hook status
+    if result.hook_installed {
+        println!(
+            "  {} Hook installed",
+            StatusIndicator::Success.display(style)
+        );
+    } else {
+        println!(
+            "  {} Hook not installed",
+            StatusIndicator::Error.display(style)
+        );
+    }
+
+    println!();
+
+    // Summary
+    if result.is_healthy() {
+        println!(
+            "{}",
+            style.format_success("Setup complete! Your next cargo build will compile remotely.")
+        );
+    } else if !result.errors.is_empty() {
+        println!(
+            "{}",
+            style.format_error(&format!(
+                "Issues found: {} error(s). Run 'rch doctor' for details.",
+                result.errors.len()
+            ))
+        );
+    } else if !result.warnings.is_empty() {
+        println!(
+            "{}",
+            style.format_warning(&format!(
+                "Setup complete with {} warning(s). Run 'rch doctor' for details.",
+                result.warnings.len()
+            ))
+        );
+    }
+}
+
 // =============================================================================
 // Prerequisite Checks
 // =============================================================================

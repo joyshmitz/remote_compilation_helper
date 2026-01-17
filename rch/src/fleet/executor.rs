@@ -294,3 +294,106 @@ impl FleetExecutor {
         Ok(results)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================
+    // FleetResult tests
+    // ========================
+
+    #[test]
+    fn fleet_result_success_serializes() {
+        let result = FleetResult::Success {
+            deployed: 5,
+            skipped: 2,
+            failed: 1,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"status\":\"Success\""));
+        assert!(json.contains("\"deployed\":5"));
+        assert!(json.contains("\"skipped\":2"));
+        assert!(json.contains("\"failed\":1"));
+    }
+
+    #[test]
+    fn fleet_result_success_zero_values_serializes() {
+        let result = FleetResult::Success {
+            deployed: 0,
+            skipped: 0,
+            failed: 0,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"status\":\"Success\""));
+        assert!(json.contains("\"deployed\":0"));
+    }
+
+    #[test]
+    fn fleet_result_canary_failed_serializes() {
+        let result = FleetResult::CanaryFailed {
+            reason: "Health check failed".to_string(),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"status\":\"CanaryFailed\""));
+        assert!(json.contains("Health check failed"));
+    }
+
+    #[test]
+    fn fleet_result_aborted_serializes() {
+        let result = FleetResult::Aborted {
+            reason: "User cancelled".to_string(),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"status\":\"Aborted\""));
+        assert!(json.contains("User cancelled"));
+    }
+
+    #[test]
+    fn fleet_result_variants_are_tagged() {
+        // Verify the serde tag attribute works correctly
+        let success = serde_json::to_string(&FleetResult::Success {
+            deployed: 1,
+            skipped: 0,
+            failed: 0,
+        })
+        .unwrap();
+        let canary = serde_json::to_string(&FleetResult::CanaryFailed {
+            reason: "test".to_string(),
+        })
+        .unwrap();
+        let aborted = serde_json::to_string(&FleetResult::Aborted {
+            reason: "test".to_string(),
+        })
+        .unwrap();
+
+        // Each should have a different status tag
+        assert!(success.contains("\"status\":\"Success\""));
+        assert!(canary.contains("\"status\":\"CanaryFailed\""));
+        assert!(aborted.contains("\"status\":\"Aborted\""));
+    }
+
+    // ========================
+    // FleetExecutor tests
+    // ========================
+
+    #[test]
+    fn fleet_executor_new_without_audit() {
+        let executor = FleetExecutor::new(4, None);
+        assert!(executor.is_ok());
+        let executor = executor.unwrap();
+        assert_eq!(executor.parallelism, 4);
+    }
+
+    #[test]
+    fn fleet_executor_new_with_parallelism_one() {
+        let executor = FleetExecutor::new(1, None).unwrap();
+        assert_eq!(executor.parallelism, 1);
+    }
+
+    #[test]
+    fn fleet_executor_new_with_high_parallelism() {
+        let executor = FleetExecutor::new(100, None).unwrap();
+        assert_eq!(executor.parallelism, 100);
+    }
+}

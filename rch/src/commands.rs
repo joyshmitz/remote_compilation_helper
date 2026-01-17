@@ -4469,6 +4469,10 @@ pub fn hook_install(ctx: &OutputContext) -> Result<()> {
             "  {} Claude Code will now use RCH for Bash commands.",
             StatusIndicator::Info.display(style)
         );
+
+        // Run quick health check
+        let quick_result = crate::doctor::run_quick_check();
+        crate::doctor::print_quick_check_summary(&quick_result, ctx);
     }
 
     Ok(())
