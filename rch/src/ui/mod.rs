@@ -64,12 +64,12 @@ pub use adaptive::{
 pub use context::{
     ColorChoice, OutputConfig, OutputContext, OutputMode, TerminalCaps, Verbosity, default_context,
 };
-pub use style::{SemanticColors, StatusIndicator, Style, Symbols};
-pub use writer::{OutputBuffer, OutputWriter, SharedOutputBuffer};
 pub use progress::{
     MultiProgressManager, Spinner, StepProgress, TransferProgress, with_spinner,
     with_spinner_result,
 };
+pub use style::{SemanticColors, StatusIndicator, Style, Symbols};
+pub use writer::{OutputBuffer, OutputWriter, SharedOutputBuffer};
 
 // Test utilities are public for integration tests
 pub use test_utils::{
