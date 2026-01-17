@@ -212,10 +212,13 @@ pub fn install_completions(
 /// Result of a completion installation
 #[derive(Debug)]
 pub struct InstallResult {
+    #[allow(dead_code)] // For debugging and API completeness
     pub shell: clap_complete::Shell,
+    #[allow(dead_code)] // For debugging and API completeness
     pub script_path: PathBuf,
     pub script_written: bool,
     pub rc_modified: bool,
+    #[allow(dead_code)] // For debugging and API completeness
     pub rc_file: Option<PathBuf>,
     pub was_already_installed: bool,
 }

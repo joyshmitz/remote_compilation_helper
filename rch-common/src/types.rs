@@ -563,11 +563,30 @@ fn default_compression() -> u32 {
 
 fn default_excludes() -> Vec<String> {
     vec![
+        // Rust build artifacts
         "target/".to_string(),
-        ".git/objects/".to_string(),
-        "node_modules/".to_string(),
         "*.rlib".to_string(),
         "*.rmeta".to_string(),
+        // Git objects (large, regenerated on clone)
+        ".git/objects/".to_string(),
+        // Node.js / Bun dependencies (massive, reinstalled on worker)
+        "node_modules/".to_string(),
+        // Bun cache and runtime files
+        ".bun/".to_string(),
+        // npm / pnpm caches
+        ".npm/".to_string(),
+        ".pnpm-store/".to_string(),
+        // Common build output directories
+        "dist/".to_string(),
+        "build/".to_string(),
+        // Framework-specific caches
+        ".next/".to_string(),
+        ".nuxt/".to_string(),
+        ".turbo/".to_string(),
+        ".parcel-cache/".to_string(),
+        // Coverage reports (generated during tests)
+        "coverage/".to_string(),
+        ".nyc_output/".to_string(),
     ]
 }
 

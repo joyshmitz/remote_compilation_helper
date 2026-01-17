@@ -377,13 +377,10 @@ fn classify_full(cmd: &str) -> Classification {
     }
 
     // Bun commands
-    if cmd.starts_with("bun ") {
-        let rest = &cmd[4..]; // Skip "bun "
-
+    if let Some(rest) = cmd.strip_prefix("bun ") {
         // bun test [options] [patterns]
         // Examples: "bun test", "bun test --watch", "bun test src/"
-        if rest.starts_with("test") {
-            let after_test = &rest[4..];
+        if let Some(after_test) = rest.strip_prefix("test") {
             // Ensure it's "test" or "test " (not "testing")
             if after_test.is_empty() || after_test.starts_with(' ') {
                 return Classification::compilation(
@@ -396,8 +393,7 @@ fn classify_full(cmd: &str) -> Classification {
 
         // bun typecheck [options]
         // Examples: "bun typecheck", "bun typecheck --watch"
-        if rest.starts_with("typecheck") {
-            let after = &rest[9..];
+        if let Some(after) = rest.strip_prefix("typecheck") {
             if after.is_empty() || after.starts_with(' ') {
                 return Classification::compilation(
                     CompilationKind::BunTypecheck,
@@ -654,23 +650,99 @@ mod tests {
         assert!(result.reason.contains("never-intercept"));
     }
 
+    // Bun Tier 4 classification tests
+
     #[test]
-    fn test_bun_test_passes_tier3() {
-        // bun test should NOT be blocked by never-intercept
-        // It will reach Tier 4 and fail with "no matching pattern" for now
-        // (until BunTest classification is added in a subsequent bead)
+    fn test_bun_test_classification() {
+        // Basic command
         let result = classify_command("bun test");
-        // Currently fails Tier 4 because BunTest isn't implemented yet
-        // But it should NOT have been blocked by Tier 3
-        assert!(!result.reason.contains("never-intercept"));
+        assert!(result.is_compilation);
+        assert_eq!(result.kind, Some(CompilationKind::BunTest));
+        assert!((result.confidence - 0.95).abs() < 0.001);
+
+        // With directory argument
+        let result = classify_command("bun test src/");
+        assert!(result.is_compilation);
+        assert_eq!(result.kind, Some(CompilationKind::BunTest));
+
+        // With flags
+        let result = classify_command("bun test --watch --coverage");
+        assert!(result.is_compilation);
+        assert_eq!(result.kind, Some(CompilationKind::BunTest));
+
+        // Specific file
+        let result = classify_command("bun test auth.test.ts");
+        assert!(result.is_compilation);
+        assert_eq!(result.kind, Some(CompilationKind::BunTest));
+
+        // With multiple flags
+        let result = classify_command("bun test --bail --timeout 5000");
+        assert!(result.is_compilation);
+        assert_eq!(result.kind, Some(CompilationKind::BunTest));
+
+        // With reporter
+        let result = classify_command("bun test --reporter json");
+        assert!(result.is_compilation);
+        assert_eq!(result.kind, Some(CompilationKind::BunTest));
     }
 
     #[test]
-    fn test_bun_typecheck_passes_tier3() {
+    fn test_bun_typecheck_classification() {
+        // Basic command
+        let result = classify_command("bun typecheck");
+        assert!(result.is_compilation);
+        assert_eq!(result.kind, Some(CompilationKind::BunTypecheck));
+        assert!((result.confidence - 0.95).abs() < 0.001);
+
+        // With watch flag
+        let result = classify_command("bun typecheck --watch");
+        assert!(result.is_compilation);
+        assert_eq!(result.kind, Some(CompilationKind::BunTypecheck));
+
+        // With directory argument
+        let result = classify_command("bun typecheck src/");
+        assert!(result.is_compilation);
+        assert_eq!(result.kind, Some(CompilationKind::BunTypecheck));
+    }
+
+    #[test]
+    fn test_bun_edge_cases_not_matched() {
+        // Invalid commands should not match
+        let result = classify_command("bun testing");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("no matching pattern"));
+
+        let result = classify_command("bun typechecker");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("no matching pattern"));
+
+        let result = classify_command("bun type");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("no matching pattern"));
+
+        // bun x should not be intercepted (runs arbitrary packages like npx)
+        let result = classify_command("bun x eslint");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("bun x runs arbitrary packages"));
+
+        let result = classify_command("bun x prettier --write .");
+        assert!(!result.is_compilation);
+    }
+
+    #[test]
+    fn test_bun_test_vs_never_intercept() {
+        // bun test should NOT be blocked by never-intercept
+        let result = classify_command("bun test");
+        assert!(!result.reason.contains("never-intercept"));
+        assert!(result.is_compilation);
+    }
+
+    #[test]
+    fn test_bun_typecheck_vs_never_intercept() {
         // bun typecheck should NOT be blocked by never-intercept
         let result = classify_command("bun typecheck");
-        // Should reach Tier 4 (not blocked by Tier 3)
         assert!(!result.reason.contains("never-intercept"));
+        assert!(result.is_compilation);
     }
 
     // Bun CompilationKind serialization tests

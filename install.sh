@@ -523,6 +523,56 @@ print_summary() {
 }
 
 # ============================================================================
+# Shell Completions
+# ============================================================================
+
+setup_shell_completions() {
+    if [[ "$MODE" == "worker" ]]; then
+        return  # Workers don't need completions
+    fi
+
+    info "Setting up shell completions..."
+
+    local rch_bin="$INSTALL_DIR/$HOOK_BIN"
+    if [[ ! -x "$rch_bin" ]]; then
+        warn "RCH binary not found, skipping completion setup"
+        return
+    fi
+
+    # Detect current shell and install completions
+    local current_shell
+    current_shell=$(basename "${SHELL:-}")
+
+    case "$current_shell" in
+        bash)
+            if "$rch_bin" completions install bash 2>/dev/null; then
+                success "Installed bash completions"
+            else
+                warn "Could not install bash completions"
+            fi
+            ;;
+        zsh)
+            if "$rch_bin" completions install zsh 2>/dev/null; then
+                success "Installed zsh completions"
+            else
+                warn "Could not install zsh completions"
+            fi
+            ;;
+        fish)
+            if "$rch_bin" completions install fish 2>/dev/null; then
+                success "Installed fish completions"
+            else
+                warn "Could not install fish completions"
+            fi
+            ;;
+        *)
+            info "Unknown shell ($current_shell), skipping completion setup"
+            info "Run 'rch completions install <shell>' manually to set up completions"
+            ;;
+    esac
+}
+
+# ============================================================================
 # Verify Installation
 # ============================================================================
 
@@ -648,6 +698,7 @@ main() {
     fi
 
     setup_path
+    setup_shell_completions
     verify_installation
     print_summary
 }
