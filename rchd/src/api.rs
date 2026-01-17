@@ -5,12 +5,12 @@
 //! - Response: JSON `SelectionResponse` or error
 
 use crate::DaemonContext;
-use crate::selection::{SelectionWeights, select_worker};
+use crate::selection::{SelectionWeights, select_worker_with_config};
 use crate::workers::WorkerPool;
 use anyhow::{Result, anyhow};
 use rch_common::{
-    BuildRecord, BuildStats, CircuitState, SelectedWorker, SelectionReason, SelectionRequest,
-    SelectionResponse, WorkerStatus,
+    BuildRecord, BuildStats, CircuitBreakerConfig, CircuitState, SelectedWorker,
+    SelectionReason, SelectionRequest, SelectionResponse, WorkerStatus,
 };
 use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -254,38 +254,15 @@ async fn handle_select_worker(
         request.project, request.estimated_cores
     );
 
-    // Check if any workers are configured
-    let all_workers = pool.all_workers().await;
-    if all_workers.is_empty() {
-        debug!("No workers configured");
-        return Ok(SelectionResponse {
-            worker: None,
-            reason: SelectionReason::NoWorkersConfigured,
-        });
-    }
-
-    // Check if any workers are healthy
-    let healthy_workers = pool.healthy_workers().await;
-    if healthy_workers.is_empty() {
-        debug!("All workers unreachable");
-        return Ok(SelectionResponse {
-            worker: None,
-            reason: SelectionReason::AllWorkersUnreachable,
-        });
-    }
-
     let weights = SelectionWeights::default();
-    let selected = select_worker(pool, &request, &weights).await;
+    let circuit_config = CircuitBreakerConfig::default();
+    let result = select_worker_with_config(pool, &request, &weights, &circuit_config).await;
 
-    let Some(worker) = selected else {
-        // Workers exist and are healthy, but none have enough slots
-        debug!(
-            "All workers busy (no worker has {} available slots)",
-            request.estimated_cores
-        );
+    let Some(worker) = result.worker else {
+        debug!("No worker selected: {}", result.reason);
         return Ok(SelectionResponse {
             worker: None,
-            reason: SelectionReason::AllWorkersBusy,
+            reason: result.reason,
         });
     };
 
