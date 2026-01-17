@@ -376,6 +376,27 @@ enum WorkersAction {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Complete worker setup (deploy binary + sync toolchain)
+    #[command(after_help = r#"EXAMPLES:
+    rch workers setup css           # Full setup for specific worker
+    rch workers setup --all         # Setup all workers
+    rch workers setup --all --dry-run  # Preview what would happen"#)]
+    Setup {
+        /// Worker ID to setup, or --all for all workers
+        worker: Option<String>,
+        /// Setup all workers
+        #[arg(long)]
+        all: bool,
+        /// Show planned actions without executing
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip binary deployment
+        #[arg(long)]
+        skip_binary: bool,
+        /// Skip toolchain synchronization
+        #[arg(long)]
+        skip_toolchain: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -601,6 +622,15 @@ async fn handle_workers(action: WorkersAction, ctx: &OutputContext) -> Result<()
         }
         WorkersAction::SyncToolchain { worker, all, dry_run } => {
             commands::workers_sync_toolchain(worker, all, dry_run, ctx).await?;
+        }
+        WorkersAction::Setup {
+            worker,
+            all,
+            dry_run,
+            skip_binary,
+            skip_toolchain,
+        } => {
+            commands::workers_setup(worker, all, dry_run, skip_binary, skip_toolchain, ctx).await?;
         }
     }
     Ok(())

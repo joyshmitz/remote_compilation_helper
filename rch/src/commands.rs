@@ -1494,6 +1494,374 @@ pub async fn workers_sync_toolchain(
     Ok(())
 }
 
+/// Complete worker setup: deploy binary and sync toolchain.
+///
+/// This is the recommended command for setting up new workers.
+/// It combines `rch workers deploy-binary` and `rch workers sync-toolchain`.
+pub async fn workers_setup(
+    worker_id: Option<String>,
+    all: bool,
+    dry_run: bool,
+    skip_binary: bool,
+    skip_toolchain: bool,
+    ctx: &OutputContext,
+) -> Result<()> {
+    let style = ctx.theme();
+
+    if worker_id.is_none() && !all {
+        if ctx.is_json() {
+            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+                "workers setup",
+                error_codes::CONFIG_INVALID,
+                "Specify either a worker ID or --all",
+            ));
+        } else {
+            println!(
+                "{} Specify either {} or {}",
+                StatusIndicator::Error.display(style),
+                style.highlight("<worker-id>"),
+                style.highlight("--all")
+            );
+        }
+        return Ok(());
+    }
+
+    // Load workers configuration
+    let workers = load_workers_from_config()?;
+    if workers.is_empty() {
+        if ctx.is_json() {
+            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+                "workers setup",
+                error_codes::CONFIG_NOT_FOUND,
+                "No workers configured",
+            ));
+        } else {
+            println!(
+                "{} No workers configured. Run {}",
+                StatusIndicator::Error.display(style),
+                style.highlight("rch workers discover --add")
+            );
+        }
+        return Ok(());
+    }
+
+    // Filter to target workers
+    let target_workers: Vec<&WorkerConfig> = if all {
+        workers.iter().collect()
+    } else if let Some(ref id) = worker_id {
+        workers.iter().filter(|w| w.id.0 == *id).collect()
+    } else {
+        vec![]
+    };
+
+    if target_workers.is_empty() {
+        if ctx.is_json() {
+            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+                "workers setup",
+                error_codes::WORKER_NOT_FOUND,
+                format!("Worker '{}' not found", worker_id.unwrap_or_default()),
+            ));
+        } else {
+            println!(
+                "{} Worker not found: {}",
+                StatusIndicator::Error.display(style),
+                worker_id.unwrap_or_default()
+            );
+        }
+        return Ok(());
+    }
+
+    // Detect project toolchain for sync
+    let toolchain = if skip_toolchain {
+        None
+    } else {
+        Some(detect_project_toolchain()?)
+    };
+
+    if !ctx.is_json() {
+        println!("{}", style.format_header("Worker Setup"));
+        println!();
+        println!(
+            "  {} Workers: {} ({})",
+            style.muted("→"),
+            target_workers.len(),
+            if all { "all" } else { worker_id.as_deref().unwrap_or("?") }
+        );
+        if let Some(ref tc) = toolchain {
+            println!(
+                "  {} Toolchain: {}",
+                style.muted("→"),
+                style.highlight(tc)
+            );
+        }
+        if dry_run {
+            println!(
+                "  {} {}",
+                style.muted("→"),
+                style.warning("DRY RUN - no changes will be made")
+            );
+        }
+        println!();
+    }
+
+    // Track overall results
+    let mut all_results: Vec<SetupResult> = Vec::new();
+
+    // Setup each worker
+    for worker in &target_workers {
+        let result = setup_single_worker(
+            worker,
+            toolchain.as_deref(),
+            dry_run,
+            skip_binary,
+            skip_toolchain,
+            ctx,
+        )
+        .await;
+        all_results.push(result);
+    }
+
+    // JSON output
+    if ctx.is_json() {
+        let _ = ctx.json(&JsonResponse::ok(
+            "workers setup",
+            serde_json::json!({
+                "toolchain": toolchain,
+                "results": all_results,
+            }),
+        ));
+    } else {
+        // Summary
+        println!();
+        let success_count = all_results.iter().filter(|r| r.success).count();
+        let fail_count = all_results.len() - success_count;
+
+        println!(
+            "  {} Successful: {}, Failed: {}",
+            style.muted("Summary:"),
+            style.success(&success_count.to_string()),
+            if fail_count > 0 {
+                style.error(&fail_count.to_string())
+            } else {
+                style.muted("0")
+            }
+        );
+    }
+
+    Ok(())
+}
+
+/// Result of setting up a single worker.
+#[derive(Debug, Clone, Serialize)]
+struct SetupResult {
+    worker_id: String,
+    success: bool,
+    binary_deployed: bool,
+    toolchain_synced: bool,
+    errors: Vec<String>,
+}
+
+/// Setup a single worker: deploy binary and sync toolchain.
+async fn setup_single_worker(
+    worker: &WorkerConfig,
+    toolchain: Option<&str>,
+    dry_run: bool,
+    skip_binary: bool,
+    skip_toolchain: bool,
+    ctx: &OutputContext,
+) -> SetupResult {
+    let style = ctx.theme();
+    let worker_id = &worker.id.0;
+
+    if !ctx.is_json() {
+        println!(
+            "  {} Setting up {}...",
+            StatusIndicator::Info.display(style),
+            style.highlight(worker_id)
+        );
+    }
+
+    let mut result = SetupResult {
+        worker_id: worker_id.clone(),
+        success: true,
+        binary_deployed: false,
+        toolchain_synced: false,
+        errors: Vec::new(),
+    };
+
+    // Step 1: Deploy binary
+    if !skip_binary {
+        if !ctx.is_json() {
+            print!("      {} Binary: ", style.muted("→"));
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+        }
+
+        // Find local binary and get version
+        let binary_result: Result<bool> = async {
+            let local_binary = find_local_binary("rch-wkr")?;
+            let local_version = get_binary_version(&local_binary).await?;
+
+            // Check remote version
+            let remote_version = get_remote_version(worker).await.ok();
+
+            // Skip if versions match
+            if remote_version.as_ref() == Some(&local_version) {
+                return Ok(false); // No deployment needed
+            }
+
+            if dry_run {
+                return Ok(true); // Would deploy (for dry-run reporting)
+            }
+
+            // Deploy the binary
+            deploy_via_scp(worker, &local_binary).await?;
+            Ok(true)
+        }
+        .await;
+
+        match binary_result {
+            Ok(true) if dry_run => {
+                if !ctx.is_json() {
+                    println!("{}", style.muted("would deploy"));
+                }
+            }
+            Ok(true) => {
+                result.binary_deployed = true;
+                if !ctx.is_json() {
+                    println!("{}", style.success("deployed"));
+                }
+            }
+            Ok(false) => {
+                if !ctx.is_json() {
+                    println!("{}", style.muted("already up to date"));
+                }
+            }
+            Err(e) => {
+                result.success = false;
+                result.errors.push(format!("Binary deployment: {}", e));
+                if !ctx.is_json() {
+                    println!("{} ({})", style.error("FAILED"), e);
+                }
+            }
+        }
+    }
+
+    // Step 2: Sync toolchain
+    if !skip_toolchain {
+        if let Some(tc) = toolchain {
+            if !ctx.is_json() {
+                print!("      {} Toolchain: ", style.muted("→"));
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+            }
+
+            if dry_run {
+                // Check if already installed for dry-run reporting
+                match check_remote_toolchain(worker, tc).await {
+                    Ok(true) => {
+                        if !ctx.is_json() {
+                            println!("{}", style.muted("already installed"));
+                        }
+                        result.toolchain_synced = true;
+                    }
+                    Ok(false) => {
+                        if !ctx.is_json() {
+                            println!("{}", style.muted("would install"));
+                        }
+                    }
+                    Err(e) => {
+                        if !ctx.is_json() {
+                            println!("{} ({})", style.warning("check failed"), e);
+                        }
+                    }
+                }
+            } else {
+                // Check and install
+                match check_remote_toolchain(worker, tc).await {
+                    Ok(true) => {
+                        result.toolchain_synced = true;
+                        if !ctx.is_json() {
+                            println!("{}", style.muted("already installed"));
+                        }
+                    }
+                    Ok(false) => {
+                        // Install
+                        match install_remote_toolchain(worker, tc).await {
+                            Ok(()) => {
+                                result.toolchain_synced = true;
+                                if !ctx.is_json() {
+                                    println!("{}", style.success("installed"));
+                                }
+                            }
+                            Err(e) => {
+                                result.success = false;
+                                result.errors.push(format!("Toolchain install: {}", e));
+                                if !ctx.is_json() {
+                                    println!("{} ({})", style.error("FAILED"), e);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        result.success = false;
+                        result.errors.push(format!("Toolchain check: {}", e));
+                        if !ctx.is_json() {
+                            println!("{} ({})", style.error("FAILED"), e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 3: Verify worker health (quick SSH ping)
+    if !dry_run && result.success {
+        if !ctx.is_json() {
+            print!("      {} Health: ", style.muted("→"));
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+        }
+
+        match verify_worker_health(worker).await {
+            Ok(true) => {
+                if !ctx.is_json() {
+                    println!("{}", style.success("OK"));
+                }
+            }
+            Ok(false) => {
+                if !ctx.is_json() {
+                    println!("{}", style.warning("degraded"));
+                }
+            }
+            Err(e) => {
+                result.errors.push(format!("Health check: {}", e));
+                if !ctx.is_json() {
+                    println!("{} ({})", style.error("FAILED"), e);
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// Quick health check: verify SSH works and rch-wkr responds.
+async fn verify_worker_health(worker: &WorkerConfig) -> Result<bool> {
+    let mut cmd = Command::new("ssh");
+    cmd.arg("-o").arg("BatchMode=yes");
+    cmd.arg("-o").arg("ConnectTimeout=10");
+    cmd.arg("-o").arg("StrictHostKeyChecking=accept-new");
+    cmd.arg("-i").arg(&worker.identity_file);
+    cmd.arg(format!("{}@{}", worker.user, worker.host));
+    cmd.arg("rch-wkr capabilities >/dev/null 2>&1 && echo OK || echo DEGRADED");
+
+    let output = cmd.output().await.context("Health check failed")?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    Ok(stdout == "OK")
+}
+
 /// Detect the project's required toolchain from rust-toolchain.toml or rust-toolchain.
 fn detect_project_toolchain() -> Result<String> {
     use std::fs;
