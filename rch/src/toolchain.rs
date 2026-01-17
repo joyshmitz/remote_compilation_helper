@@ -137,10 +137,18 @@ fn is_valid_date(s: &str) -> bool {
     if parts.len() != 3 {
         return false;
     }
-    parts[0].len() == 4
+    // Check format: YYYY-MM-DD with all digits
+    if !(parts[0].len() == 4
         && parts[1].len() == 2
         && parts[2].len() == 2
-        && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit()))
+        && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit())))
+    {
+        return false;
+    }
+    // Validate month and day ranges
+    let month: u32 = parts[1].parse().unwrap_or(0);
+    let day: u32 = parts[2].parse().unwrap_or(0);
+    (1..=12).contains(&month) && (1..=31).contains(&day)
 }
 
 /// Check if a string looks like a version number (X.Y.Z).
