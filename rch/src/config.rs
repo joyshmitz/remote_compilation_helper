@@ -339,6 +339,22 @@ pub fn validate_workers_config_file(path: &Path) -> FileValidation {
             validation.error(format!("workers[{}].host is required", index));
         }
 
+        let user_value = table.get("user");
+        let user = match user_value.and_then(|v| v.as_str()) {
+            Some(value) => value.trim().to_string(),
+            None => {
+                if user_value.is_some() {
+                    validation.error(format!("workers[{}].user must be a string", index));
+                } else {
+                    validation.error(format!("workers[{}].user is required", index));
+                }
+                String::new()
+            }
+        };
+        if user.is_empty() && user_value.is_some() {
+            validation.error(format!("workers[{}].user cannot be empty", index));
+        }
+
         let default_identity = default_identity_file();
         let identity_field = table.get("identity_file");
         let identity_value = match identity_field.and_then(|v| v.as_str()) {
@@ -372,7 +388,7 @@ pub fn validate_workers_config_file(path: &Path) -> FileValidation {
         let expanded_identity = shellexpand::tilde(identity_value);
         let identity_path = Path::new(expanded_identity.as_ref());
         if !identity_path.exists() {
-            validation.error(format!(
+            validation.warn(format!(
                 "workers[{}] {} identity_file not found: {}",
                 index,
                 if id.is_empty() { "(unknown id)" } else { &id },
@@ -396,6 +412,12 @@ pub fn validate_workers_config_file(path: &Path) -> FileValidation {
                     if id.is_empty() { "(unknown id)" } else { &id }
                 ));
             }
+        } else {
+            validation.warn(format!(
+                "workers[{}] {} total_slots not specified (run `rch workers init` to auto-detect)",
+                index,
+                if id.is_empty() { "(unknown id)" } else { &id }
+            ));
         }
     }
 
@@ -848,7 +870,7 @@ fn default_user() -> String {
 }
 
 fn default_identity_file() -> String {
-    "~/.ssh/id_rsa".to_string()
+    detect_identity_file()
 }
 
 fn default_slots() -> u32 {
@@ -861,6 +883,21 @@ fn default_priority() -> u32 {
 
 fn default_true() -> bool {
     true
+}
+
+fn detect_identity_file() -> String {
+    let Some(home) = dirs::home_dir() else {
+        return "~/.ssh/id_rsa".to_string();
+    };
+
+    for name in ["id_ed25519", "id_rsa", "id_ecdsa"] {
+        let path = home.join(".ssh").join(name);
+        if path.exists() {
+            return path.display().to_string();
+        }
+    }
+
+    "~/.ssh/id_rsa".to_string()
 }
 
 /// Load workers configuration from file.
@@ -1075,9 +1112,52 @@ total_slots = 4
         std::io::Write::write_all(file.as_file_mut(), workers_toml.as_bytes())
             .expect("write workers config");
         let result = validate_workers_config_file(file.path());
-        info!("RESULT: errors={:?}", result.errors);
-        assert!(result.errors.iter().any(|e| e.contains("identity_file")));
+        info!("RESULT: warnings={:?}", result.warnings);
+        assert!(result.warnings.iter().any(|e| e.contains("identity_file")));
         info!("TEST PASS: test_validate_file_path_exists");
+    }
+
+    #[test]
+    fn test_validate_workers_missing_user() {
+        info!("TEST START: test_validate_workers_missing_user");
+        let mut file = NamedTempFile::new().expect("create temp file");
+        let workers_toml = r#"
+[[workers]]
+id = "gpu-2"
+host = "10.0.0.6"
+identity_file = "/tmp/id_ed25519"
+total_slots = 8
+"#;
+        std::io::Write::write_all(file.as_file_mut(), workers_toml.as_bytes())
+            .expect("write workers config");
+        let result = validate_workers_config_file(file.path());
+        info!("RESULT: errors={:?}", result.errors);
+        assert!(result.errors.iter().any(|e| e.contains("user is required")));
+        info!("TEST PASS: test_validate_workers_missing_user");
+    }
+
+    #[test]
+    fn test_validate_workers_missing_total_slots_warns() {
+        info!("TEST START: test_validate_workers_missing_total_slots_warns");
+        let mut file = NamedTempFile::new().expect("create temp file");
+        let workers_toml = r#"
+[[workers]]
+id = "gpu-3"
+host = "10.0.0.7"
+user = "builder"
+identity_file = "/tmp/id_ed25519"
+"#;
+        std::io::Write::write_all(file.as_file_mut(), workers_toml.as_bytes())
+            .expect("write workers config");
+        let result = validate_workers_config_file(file.path());
+        info!("RESULT: warnings={:?}", result.warnings);
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|e| e.contains("total_slots not specified"))
+        );
+        info!("TEST PASS: test_validate_workers_missing_total_slots_warns");
     }
 
     // ========================================================================

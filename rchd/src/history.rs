@@ -4,11 +4,13 @@
 
 use rch_common::{BuildLocation, BuildRecord, BuildStats};
 use std::collections::VecDeque;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::fs::OpenOptions as AsyncOpenOptions;
+use tokio::io::AsyncWriteExt;
 use tracing::{debug, warn};
 
 /// Default maximum number of builds to retain.
@@ -56,27 +58,43 @@ impl BuildHistory {
     }
 
     /// Record a completed build.
-    pub fn record(&self, record: BuildRecord) {
+    ///
+    /// Returns a handle to the persistence task if persistence is enabled.
+    pub fn record(&self, record: BuildRecord) -> Option<tokio::task::JoinHandle<()>> {
         debug!(
             "Recording build {}: {} ({:?}, {} ms)",
             record.id, record.command, record.location, record.duration_ms
         );
 
-        let mut records = self.records.write().unwrap();
+        // Prepare for persistence before locking
+        let persistence_task = if let Some(ref path) = self.persistence_path {
+            Some((path.clone(), record.clone()))
+        } else {
+            None
+        };
 
-        // Evict oldest if at capacity
-        if records.len() >= self.capacity {
-            records.pop_front();
-        }
+        // Update memory state under lock
+        {
+            let mut records = self.records.write().unwrap();
 
-        // Persist if enabled
-        if let Some(ref path) = self.persistence_path {
-            if let Err(e) = Self::persist_record(path, &record) {
-                warn!("Failed to persist build record: {}", e);
+            // Evict oldest if at capacity
+            if records.len() >= self.capacity {
+                records.pop_front();
             }
+
+            records.push_back(record);
         }
 
-        records.push_back(record);
+        // Persist asynchronously (fire and forget or awaitable)
+        if let Some((path, record)) = persistence_task {
+            Some(tokio::spawn(async move {
+                if let Err(e) = Self::persist_record_async(&path, &record).await {
+                    warn!("Failed to persist build record: {}", e);
+                }
+            }))
+        } else {
+            None
+        }
     }
 
     /// Get recent builds (most recent first).
@@ -198,10 +216,17 @@ impl BuildHistory {
     }
 
     /// Persist a single record to the JSONL file (append mode).
-    fn persist_record(path: &Path, record: &BuildRecord) -> std::io::Result<()> {
-        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    async fn persist_record_async(path: &Path, record: &BuildRecord) -> std::io::Result<()> {
+        let mut file = AsyncOpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .await?;
 
-        writeln!(file, "{}", serde_json::to_string(record)?)?;
+        let json = serde_json::to_string(record)?;
+        file.write_all(json.as_bytes()).await?;
+        file.write_all(b"\n").await?;
+        file.flush().await?;
         Ok(())
     }
 
@@ -390,17 +415,16 @@ mod tests {
         assert_eq!(history.next_id(), 3);
     }
 
-    #[test]
-    fn test_thread_safety() {
+    #[tokio::test]
+    async fn test_thread_safety() {
         use std::sync::Arc;
-        use std::thread;
 
         let history = Arc::new(BuildHistory::new(100));
 
         let handles: Vec<_> = (0..10)
             .map(|i| {
                 let h = Arc::clone(&history);
-                thread::spawn(move || {
+                tokio::spawn(async move {
                     for j in 0..10 {
                         h.record(make_build_record((i * 10 + j) as u64));
                     }
@@ -409,22 +433,24 @@ mod tests {
             .collect();
 
         for handle in handles {
-            handle.join().unwrap();
+            handle.await.unwrap();
         }
 
         let recent = history.recent(200);
         assert_eq!(recent.len(), 100); // All 100 recorded
     }
 
-    #[test]
-    fn test_persistence_save_load() {
+    #[tokio::test]
+    async fn test_persistence_save_load() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("history.jsonl");
 
         // Create and populate history
         let history = BuildHistory::new(5).with_persistence(path.clone());
         for i in 1..=3 {
-            history.record(make_build_record(i));
+            if let Some(handle) = history.record(make_build_record(i)) {
+                handle.await.unwrap();
+            }
         }
 
         // Load into new instance
@@ -435,16 +461,20 @@ mod tests {
         assert_eq!(recent[0].id, 3);
     }
 
-    #[test]
-    fn test_persistence_append_mode() {
+    #[tokio::test]
+    async fn test_persistence_append_mode() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("history.jsonl");
 
         // First session
         {
             let history = BuildHistory::new(10).with_persistence(path.clone());
-            history.record(make_build_record(1));
-            history.record(make_build_record(2));
+            if let Some(handle) = history.record(make_build_record(1)) {
+                handle.await.unwrap();
+            }
+            if let Some(handle) = history.record(make_build_record(2)) {
+                handle.await.unwrap();
+            }
         }
 
         // Second session - load and add more
@@ -452,7 +482,9 @@ mod tests {
             let history = BuildHistory::load_from_file(&path, 10).unwrap();
             // Use next_id to ensure we don't duplicate IDs
             let id = history.next_id();
-            history.record(make_build_record(id));
+            if let Some(handle) = history.record(make_build_record(id)) {
+                handle.await.unwrap();
+            }
         }
 
         // Third session - verify all records
@@ -460,15 +492,17 @@ mod tests {
         assert_eq!(history.len(), 3);
     }
 
-    #[test]
-    fn test_compaction() {
+    #[tokio::test]
+    async fn test_compaction() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("history.jsonl");
 
         // Create history with 3 records but capacity 2
         let history = BuildHistory::new(2).with_persistence(path.clone());
         for i in 1..=3 {
-            history.record(make_build_record(i));
+            if let Some(handle) = history.record(make_build_record(i)) {
+                handle.await.unwrap();
+            }
         }
 
         // Compact

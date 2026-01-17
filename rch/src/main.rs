@@ -290,6 +290,32 @@ CHECKS PERFORMED:
         install_deps: bool,
     },
 
+    /// Verify remote compilation by running a self-test
+    #[command(after_help = r#"EXAMPLES:
+    rch self-test                     # Test the first configured worker
+    rch self-test --all               # Test all configured workers
+    rch self-test --worker css        # Test a specific worker
+    rch self-test --project ../app    # Test a different project directory
+    rch self-test --timeout 600       # Increase timeout to 10 minutes
+    rch self-test --debug             # Use debug build instead of release"#)]
+    SelfTest {
+        /// Test a specific worker by id
+        #[arg(long)]
+        worker: Option<String>,
+        /// Test all configured workers
+        #[arg(long)]
+        all: bool,
+        /// Project path to test (defaults to current directory)
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Timeout in seconds for each worker test
+        #[arg(long, default_value = "300")]
+        timeout: u64,
+        /// Use debug build instead of release
+        #[arg(long)]
+        debug: bool,
+    },
+
     /// Update RCH binaries on local machine and/or workers
     #[command(after_help = r#"EXAMPLES:
     rch update --check          # Check for available updates
