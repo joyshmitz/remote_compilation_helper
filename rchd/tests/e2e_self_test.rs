@@ -7,8 +7,10 @@ use rch_common::remote_compilation::RemoteCompilationTest;
 use rch_common::test_change::{TestChangeGuard, TestCodeChange};
 use rch_common::types::{WorkerConfig, WorkerId};
 use std::path::Path;
+use std::time::Duration;
 use tempfile::TempDir;
 use tokio::process::Command;
+use tokio::time::sleep;
 use tracing::info;
 
 fn init_test_logging() {
@@ -105,6 +107,9 @@ async fn test_code_change_produces_different_hash() {
 
     let change = TestCodeChange::for_main_rs(temp_dir.path()).expect("test change");
     let _guard = TestChangeGuard::new(change).expect("apply test change");
+
+    // Ensure filesystem timestamp advances so cargo detects the change.
+    sleep(Duration::from_millis(1100)).await;
 
     build_release(temp_dir.path())
         .await
