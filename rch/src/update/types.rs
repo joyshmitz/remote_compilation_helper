@@ -122,6 +122,7 @@ impl Version {
     }
 
     /// Check if this is a prerelease version.
+    #[allow(dead_code)]
     pub fn is_prerelease(&self) -> bool {
         self.prerelease.is_some()
     }
@@ -201,6 +202,7 @@ pub struct ReleaseAsset {
     pub content_type: String,
 }
 
+#[allow(dead_code)]
 impl ReleaseAsset {
     /// Check if this asset is for the current platform.
     pub fn is_for_current_platform(&self) -> bool {
@@ -214,11 +216,7 @@ pub fn current_target() -> String {
     let arch = std::env::consts::ARCH;
     let os = std::env::consts::OS;
 
-    let arch_str = match arch {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        _ => arch,
-    };
+    let arch_str = arch;
 
     let os_str = match os {
         "linux" => "unknown-linux-gnu",

@@ -53,6 +53,7 @@ impl UpdateLock {
     }
 
     /// Check if an update is currently in progress.
+    #[allow(dead_code)]
     pub fn is_locked() -> bool {
         if let Ok(path) = get_lock_path() {
             if path.exists() {

@@ -5,6 +5,7 @@ use tokio::io::AsyncReadExt;
 
 /// Result of verification.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct VerificationResult {
     pub checksum_valid: bool,
     pub signature_valid: Option<bool>,
@@ -91,6 +92,7 @@ async fn compute_sha256(file_path: &std::path::Path) -> Result<String, UpdateErr
 }
 
 /// Verify a byte slice against expected checksum.
+#[allow(dead_code)]
 pub fn verify_sha256_bytes(content: &[u8], expected: &str) -> Result<(), UpdateError> {
     use sha2::Digest;
 

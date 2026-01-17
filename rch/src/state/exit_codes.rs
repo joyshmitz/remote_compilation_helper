@@ -3,21 +3,21 @@
 //! These follow sysexits.h conventions where applicable, with RCH-specific
 //! codes in the 100-127 range for clear differentiation.
 
-/// Exit codes following sysexits.h conventions where applicable.
-///
-/// Standard codes (0-63):
-/// - 0: Success
-/// - 1: Generic error
-/// - 64: Command line usage error (EX_USAGE)
-/// - 78: Configuration error (EX_CONFIG)
-///
-/// RCH-specific codes (100-127):
-/// - 100: Needs setup
-/// - 101: Daemon not running
-/// - 102: No workers configured
-/// - 103: Already at requested version
-/// - 104: Lock held by another process
-/// - 105: Config needs migration
+//! Exit codes following sysexits.h conventions where applicable.
+//!
+//! Standard codes (0-63):
+//! - 0: Success
+//! - 1: Generic error
+//! - 64: Command line usage error (EX_USAGE)
+//! - 78: Configuration error (EX_CONFIG)
+//!
+//! RCH-specific codes (100-127):
+//! - 100: Needs setup
+//! - 101: Daemon not running
+//! - 102: No workers configured
+//! - 103: Already at requested version
+//! - 104: Lock held by another process
+//! - 105: Config needs migration
 
 /// Success - operation completed without errors.
 pub const OK: i32 = 0;

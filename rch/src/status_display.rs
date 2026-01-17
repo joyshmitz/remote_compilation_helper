@@ -4,6 +4,8 @@
 //! in both comprehensive (when daemon is running) and basic (when daemon
 //! is stopped) modes.
 
+#![allow(dead_code)]
+
 use crate::status_types::{DaemonFullStatusResponse, extract_json_body, format_duration};
 use crate::ui::theme::Theme;
 use anyhow::{Context, Result};

@@ -101,6 +101,7 @@ pub fn format_duration(secs: u64) -> String {
 }
 
 /// Helper to format bytes in human-readable form.
+#[allow(dead_code)]
 pub fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * 1024;
