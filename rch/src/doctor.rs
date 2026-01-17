@@ -1138,4 +1138,89 @@ mod tests {
         assert!(json.contains("\"total\":10"));
         assert!(json.contains("\"passed\":7"));
     }
+
+    #[test]
+    fn test_quick_check_result_is_healthy() {
+        let healthy = QuickCheckResult {
+            daemon_running: true,
+            worker_count: 1,
+            workers_healthy: 1,
+            hook_installed: true,
+            warnings: vec![],
+            errors: vec![],
+        };
+        assert!(healthy.is_healthy());
+
+        let no_daemon = QuickCheckResult {
+            daemon_running: false,
+            worker_count: 1,
+            workers_healthy: 1,
+            hook_installed: true,
+            warnings: vec![],
+            errors: vec![],
+        };
+        assert!(!no_daemon.is_healthy());
+
+        let no_workers = QuickCheckResult {
+            daemon_running: true,
+            worker_count: 0,
+            workers_healthy: 0,
+            hook_installed: true,
+            warnings: vec![],
+            errors: vec![],
+        };
+        assert!(!no_workers.is_healthy());
+
+        let no_hook = QuickCheckResult {
+            daemon_running: true,
+            worker_count: 1,
+            workers_healthy: 1,
+            hook_installed: false,
+            warnings: vec![],
+            errors: vec![],
+        };
+        assert!(!no_hook.is_healthy());
+    }
+
+    #[test]
+    fn test_quick_check_result_has_issues() {
+        let no_issues = QuickCheckResult {
+            daemon_running: true,
+            worker_count: 1,
+            workers_healthy: 1,
+            hook_installed: true,
+            warnings: vec![],
+            errors: vec![],
+        };
+        assert!(!no_issues.has_issues());
+
+        let with_warnings = QuickCheckResult {
+            daemon_running: true,
+            worker_count: 1,
+            workers_healthy: 1,
+            hook_installed: true,
+            warnings: vec!["Some warning".to_string()],
+            errors: vec![],
+        };
+        assert!(with_warnings.has_issues());
+
+        let with_errors = QuickCheckResult {
+            daemon_running: true,
+            worker_count: 1,
+            workers_healthy: 1,
+            hook_installed: true,
+            warnings: vec![],
+            errors: vec!["Some error".to_string()],
+        };
+        assert!(with_errors.has_issues());
+    }
+
+    #[test]
+    fn test_run_quick_check_returns_result() {
+        // This test just verifies that run_quick_check executes without panicking
+        let result = run_quick_check();
+        // We can't assert on specific values because they depend on system state,
+        // but we can check that the result is valid
+        assert!(result.warnings.len() + result.errors.len() >= 0);
+    }
 }

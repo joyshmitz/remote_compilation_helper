@@ -304,9 +304,7 @@ fn test_daemon_shutdown() {
     let socket_path = setup_daemon_configs(&harness).unwrap();
 
     // Start the daemon
-    harness
-        .start_daemon(&["--foreground", "--metrics-port", "0"])
-        .unwrap();
+    start_daemon_with_socket(&harness, &socket_path, &[]).unwrap();
     harness
         .wait_for_socket(&socket_path, Duration::from_secs(10))
         .unwrap();
@@ -355,9 +353,7 @@ fn test_select_worker_basic() {
     let socket_path = setup_daemon_configs(&harness).unwrap();
 
     // Start the daemon
-    harness
-        .start_daemon(&["--foreground", "--metrics-port", "0"])
-        .unwrap();
+    start_daemon_with_socket(&harness, &socket_path, &[]).unwrap();
     harness
         .wait_for_socket(&socket_path, Duration::from_secs(10))
         .unwrap();
@@ -387,9 +383,7 @@ fn test_select_worker_with_runtime() {
     let socket_path = setup_daemon_configs(&harness).unwrap();
 
     // Start the daemon
-    harness
-        .start_daemon(&["--foreground", "--metrics-port", "0"])
-        .unwrap();
+    start_daemon_with_socket(&harness, &socket_path, &[]).unwrap();
     harness
         .wait_for_socket(&socket_path, Duration::from_secs(10))
         .unwrap();
@@ -419,9 +413,7 @@ fn test_select_worker_missing_project() {
     let socket_path = setup_daemon_configs(&harness).unwrap();
 
     // Start the daemon
-    harness
-        .start_daemon(&["--foreground", "--metrics-port", "0"])
-        .unwrap();
+    start_daemon_with_socket(&harness, &socket_path, &[]).unwrap();
     harness
         .wait_for_socket(&socket_path, Duration::from_secs(10))
         .unwrap();
@@ -453,9 +445,7 @@ fn test_release_worker() {
     let socket_path = setup_daemon_configs(&harness).unwrap();
 
     // Start the daemon
-    harness
-        .start_daemon(&["--foreground", "--metrics-port", "0"])
-        .unwrap();
+    start_daemon_with_socket(&harness, &socket_path, &[]).unwrap();
     harness
         .wait_for_socket(&socket_path, Duration::from_secs(10))
         .unwrap();

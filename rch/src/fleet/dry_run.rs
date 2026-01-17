@@ -227,7 +227,6 @@ pub fn display_dry_run(result: &DryRunResult, ctx: &OutputContext) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fleet::plan::{DeployOptions, WorkerDeployment};
 
     // ========================
     // PredictedAction tests
@@ -535,16 +534,6 @@ mod tests {
     // ========================
     // Integration-style tests for compute_dry_run helper logic
     // ========================
-
-    fn make_worker_deployment(
-        id: &str,
-        current: Option<&str>,
-        target: &str,
-    ) -> WorkerDeployment {
-        let mut wd = WorkerDeployment::new(id, target);
-        wd.current_version = current.map(|s| s.to_string());
-        wd
-    }
 
     #[test]
     fn action_install_when_no_current_version() {
