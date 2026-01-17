@@ -72,11 +72,15 @@ impl WorkersFixture {
 
     /// Generate TOML configuration for all workers
     pub fn to_toml(&self) -> String {
-        self.workers
-            .iter()
-            .map(|w| w.to_toml())
-            .collect::<Vec<_>>()
-            .join("\n")
+        if self.workers.is_empty() {
+            "workers = []\n".to_string()
+        } else {
+            self.workers
+                .iter()
+                .map(|w| w.to_toml())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
     }
 }
 

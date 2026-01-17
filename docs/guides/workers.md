@@ -1,6 +1,7 @@
 # Worker Setup Guide
 
 This guide covers setting up and managing worker machines for RCH.
+If you are new to the concept, start with `docs/guides/worker-infrastructure.md`.
 
 ## Prerequisites
 
