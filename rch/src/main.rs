@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod agent;
 mod commands;
 mod config;
 pub mod error;
@@ -88,6 +89,12 @@ enum Commands {
     Hook {
         #[command(subcommand)]
         action: HookAction,
+    },
+
+    /// Detect and manage AI coding agents
+    Agents {
+        #[command(subcommand)]
+        action: AgentsAction,
     },
 
     /// Generate shell completions
@@ -205,6 +212,37 @@ enum HookAction {
     Test,
 }
 
+#[derive(Subcommand)]
+enum AgentsAction {
+    /// List detected AI coding agents
+    List {
+        /// Show all agents, including not installed
+        #[arg(long)]
+        all: bool,
+    },
+    /// Show hook status for an agent
+    Status {
+        /// Agent to check (e.g., claude-code, gemini-cli)
+        agent: Option<String>,
+    },
+    /// Install RCH hook for an agent
+    InstallHook {
+        /// Agent to install hook for
+        agent: String,
+        /// Show what would be done without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Uninstall RCH hook from an agent
+    UninstallHook {
+        /// Agent to uninstall hook from
+        agent: String,
+        /// Show what would be done without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Handle dynamic shell completions (exits if handling a completion request)
@@ -248,6 +286,7 @@ async fn main() -> Result<()> {
             Commands::Status { workers, jobs } => handle_status(workers, jobs, &ctx).await,
             Commands::Config { action } => handle_config(action, &ctx).await,
             Commands::Hook { action } => handle_hook(action, &ctx).await,
+            Commands::Agents { action } => handle_agents(action, &ctx).await,
             Commands::Completions { shell } => {
                 generate_completions(shell);
                 Ok(())
@@ -360,6 +399,24 @@ async fn handle_hook(action: HookAction, ctx: &OutputContext) -> Result<()> {
         }
         HookAction::Test => {
             commands::hook_test(ctx).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn handle_agents(action: AgentsAction, ctx: &OutputContext) -> Result<()> {
+    match action {
+        AgentsAction::List { all } => {
+            commands::agents_list(all, ctx)?;
+        }
+        AgentsAction::Status { agent } => {
+            commands::agents_status(agent, ctx)?;
+        }
+        AgentsAction::InstallHook { agent, dry_run } => {
+            commands::agents_install_hook(&agent, dry_run, ctx)?;
+        }
+        AgentsAction::UninstallHook { agent, dry_run } => {
+            commands::agents_uninstall_hook(&agent, dry_run, ctx)?;
         }
     }
     Ok(())

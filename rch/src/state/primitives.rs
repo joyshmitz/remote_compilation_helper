@@ -17,7 +17,7 @@ use std::path::Path;
 /// - Updating something that changed
 /// - Finding no changes needed
 /// - Dry-run mode (no action taken)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdempotentResult {
     /// A new file/resource was created.
     Created,
@@ -29,6 +29,10 @@ pub enum IdempotentResult {
     Unchanged,
     /// Dry-run mode: shows what would happen without doing it.
     DryRun,
+    /// A change was made (alias for Updated, used by hook operations).
+    Changed,
+    /// Dry-run mode: describes what would change without doing it.
+    WouldChange(String),
 }
 
 impl std::fmt::Display for IdempotentResult {
@@ -39,6 +43,8 @@ impl std::fmt::Display for IdempotentResult {
             IdempotentResult::Updated => write!(f, "updated"),
             IdempotentResult::Unchanged => write!(f, "unchanged"),
             IdempotentResult::DryRun => write!(f, "dry-run"),
+            IdempotentResult::Changed => write!(f, "changed"),
+            IdempotentResult::WouldChange(msg) => write!(f, "would change: {}", msg),
         }
     }
 }
