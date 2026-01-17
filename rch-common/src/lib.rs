@@ -6,6 +6,7 @@
 // in tests and profile defaults (env::set_var/remove_var are unsafe in Rust 2024)
 #![deny(unsafe_code)]
 
+pub mod binary_hash;
 pub mod config;
 pub mod discovery;
 pub mod e2e;
@@ -18,6 +19,7 @@ pub mod ssh;
 pub mod toolchain;
 pub mod types;
 
+pub use binary_hash::{BinaryHashResult, binaries_equivalent, binary_contains_marker, compute_binary_hash};
 pub use patterns::{Classification, CompilationKind, classify_command};
 pub use protocol::{HookInput, HookOutput, ToolInput};
 pub use ssh::{CommandResult, KnownHostsPolicy, SshClient, SshOptions, SshPool};

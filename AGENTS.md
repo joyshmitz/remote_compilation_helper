@@ -340,18 +340,246 @@ See the MCP Agent Mail section in the DCG AGENTS.md for full details. Key points
 
 ---
 
-## Beads (bd) — Issue Tracking
+## Beads (bd) — Dependency-Aware Issue Tracking
 
-This project uses beads for lightweight issue tracking:
+Beads provides a lightweight, dependency-aware issue database and CLI (`bd`) for selecting "ready work," setting priorities, and tracking status.
+
+### Quick Start
 
 ```bash
-bd ready              # Show issues ready to work
+bd ready --json                                    # Show issues ready to work (no blockers)
+bd create "Issue title" -t bug|feature|task -p 0-4 --json
+bd update bd-42 --status in_progress --json
+bd close bd-42 --reason "Completed" --json
+```
+
+### Issue Types
+
+- `bug` - Something broken
+- `feature` - New functionality
+- `task` - Work item (tests, docs, refactoring)
+- `epic` - Large feature with subtasks
+- `chore` - Maintenance (dependencies, tooling)
+
+### Priorities
+
+- `0` - Critical (security, data loss, broken builds)
+- `1` - High (major features, important bugs)
+- `2` - Medium (default, nice-to-have)
+- `3` - Low (polish, optimization)
+- `4` - Backlog (future ideas)
+
+---
+
+## bv — Graph-Aware Triage Engine
+
+bv is a graph-aware triage engine for Beads projects (`.beads/beads.jsonl`). It computes PageRank, betweenness, critical path, cycles, HITS, eigenvector, and k-core metrics deterministically.
+
+**CRITICAL: Use ONLY `--robot-*` flags. Bare `bv` launches an interactive TUI that blocks your session.**
+
+### The Workflow: Start With Triage
+
+**`bv --robot-triage` is your single entry point.** It returns:
+- `quick_ref`: at-a-glance counts + top 3 picks
+- `recommendations`: ranked actionable items with scores, reasons, unblock info
+- `quick_wins`: low-effort high-impact items
+- `blockers_to_clear`: items that unblock the most downstream work
+- `project_health`: status/type/priority distributions, graph metrics
+- `commands`: copy-paste shell commands for next steps
+
+```bash
+bv --robot-triage        # THE MEGA-COMMAND: start here
+bv --robot-next          # Minimal: just the single top pick + claim command
+```
+
+### Command Reference
+
+**Planning:**
+| Command | Returns |
+|---------|---------|
+| `--robot-plan` | Parallel execution tracks with `unblocks` lists |
+| `--robot-priority` | Priority misalignment detection with confidence |
+
+**Graph Analysis:**
+| Command | Returns |
+|---------|---------|
+| `--robot-insights` | Full metrics: PageRank, betweenness, HITS, eigenvector, critical path, cycles, k-core |
+| `--robot-label-health` | Per-label health: `health_level`, `velocity_score`, `staleness`, `blocked_count` |
+
+### jq Quick Reference
+
+```bash
+bv --robot-triage | jq '.quick_ref'                        # At-a-glance summary
+bv --robot-triage | jq '.recommendations[0]'               # Top recommendation
+bv --robot-plan | jq '.plan.summary.highest_impact'        # Best unblock target
+bv --robot-insights | jq '.Cycles'                         # Circular deps (must fix!)
+```
+
+---
+
+## UBS — Ultimate Bug Scanner
+
+**Golden Rule:** `ubs <changed-files>` before every commit. Exit 0 = safe. Exit >0 = fix & re-run.
+
+### Commands
+
+```bash
+ubs file.rs file2.rs                    # Specific files (< 1s) — USE THIS
+ubs $(git diff --name-only --cached)    # Staged files — before commit
+ubs --only=rust,toml src/               # Language filter (3-5x faster)
+ubs .                                   # Whole project
+```
+
+### Output Format
+
+```
+Warning  Category (N errors)
+    file.rs:42:5 - Issue description
+    Suggested fix
+Exit code: 1
+```
+
+Parse: `file:line:col` -> location | Suggested fix -> how to fix | Exit 0/1 -> pass/fail
+
+### Bug Severity
+
+- **Critical (always fix):** Memory safety, use-after-free, data races, SQL injection
+- **Important (production):** Unwrap panics, resource leaks, overflow checks
+- **Contextual (judgment):** TODO/FIXME, println! debugging
+
+---
+
+## ast-grep vs ripgrep
+
+**Use `ast-grep` when structure matters.** It parses code and matches AST nodes, ignoring comments/strings, and can **safely rewrite** code.
+
+- Refactors/codemods: rename APIs, change patterns
+- Policy checks: enforce patterns across a repo
+
+**Use `ripgrep` when text is enough.** Fastest way to grep literals/regex.
+
+- Recon: find strings, TODOs, log lines, config values
+- Pre-filter: narrow candidate files before ast-grep
+
+### Rule of Thumb
+
+- Need correctness or **applying changes** -> `ast-grep`
+- Need raw speed or **hunting text** -> `rg`
+- Often combine: `rg` to shortlist files, then `ast-grep` to match/modify
+
+### Rust Examples
+
+```bash
+# Find structured code (ignores comments)
+ast-grep run -l Rust -p 'fn $NAME($$$ARGS) -> $RET { $$$BODY }'
+
+# Find all unwrap() calls
+ast-grep run -l Rust -p '$EXPR.unwrap()'
+
+# Quick textual hunt
+rg -n 'println!' -t rust
+
+# Combine speed + precision
+rg -l -t rust 'unwrap\(' | xargs ast-grep run -l Rust -p '$X.unwrap()' --json
+```
+
+---
+
+## Morph Warp Grep — AI-Powered Code Search
+
+**Use `mcp__morph-mcp__warp_grep` for exploratory "how does X work?" questions.** An AI agent expands your query, greps the codebase, reads relevant files, and returns precise line ranges with full context.
+
+**Use `ripgrep` for targeted searches.** When you know exactly what you're looking for.
+
+### When to Use What
+
+| Scenario | Tool | Why |
+|----------|------|-----|
+| "How is command classification implemented?" | `warp_grep` | Exploratory; don't know where to start |
+| "Where is the worker selection algorithm?" | `warp_grep` | Need to understand architecture |
+| "Find all uses of `Classification`" | `ripgrep` | Targeted literal search |
+| "Replace all `unwrap()` with `expect()`" | `ast-grep` | Structural refactor |
+
+### warp_grep Usage
+
+```
+mcp__morph-mcp__warp_grep(
+  repoPath: "/path/to/rch",
+  query: "How does the transfer pipeline work?"
+)
+```
+
+### Anti-Patterns
+
+- **Don't** use `warp_grep` to find a specific function name -> use `ripgrep`
+- **Don't** use `ripgrep` to understand "how does X work" -> wastes time with manual reads
+
+---
+
+## cass — Cross-Agent Session Search
+
+`cass` indexes prior agent conversations (Claude Code, Codex, Cursor, Gemini, ChatGPT, etc.) so we can reuse solved problems.
+
+**Rules:** Never run bare `cass` (TUI). Always use `--robot` or `--json`.
+
+### Examples
+
+```bash
+cass health
+cass search "remote compilation" --robot --limit 5
+cass view /path/to/session.jsonl -n 42 --json
+cass expand /path/to/session.jsonl -n 42 -C 3 --json
+cass capabilities --json
+cass robot-docs guide
+```
+
+### Tips
+
+- Use `--fields minimal` for lean output
+- Filter by agent with `--agent`
+- Use `--days N` to limit to recent history
+
+stdout is data-only, stderr is diagnostics; exit code 0 means success.
+
+Treat cass as a way to avoid re-solving problems other agents already handled.
+
+<!-- bv-agent-instructions-v1 -->
+
+---
+
+## Beads Workflow Integration
+
+This project uses [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) for issue tracking. Issues are stored in `.beads/` and tracked in git.
+
+### Essential Commands
+
+```bash
+# CLI commands for agents
+bd ready              # Show issues ready to work (no blockers)
 bd list --status=open # All open issues
+bd show <id>          # Full issue details with dependencies
 bd create --title="..." --type=task --priority=2
 bd update <id> --status=in_progress
-bd close <id>
-bd sync               # Persist changes
+bd close <id> --reason="Completed"
+bd close <id1> <id2>  # Close multiple issues at once
+bd sync               # Commit and push changes
 ```
+
+### Workflow Pattern
+
+1. **Start**: Run `bd ready` to find actionable work
+2. **Claim**: Use `bd update <id> --status=in_progress`
+3. **Work**: Implement the task
+4. **Complete**: Use `bd close <id>`
+5. **Sync**: Always run `bd sync` at session end
+
+### Key Concepts
+
+- **Dependencies**: Issues can block other issues. `bd ready` shows only unblocked work.
+- **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (use numbers, not words)
+- **Types**: task, bug, feature, epic, question, docs
+
+<!-- end-bv-agent-instructions -->
 
 ---
 
@@ -421,3 +649,21 @@ bd sync               # Persist changes
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
+
+---
+
+## Note for Codex/GPT-5.2
+
+You constantly bother me and stop working with concerned questions that look similar to this:
+
+```
+Unexpected changes (need guidance)
+
+- Working tree still shows edits I did not make in Cargo.toml, Cargo.lock, rch/src/classify.rs, rchd/src/workers.rs. Please advise whether to keep/commit/revert these before any further work. I did not touch them.
+
+Next steps (pick one)
+
+1. Decide how to handle the unrelated modified files above so we can resume cleanly.
+```
+
+NEVER EVER DO THAT AGAIN. The answer is literally ALWAYS the same: those are changes created by the potentially dozen of other agents working on the project at the same time. This is not only a common occurence, it happens multiple times PER MINUTE. The way to deal with it is simple: you NEVER, under ANY CIRCUMSTANCE, stash, revert, overwrite, or otherwise disturb in ANY way the work of other agents. Just treat those changes identically to changes that you yourself made. Just fool yourself into thinking YOU made the changes and simply don't recall it for some reason.
