@@ -144,8 +144,16 @@ RCH must identify compilation commands with high precision:
 
 **Supported Commands:**
 - Rust: `cargo build`, `cargo test`, `cargo run`, `cargo check`, `rustc`
+- Bun/TypeScript: `bun test`, `bun typecheck`
 - C/C++: `gcc`, `g++`, `clang`, `clang++`
 - Build systems: `make`, `cmake --build`, `ninja`
+
+**Commands NOT Intercepted (run locally):**
+- Bun package management: `bun install`, `bun add`, `bun remove`, `bun link`
+- Bun execution: `bun run`, `bun build`, `bun dev`, `bun repl`
+- Bun package runner: `bun x` / `bunx` (like npx)
+- Watch modes: `bun test --watch`, `bun typecheck --watch`
+- Piped/redirected/backgrounded commands
 
 **Pattern Matching Strategy:**
 1. Quick keyword filter (SIMD-accelerated)
@@ -158,6 +166,7 @@ Workers are remote Linux machines with:
 - Passwordless SSH access via key
 - Rust nightly toolchain
 - GCC/Clang installed
+- Bun runtime (for TypeScript/Bun projects)
 - rsync and zstd available
 
 **Worker Selection Algorithm:**

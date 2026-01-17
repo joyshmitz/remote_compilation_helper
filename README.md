@@ -53,7 +53,10 @@ claude
 # Inside Claude Code session, compilations are transparently offloaded:
 > cargo build --release     # Runs on remote worker, artifacts returned
 > cargo test               # Same—tests run remotely, output streams back
+> bun test                 # Bun tests offloaded to worker
+> bun typecheck            # TypeScript type checking on worker
 > cargo fmt                # NOT intercepted (modifies local source)
+> bun install              # NOT intercepted (modifies local node_modules)
 > cargo --version          # NOT intercepted (too quick to benefit)
 
 # Check what's happening
@@ -93,6 +96,7 @@ The `rch` hook is a pure function—all state lives in `rchd`. This makes the ho
 |------------|-----|--------|-------|-------|
 | **Transparent to agents** | ✅ Full | ❌ Requires wrapper | ❌ Requires wrapper | ✅ |
 | **Full Rust support** | ✅ cargo, rustc | ❌ C/C++ only | ❌ C/C++ only | ✅ |
+| **Bun/TypeScript support** | ✅ test, typecheck | ❌ | ❌ | ✅ |
 | **Automatic load balancing** | ✅ Slot-aware | ⚠️ Manual | ✅ | N/A |
 | **Project caching** | ✅ Affinity routing | ❌ | ❌ | ✅ |
 | **Multi-agent dedup** | ✅ Broadcast channels | ❌ | ❌ | ❌ |
@@ -102,7 +106,7 @@ The `rch` hook is a pure function—all state lives in `rchd`. This makes the ho
 - Running multiple AI coding agents simultaneously
 - Your workstation CPU is the bottleneck
 - You have SSH access to remote machines with spare capacity
-- Your projects are Rust-heavy (best support) or C/C++ (good support)
+- Your projects are Rust-heavy (best support), TypeScript/Bun (good support), or C/C++ (good support)
 
 **When RCH might not be ideal:**
 - Single-agent workflows (local is usually fast enough)
@@ -555,7 +559,10 @@ Yes—source files are transferred via rsync over SSH. If this is a concern:
 
 ### Does RCH work with non-Rust projects?
 
-Partially. C/C++ compilation (`gcc`, `clang`, `make`, `cmake`, `ninja`) is supported. Other build systems (Go, Python, Node.js) are not intercepted.
+Yes, with good support for multiple ecosystems:
+- **Bun/TypeScript**: `bun test` and `bun typecheck` are offloaded. Package management (`bun install`, `bun add`) and dev servers (`bun dev`) run locally.
+- **C/C++**: Compilation via `gcc`, `clang`, `make`, `cmake`, `ninja` is supported.
+- **Not supported**: Go, Python, and npm/yarn/pnpm commands are not intercepted.
 
 ### What if a worker goes down mid-compilation?
 
