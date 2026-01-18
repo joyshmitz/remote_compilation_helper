@@ -4,6 +4,7 @@ import "./globals.css";
 import { Sidebar } from "@/components/layout";
 import { QueryProvider } from "@/components/providers/query-provider";
 import { ThemeProvider } from "@/components/providers/theme-provider";
+import { ToastProvider } from "@/components/providers/toast-provider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -31,6 +32,7 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <ThemeProvider>
+          <ToastProvider />
           <QueryProvider>
             <a
               href="#main-content"
