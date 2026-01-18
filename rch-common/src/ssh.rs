@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
 /// Default SSH connection timeout.
@@ -282,53 +282,77 @@ impl SshClient {
             .await
             .with_context(|| format!("Failed to spawn command on {}", self.config.id))?;
 
-        let stdout_handle = child.stdout().take();
-        let stderr_handle = child.stderr().take();
+        let stdout = child.stdout().take();
+        let stderr = child.stderr().take();
 
-        let mut stdout_reader = stdout_handle.map(BufReader::new);
-        let mut stderr_reader = stderr_handle.map(BufReader::new);
-        let mut stdout_buf = String::new();
-        let mut stderr_buf = String::new();
-        let mut stdout_done = stdout_reader.is_none();
-        let mut stderr_done = stderr_reader.is_none();
+        // Use a channel to aggregate stream events from reader tasks.
+        // This avoids cancellation safety issues with select! over AsyncBufReadExt::read_line.
+        let (tx, mut rx) = mpsc::channel(100);
+
+        // Spawn stdout reader
+        if let Some(out) = stdout {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(out);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line).await {
+                        Ok(0) => break, // EOF
+                        Ok(_) => {
+                            if tx.send(StreamEvent::Stdout(line.clone())).await.is_err() {
+                                break; // Receiver dropped
+                            }
+                        }
+                        Err(_) => break, // Read error
+                    }
+                }
+            });
+        }
+
+        // Spawn stderr reader
+        if let Some(err) = stderr {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(err);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line).await {
+                        Ok(0) => break, // EOF
+                        Ok(_) => {
+                            if tx.send(StreamEvent::Stderr(line.clone())).await.is_err() {
+                                break; // Receiver dropped
+                            }
+                        }
+                        Err(_) => break, // Read error
+                    }
+                }
+            });
+        }
+
+        // Drop original tx so rx closes when tasks finish
+        drop(tx);
 
         let mut stdout_acc = String::new();
         let mut stderr_acc = String::new();
 
+        enum StreamEvent {
+            Stdout(String),
+            Stderr(String),
+        }
+
         let streaming_future = async {
-            while !stdout_done || !stderr_done {
-                tokio::select! {
-                    result = async {
-                        if let Some(reader) = stdout_reader.as_mut() {
-                            reader.read_line(&mut stdout_buf).await
-                        } else {
-                            Ok(0)
-                        }
-                    }, if !stdout_done => {
-                        let n = result?;
-                        if n == 0 {
-                            stdout_done = true;
-                        } else {
-                            on_stdout(&stdout_buf);
-                            stdout_acc.push_str(&stdout_buf);
-                            stdout_buf.clear();
-                        }
+            // Process events until channel closes (EOF from both streams)
+            while let Some(event) = rx.recv().await {
+                match event {
+                    StreamEvent::Stdout(line) => {
+                        on_stdout(&line);
+                        stdout_acc.push_str(&line);
                     }
-                    result = async {
-                        if let Some(reader) = stderr_reader.as_mut() {
-                            reader.read_line(&mut stderr_buf).await
-                        } else {
-                            Ok(0)
-                        }
-                    }, if !stderr_done => {
-                        let n = result?;
-                        if n == 0 {
-                            stderr_done = true;
-                        } else {
-                            on_stderr(&stderr_buf);
-                            stderr_acc.push_str(&stderr_buf);
-                            stderr_buf.clear();
-                        }
+                    StreamEvent::Stderr(line) => {
+                        on_stderr(&line);
+                        stderr_acc.push_str(&line);
                     }
                 }
             }
@@ -351,7 +375,7 @@ impl SshClient {
                 })
             }
             Err(_) => {
-                // Timeout occurred - the async block owns child and dropping it will terminate the process
+                // Timeout occurred - child is dropped and killed
                 warn!(
                     "Command (streaming) timed out on {} after {:?}",
                     self.config.id, self.options.command_timeout
