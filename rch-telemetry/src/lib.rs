@@ -15,6 +15,7 @@ pub mod benchmarks;
 pub mod collect;
 pub mod protocol;
 pub mod speedscore;
+pub mod storage;
 
 pub use rch_common::{LogConfig, LogFormat, LoggingGuards, init_logging};
 
@@ -38,3 +39,4 @@ pub use collect::network::{
 pub use speedscore::{
     BenchmarkResults, SPEEDSCORE_VERSION, SpeedScore, SpeedScoreWeights, calculate_speedscore,
 };
+pub use storage::{MaintenanceStats, SpeedScoreHistoryPage, TelemetryStorage};
