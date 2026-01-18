@@ -457,7 +457,7 @@ mod tests {
         assert_eq!(context.pool.len(), 1);
         let workers = context.pool.all_workers().await;
         assert_eq!(workers.len(), 1);
-        assert_eq!(workers[0].config.id.as_str(), "test-worker");
+        assert_eq!(workers[0].config.read().await.id.as_str(), "test-worker");
     }
 
     #[tokio::test]

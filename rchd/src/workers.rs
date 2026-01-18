@@ -16,15 +16,15 @@ use tracing::debug;
 #[derive(Debug)]
 pub struct WorkerState {
     /// Worker configuration.
-    pub config: WorkerConfig,
+    pub config: RwLock<WorkerConfig>,
     /// Current status (uses RwLock for interior mutability).
     status: RwLock<WorkerStatus>,
     /// Number of slots currently in use.
-    used_slots: AtomicU32,
+    used_slots: Arc<AtomicU32>,
     /// Speed score from benchmarking (0-100).
-    pub speed_score: f64,
+    pub speed_score: RwLock<f64>,
     /// Projects cached on this worker.
-    pub cached_projects: Vec<String>,
+    pub cached_projects: RwLock<Vec<String>>,
     /// Circuit breaker statistics.
     circuit: RwLock<CircuitStats>,
     /// Last error message.
@@ -37,15 +37,21 @@ impl WorkerState {
     /// Create a new worker state from configuration.
     pub fn new(config: WorkerConfig) -> Self {
         Self {
-            config,
+            config: RwLock::new(config),
             status: RwLock::new(WorkerStatus::Healthy),
-            used_slots: AtomicU32::new(0),
-            speed_score: 50.0, // Default mid-range score
-            cached_projects: Vec::new(),
+            used_slots: Arc::new(AtomicU32::new(0)),
+            speed_score: RwLock::new(50.0), // Default mid-range score
+            cached_projects: RwLock::new(Vec::new()),
             circuit: RwLock::new(CircuitStats::new()),
             last_error_msg: RwLock::new(None),
             capabilities: RwLock::new(WorkerCapabilities::new()),
         }
+    }
+
+    /// Update worker configuration.
+    pub async fn update_config(&self, new_config: WorkerConfig) {
+        let mut config = self.config.write().await;
+        *config = new_config;
     }
 
     /// Get current worker status.
@@ -59,16 +65,18 @@ impl WorkerState {
     }
 
     /// Get the number of available slots.
-    pub fn available_slots(&self) -> u32 {
+    pub async fn available_slots(&self) -> u32 {
         let used = self.used_slots.load(Ordering::Relaxed);
-        self.config.total_slots.saturating_sub(used)
+        let total = self.config.read().await.total_slots;
+        total.saturating_sub(used)
     }
 
     /// Reserve slots for a job. Returns true if successful.
-    pub fn reserve_slots(&self, count: u32) -> bool {
+    pub async fn reserve_slots(&self, count: u32) -> bool {
+        let total_slots = self.config.read().await.total_slots;
         let mut current = self.used_slots.load(Ordering::Relaxed);
         loop {
-            if current + count > self.config.total_slots {
+            if current + count > total_slots {
                 return false;
             }
             match self.used_slots.compare_exchange(
@@ -84,15 +92,16 @@ impl WorkerState {
     }
 
     /// Release slots after a job completes.
-    pub fn release_slots(&self, count: u32) {
+    pub async fn release_slots(&self, count: u32) {
         let mut current = self.used_slots.load(Ordering::Relaxed);
         loop {
             let new_val = current.saturating_sub(count);
 
             if count > current {
+                let id = self.config.read().await.id.clone();
                 tracing::warn!(
                     "Worker {}: attempted to release {} slots but only {} in use",
-                    self.config.id,
+                    id,
                     count,
                     current
                 );
@@ -111,8 +120,26 @@ impl WorkerState {
     }
 
     /// Check if this worker has a cached copy of a project.
-    pub fn has_cached_project(&self, project: &str) -> bool {
-        self.cached_projects.iter().any(|p| p == project)
+    pub async fn has_cached_project(&self, project: &str) -> bool {
+        self.cached_projects.read().await.iter().any(|p| p == project)
+    }
+
+    /// Add a project to the cache list.
+    pub async fn add_cached_project(&self, project: String) {
+        let mut cache = self.cached_projects.write().await;
+        if !cache.contains(&project) {
+            cache.push(project);
+        }
+    }
+
+    /// Update the speed score.
+    pub async fn set_speed_score(&self, score: f64) {
+        *self.speed_score.write().await = score;
+    }
+
+    /// Get the current speed score.
+    pub async fn get_speed_score(&self) -> f64 {
+        *self.speed_score.read().await
     }
 
     /// Get the current circuit breaker state.
@@ -239,19 +266,35 @@ impl WorkerPool {
     /// Add a worker to the pool.
     pub async fn add_worker(&self, config: WorkerConfig) {
         let id = config.id.clone();
+        
+        {
+            let workers = self.workers.read().await;
+            if let Some(existing) = workers.get(&id) {
+                debug!("Updating existing worker: {}", id);
+                existing.update_config(config).await;
+                return;
+            }
+        }
+
         let state = Arc::new(WorkerState::new(config));
         let mut workers = self.workers.write().await;
-        if workers.insert(id.clone(), state).is_none() {
-            // Only increment if this is a new worker
+        // Check again under write lock
+        if let Some(existing) = workers.get(&id) {
+             // Race condition: added between read and write lock
+             // Just update config on the existing one, drop the new state
+             let config = state.config.read().await.clone();
+             existing.update_config(config).await;
+        } else {
+            workers.insert(id.clone(), state);
             self.worker_count.fetch_add(1, Ordering::SeqCst);
+            debug!("Added worker: {}", id);
         }
-        debug!("Added worker: {}", id);
     }
 
     /// Add a worker with a pre-configured state (for testing).
     #[cfg(test)]
     pub async fn add_worker_state(&self, state: WorkerState) {
-        let id = state.config.id.clone();
+        let id = state.config.read().await.id.clone();
         let mut workers = self.workers.write().await;
         if workers.insert(id.clone(), Arc::new(state)).is_none() {
             self.worker_count.fetch_add(1, Ordering::SeqCst);
@@ -309,7 +352,7 @@ impl WorkerPool {
     pub async fn release_slots(&self, id: &WorkerId, slots: u32) {
         let workers = self.workers.read().await;
         if let Some(worker) = workers.get(id) {
-            worker.release_slots(slots);
+            worker.release_slots(slots).await;
             debug!("Released {} slots on worker {}", slots, id);
         } else {
             debug!("Worker {} not found, cannot release slots", id);
@@ -327,8 +370,8 @@ impl Default for WorkerPool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_slot_reservation() {
+    #[tokio::test]
+    async fn test_slot_reservation() {
         let config = WorkerConfig {
             id: WorkerId::new("test"),
             host: "localhost".to_string(),
@@ -340,17 +383,17 @@ mod tests {
         };
 
         let state = WorkerState::new(config);
-        assert_eq!(state.available_slots(), 8);
+        assert_eq!(state.available_slots().await, 8);
 
-        assert!(state.reserve_slots(4));
-        assert_eq!(state.available_slots(), 4);
+        assert!(state.reserve_slots(4).await);
+        assert_eq!(state.available_slots().await, 4);
 
-        assert!(state.reserve_slots(4));
-        assert_eq!(state.available_slots(), 0);
+        assert!(state.reserve_slots(4).await);
+        assert_eq!(state.available_slots().await, 0);
 
-        assert!(!state.reserve_slots(1)); // Should fail
+        assert!(!state.reserve_slots(1).await); // Should fail
 
-        state.release_slots(4);
-        assert_eq!(state.available_slots(), 4);
+        state.release_slots(4).await;
+        assert_eq!(state.available_slots().await, 4);
     }
 }

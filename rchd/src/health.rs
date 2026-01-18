@@ -16,8 +16,11 @@ use tokio::sync::RwLock;
 use tokio::time::interval;
 use tracing::{debug, info, warn};
 
-fn is_mock_transport(worker: &WorkerState) -> bool {
-    mock::is_mock_enabled() || mock::is_mock_worker(&worker.config)
+fn is_mock_transport(_worker: &WorkerState) -> bool {
+    // In mock mode, we assume mock config is active
+    // We can't easily check worker.config without async lock here,
+    // but if mock is enabled globally that's enough
+    mock::is_mock_enabled()
 }
 
 /// Default health check interval.
@@ -308,7 +311,12 @@ impl HealthMonitor {
                 debug!("Checking health of {} workers", workers.len());
 
                 for worker in workers {
-                    let worker_id = worker.config.id.as_str().to_string();
+                    let worker_config_guard = worker.config.read().await;
+                    let worker_id = worker_config_guard.id.as_str().to_string();
+                    let total_slots = worker_config_guard.total_slots;
+                    // Drop lock before check_worker_health to avoid holding it during IO
+                    drop(worker_config_guard);
+
                     let result = check_worker_health(&worker, &config).await;
 
                     // Record health check latency metric
@@ -350,8 +358,8 @@ impl HealthMonitor {
                     metrics::set_circuit_state(&worker_id, circuit_value);
 
                     // Record slot metrics
-                    metrics::set_worker_slots_total(&worker_id, worker.config.total_slots);
-                    metrics::set_worker_slots_available(&worker_id, worker.available_slots());
+                    metrics::set_worker_slots_total(&worker_id, total_slots);
+                    metrics::set_worker_slots_available(&worker_id, worker.available_slots().await);
                     if result.healthy {
                         debug!(
                             "Worker {} healthy ({}ms)",
@@ -379,7 +387,8 @@ impl HealthMonitor {
                     }
 
                     // Update worker pool status
-                    pool.set_status(&worker.config.id, new_status).await;
+                    let worker_config = worker.config.read().await;
+                    pool.set_status(&worker_config.id, new_status).await;
                 }
             }
         })
@@ -419,13 +428,15 @@ async fn check_worker_health(
     // Debug: log mock mode status and env var
     let mock_env = std::env::var("RCH_MOCK_SSH").unwrap_or_default();
     let mock_enabled = is_mock_transport(worker);
+    let worker_config = worker.config.read().await;
+    
     debug!(
         "Health check for {}: mock_enabled={}, RCH_MOCK_SSH='{}', host='{}'",
-        worker.config.id, mock_enabled, mock_env, worker.config.host
+        worker_config.id, mock_enabled, mock_env, worker_config.host
     );
 
     if mock_enabled {
-        let mut client = MockSshClient::new(worker.config.clone(), MockConfig::from_env());
+        let mut client = MockSshClient::new(worker_config.clone(), MockConfig::from_env());
         match client.connect().await {
             Ok(()) => match client.execute("echo health_check").await {
                 Ok(result) => {
@@ -457,7 +468,7 @@ async fn check_worker_health(
         ..Default::default()
     };
 
-    let mut client = SshClient::new(worker.config.clone(), ssh_options);
+    let mut client = SshClient::new(worker_config.clone(), ssh_options);
 
     // Try to connect and run a simple command
     match client.connect().await {
@@ -492,7 +503,9 @@ async fn check_worker_health(
 #[allow(dead_code)] // Will be used by workers probe command
 pub async fn probe_worker(worker: &WorkerState) -> HealthCheckResult {
     let config = HealthConfig::default();
-    let worker_arc = Arc::new(WorkerState::new(worker.config.clone()));
+    // Wrap in Arc for compatibility
+    let config_clone = worker.config.read().await.clone();
+    let worker_arc = Arc::new(WorkerState::new(config_clone));
     check_worker_health(&worker_arc, &config).await
 }
 
@@ -506,12 +519,14 @@ pub async fn probe_worker_capabilities(
 ) -> Option<rch_common::WorkerCapabilities> {
     use rch_common::{SshClient, SshOptions, WorkerCapabilities};
 
+    let worker_config = worker.config.read().await;
+
     // Check if mock mode is enabled
     if is_mock_transport(worker) {
         // In mock mode, return default capabilities (no Bun)
         debug!(
             "Worker {} capabilities probe: mock mode, returning defaults",
-            worker.config.id
+            worker_config.id
         );
         return Some(WorkerCapabilities::new());
     }
@@ -523,7 +538,7 @@ pub async fn probe_worker_capabilities(
         ..Default::default()
     };
 
-    let mut client = SshClient::new(worker.config.clone(), ssh_options);
+    let mut client = SshClient::new(worker_config.clone(), ssh_options);
 
     match client.connect().await {
         Ok(()) => {
@@ -538,7 +553,7 @@ pub async fn probe_worker_capabilities(
                             Ok(capabilities) => {
                                 debug!(
                                     "Worker {} capabilities: rustc={:?}, bun={:?}, node={:?}",
-                                    worker.config.id,
+                                    worker_config.id,
                                     capabilities.rustc_version,
                                     capabilities.bun_version,
                                     capabilities.node_version
@@ -548,7 +563,7 @@ pub async fn probe_worker_capabilities(
                             Err(e) => {
                                 debug!(
                                     "Worker {} capabilities JSON parse failed: {} (output: {})",
-                                    worker.config.id,
+                                    worker_config.id,
                                     e,
                                     result.stdout.trim()
                                 );
@@ -558,7 +573,7 @@ pub async fn probe_worker_capabilities(
                         // rch-wkr might not be installed yet, that's OK
                         debug!(
                             "Worker {} capabilities probe failed (rch-wkr may not be installed): exit={}",
-                            worker.config.id, result.exit_code
+                            worker_config.id, result.exit_code
                         );
                     }
                 }
@@ -566,7 +581,7 @@ pub async fn probe_worker_capabilities(
                     let _ = client.disconnect().await;
                     debug!(
                         "Worker {} capabilities probe command failed: {}",
-                        worker.config.id, e
+                        worker_config.id, e
                     );
                 }
             }
@@ -574,7 +589,7 @@ pub async fn probe_worker_capabilities(
         Err(e) => {
             debug!(
                 "Worker {} capabilities probe connection failed: {}",
-                worker.config.id, e
+                worker_config.id, e
             );
         }
     }
@@ -928,7 +943,7 @@ mod tests {
                 select_worker_with_config(&pool, &request, &weights, &health_config.circuit).await;
             assert!(result.worker.is_some());
             let selected = result.worker.unwrap();
-            assert_eq!(selected.config.id.as_str(), "worker-2");
+            assert_eq!(selected.config.read().await.id.as_str(), "worker-2");
 
             // Now fail worker-2 as well
             let worker2 = pool.get(&WorkerId::new("worker-2")).await.unwrap();
@@ -1116,7 +1131,7 @@ mod tests {
                 select_worker_with_config(&pool, &request, &weights, &circuit_config).await;
             assert!(result.worker.is_some());
             let selected = result.worker.unwrap();
-            assert_eq!(selected.config.id.as_str(), "closed-worker");
+            assert_eq!(selected.config.read().await.id.as_str(), "closed-worker");
         }
 
         #[tokio::test]

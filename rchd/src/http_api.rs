@@ -80,16 +80,19 @@ async fn health_handler(State(state): State<Arc<HttpState>>) -> impl IntoRespons
 /// Returns 200 OK if workers are available, 503 otherwise.
 async fn ready_handler(State(state): State<Arc<HttpState>>) -> impl IntoResponse {
     let workers = state.pool.all_workers().await;
-    let healthy_workers: Vec<_> = workers
-        .iter()
-        .filter(|w| {
-            // Consider a worker available if it has available slots
-            w.available_slots() > 0
-        })
-        .collect();
+    let mut healthy_workers = Vec::new();
+    let mut total_slots = 0;
+
+    for w in workers {
+        // Consider a worker available if it has available slots
+        let available = w.available_slots().await;
+        if available > 0 {
+            healthy_workers.push(w);
+            total_slots += available;
+        }
+    }
 
     let workers_available = !healthy_workers.is_empty();
-    let total_slots: u32 = healthy_workers.iter().map(|w| w.available_slots()).sum();
 
     if workers_available {
         (

@@ -327,10 +327,12 @@ impl BenchmarkScheduler {
 
     /// Determine if a worker should be benchmarked.
     pub async fn should_benchmark(&self, worker: &WorkerState) -> Option<ScheduledBenchmarkRequest> {
-        let worker_id = &worker.config.id;
+        let config = worker.config.read().await;
+        let worker_id = config.id.clone();
+        drop(config); // Drop lock early
 
         // Already pending or running?
-        if self.is_pending_or_running(worker_id).await {
+        if self.is_pending_or_running(&worker_id).await {
             return None;
         }
 
@@ -341,7 +343,7 @@ impl BenchmarkScheduler {
         if speedscore.is_none() {
             debug!(worker_id = %worker_id, "New worker without SpeedScore");
             return Some(ScheduledBenchmarkRequest::new(
-                worker_id.clone(),
+                worker_id,
                 BenchmarkPriority::High,
                 BenchmarkReason::NewWorker,
             ));
@@ -359,7 +361,7 @@ impl BenchmarkScheduler {
                 "SpeedScore exceeds max age"
             );
             return Some(ScheduledBenchmarkRequest::new(
-                worker_id.clone(),
+                worker_id,
                 BenchmarkPriority::Normal,
                 BenchmarkReason::StaleScore { age },
             ));
@@ -378,7 +380,7 @@ impl BenchmarkScheduler {
                 "Performance drift detected"
             );
             return Some(ScheduledBenchmarkRequest::new(
-                worker_id.clone(),
+                worker_id,
                 BenchmarkPriority::Low,
                 BenchmarkReason::DriftDetected { drift_pct },
             ));
@@ -393,10 +395,13 @@ impl BenchmarkScheduler {
         worker: &WorkerState,
         _score: &rch_telemetry::speedscore::SpeedScore,
     ) -> Option<f64> {
-        let worker_id = worker.config.id.as_str();
+        let config = worker.config.read().await;
+        let worker_id = config.id.to_string(); // Clone ID
+        let total_slots = config.total_slots;
+        drop(config); // Release lock
 
         // Get current telemetry
-        let telemetry = self.telemetry.latest(worker_id)?;
+        let telemetry = self.telemetry.latest(&worker_id)?;
 
         // Get the current load average (fifteen minute)
         let current_load = telemetry.telemetry.cpu.load_average.fifteen_min;
@@ -404,7 +409,7 @@ impl BenchmarkScheduler {
         // For now, use a simple heuristic:
         // If load average is significantly different from what we'd expect
         // for the number of cores, consider it drift.
-        let expected_load = worker.config.total_slots as f64 * 0.3; // ~30% baseline
+        let expected_load = total_slots as f64 * 0.3; // ~30% baseline
         let drift = ((current_load - expected_load) / expected_load.max(0.1)).abs() * 100.0;
 
         if drift > self.config.drift_threshold_pct {
@@ -436,7 +441,7 @@ impl BenchmarkScheduler {
         }
 
         // Check if worker has available slots
-        if worker.available_slots() == 0 {
+        if worker.available_slots().await == 0 {
             debug!(worker_id = %worker_id, "Worker has no available slots");
             return false;
         }
@@ -545,7 +550,7 @@ impl BenchmarkScheduler {
 
         // Reserve a slot on the worker
         if let Some(worker) = self.pool.get(&worker_id).await {
-            if !worker.reserve_slots(1) {
+            if !worker.reserve_slots(1).await {
                 warn!(worker_id = %worker_id, "Failed to reserve slot for benchmark");
                 // Re-queue the request
                 self.enqueue(request).await;
@@ -907,8 +912,8 @@ mod tests {
 
         // Reserve a slot on the worker
         if let Some(worker) = pool.get(&worker_id).await {
-            worker.reserve_slots(1);
-            assert_eq!(worker.available_slots(), 3);
+            worker.reserve_slots(1).await;
+            assert_eq!(worker.available_slots().await, 3);
         }
 
         // Mark completed
@@ -919,7 +924,7 @@ mod tests {
 
         // Check slot was released
         if let Some(worker) = pool.get(&worker_id).await {
-            assert_eq!(worker.available_slots(), 4);
+            assert_eq!(worker.available_slots().await, 4);
         }
     }
 
@@ -958,7 +963,7 @@ mod tests {
 
         // Reserve a slot
         if let Some(worker) = pool.get(&worker_id).await {
-            worker.reserve_slots(1);
+            worker.reserve_slots(1).await;
         }
 
         // Mark failed with retryable
@@ -1005,7 +1010,7 @@ mod tests {
 
         // Reserve a slot
         if let Some(worker) = pool.get(&worker_id).await {
-            worker.reserve_slots(1);
+            worker.reserve_slots(1).await;
         }
 
         // Mark failed without retry

@@ -306,8 +306,8 @@ impl TelemetryPoller {
             return false;
         }
 
-        let worker_id = worker.config.id.as_str();
-        if let Some(last_received) = self.store.last_received_at(worker_id) {
+        let worker_id = worker.config.read().await.id.clone();
+        if let Some(last_received) = self.store.last_received_at(worker_id.as_str()) {
             let since = Utc::now() - last_received;
             if since.to_std().unwrap_or_default() < self.config.skip_after {
                 return false;
@@ -325,7 +325,8 @@ pub async fn collect_telemetry_from_worker(
     worker: &WorkerState,
     ssh_timeout: Duration,
 ) -> anyhow::Result<WorkerTelemetry> {
-    let worker_id = worker.config.id.as_str();
+    let config = worker.config.read().await;
+    let worker_id = config.id.as_str();
     let command = format!(
         "rch-telemetry collect --format json --worker-id {}",
         worker_id
@@ -337,7 +338,7 @@ pub async fn collect_telemetry_from_worker(
         ..Default::default()
     };
 
-    let mut client = SshClient::new(worker.config.clone(), options);
+    let mut client = SshClient::new(config.clone(), options);
     client.connect().await?;
     let result = client.execute(&command).await;
     client.disconnect().await?;
@@ -372,12 +373,12 @@ async fn poll_worker(
     store: Arc<TelemetryStore>,
     config: TelemetryPollerConfig,
 ) -> anyhow::Result<()> {
-    let worker_id = worker.config.id.as_str();
+    let worker_id = worker.config.read().await.id.clone();
 
     match collect_telemetry_from_worker(&worker, config.ssh_timeout).await {
         Ok(telemetry) => {
             debug!(
-                worker = worker_id,
+                worker = worker_id.as_str(),
                 cpu = %telemetry.cpu.overall_percent,
                 memory = %telemetry.memory.used_percent,
                 "Telemetry collected via SSH"
@@ -385,7 +386,7 @@ async fn poll_worker(
             store.ingest(telemetry, TelemetrySource::SshPoll);
         }
         Err(e) => {
-            warn!(worker = worker_id, "Telemetry poll failed: {}", e);
+            warn!(worker = worker_id.as_str(), "Telemetry poll failed: {}", e);
         }
     }
 

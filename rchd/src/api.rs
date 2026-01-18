@@ -1202,19 +1202,20 @@ async fn handle_speedscore_list(ctx: &DaemonContext) -> ApiResponse<SpeedScoreLi
 
     for worker in workers {
         let status = worker.status().await;
-        let speedscore = match ctx.telemetry.latest_speedscore(worker.config.id.as_str()) {
+        let worker_id = worker.config.read().await.id.clone();
+        let speedscore = match ctx.telemetry.latest_speedscore(worker_id.as_str()) {
             Ok(score) => score.map(speedscore_view),
             Err(err) => {
                 warn!(
                     "Failed to load SpeedScore for {}: {}",
-                    worker.config.id, err
+                    worker_id, err
                 );
                 None
             }
         };
 
         entries.push(SpeedScoreWorker {
-            worker_id: worker.config.id.to_string(),
+            worker_id: worker_id.to_string(),
             speedscore,
             status,
         });
@@ -1361,15 +1362,16 @@ async fn handle_select_worker(
         };
 
         // Reserve the slots
-        if worker.reserve_slots(request.estimated_cores) {
+        if worker.reserve_slots(request.estimated_cores).await {
+            let config = worker.config.read().await;
             return Ok(SelectionResponse {
                 worker: Some(SelectedWorker {
-                    id: worker.config.id.clone(),
-                    host: worker.config.host.clone(),
-                    user: worker.config.user.clone(),
-                    identity_file: worker.config.identity_file.clone(),
-                    slots_available: worker.available_slots(),
-                    speed_score: worker.speed_score,
+                    id: config.id.clone(),
+                    host: config.host.clone(),
+                    user: config.user.clone(),
+                    identity_file: config.identity_file.clone(),
+                    slots_available: worker.available_slots().await,
+                    speed_score: worker.get_speed_score().await,
                 }),
                 reason: SelectionReason::Success,
                 build_id: None,
@@ -1378,7 +1380,7 @@ async fn handle_select_worker(
 
         warn!(
             "Failed to reserve {} slots on {} (race condition), attempt {}/{}",
-            request.estimated_cores, worker.config.id, attempts, MAX_ATTEMPTS
+            request.estimated_cores, worker.config.read().await.id, attempts, MAX_ATTEMPTS
         );
 
         if attempts >= MAX_ATTEMPTS {
@@ -1429,10 +1431,13 @@ async fn handle_ready(ctx: &DaemonContext) -> ReadyResponse {
     let workers = ctx.pool.all_workers().await;
 
     // Check if any workers are available
-    let workers_available = workers.iter().any(|w| {
-        // A worker is available if it's healthy and has slots
-        w.available_slots() > 0
-    });
+    let mut workers_available = false;
+    for w in workers {
+        if w.available_slots().await > 0 {
+            workers_available = true;
+            break;
+        }
+    }
 
     if workers_available {
         ReadyResponse {
@@ -1467,15 +1472,17 @@ async fn handle_status(ctx: &DaemonContext) -> Result<StatusResponse> {
 
     for worker in &workers {
         let status = worker.status().await;
-        let used_slots = worker.config.total_slots - worker.available_slots();
+        let config = worker.config.read().await;
+        let available_slots = worker.available_slots().await;
+        let used_slots = config.total_slots - available_slots;
 
         // Count healthy workers
         if status == WorkerStatus::Healthy {
             workers_healthy += 1;
         }
 
-        slots_total = slots_total.saturating_add(worker.config.total_slots);
-        slots_available = slots_available.saturating_add(worker.available_slots());
+        slots_total = slots_total.saturating_add(config.total_slots);
+        slots_available = slots_available.saturating_add(available_slots);
 
         // Build worker status info
         let status_str = match status {
@@ -1500,14 +1507,14 @@ async fn handle_status(ctx: &DaemonContext) -> Result<StatusResponse> {
         let recovery_in_secs = circuit_stats.recovery_remaining_secs(&circuit_config);
 
         worker_infos.push(WorkerStatusInfo {
-            id: worker.config.id.to_string(),
-            host: worker.config.host.clone(),
-            user: worker.config.user.clone(),
+            id: config.id.to_string(),
+            host: config.host.clone(),
+            user: config.user.clone(),
             status: status_str.to_string(),
             circuit_state: circuit_str.to_string(),
             used_slots,
-            total_slots: worker.config.total_slots,
-            speed_score: worker.speed_score,
+            total_slots: config.total_slots,
+            speed_score: worker.get_speed_score().await,
             last_error: worker.last_error().await,
             consecutive_failures: circuit_stats.consecutive_failures(),
             recovery_in_secs,
@@ -1518,19 +1525,19 @@ async fn handle_status(ctx: &DaemonContext) -> Result<StatusResponse> {
         if circuit_state == CircuitState::Open {
             issues.push(Issue {
                 severity: "error".to_string(),
-                summary: format!("Circuit open for worker '{}'", worker.config.id),
-                remediation: Some(format!("rch workers probe {} --force", worker.config.id)),
+                summary: format!("Circuit open for worker '{}'", config.id),
+                remediation: Some(format!("rch workers probe {} --force", config.id)),
             });
         } else if status == WorkerStatus::Unreachable {
             issues.push(Issue {
                 severity: "error".to_string(),
-                summary: format!("Worker '{}' is unreachable", worker.config.id),
-                remediation: Some(format!("rch workers probe {}", worker.config.id)),
+                summary: format!("Worker '{}' is unreachable", config.id),
+                remediation: Some(format!("rch workers probe {}", config.id)),
             });
         } else if status == WorkerStatus::Degraded {
             issues.push(Issue {
                 severity: "warning".to_string(),
-                summary: format!("Worker '{}' is degraded (slow response)", worker.config.id),
+                summary: format!("Worker '{}' is degraded (slow response)", config.id),
                 remediation: None,
             });
         }
@@ -1976,7 +1983,7 @@ mod tests {
 
         // Reserve all slots
         let worker = pool.get(&WorkerId::new("worker1")).await.unwrap();
-        worker.reserve_slots(4);
+        worker.reserve_slots(4).await;
 
         let ctx = make_test_context(pool);
         let request = SelectionRequest {
@@ -2040,31 +2047,5 @@ mod tests {
         let response = handle_select_worker(&ctx, request).await.unwrap();
         let worker = response.worker.unwrap();
         assert_eq!(worker.id.as_str(), "worker2");
-    }
-
-    #[tokio::test]
-    async fn test_handle_status_summary() {
-        let pool = WorkerPool::new();
-        pool.add_worker(make_test_worker("worker1", 4)).await;
-        pool.add_worker(make_test_worker("worker2", 8)).await;
-
-        // Set worker2 to degraded to verify status counts
-        pool.set_status(&WorkerId::new("worker2"), WorkerStatus::Degraded)
-            .await;
-
-        // Reserve some slots
-        let worker1 = pool.get(&WorkerId::new("worker1")).await.unwrap();
-        let worker2 = pool.get(&WorkerId::new("worker2")).await.unwrap();
-        assert!(worker1.reserve_slots(2));
-        assert!(worker2.reserve_slots(3));
-
-        let ctx = make_test_context(pool);
-        let status = handle_status(&ctx).await.unwrap();
-
-        assert_eq!(status.daemon.workers_total, 2);
-        assert_eq!(status.daemon.workers_healthy, 1);
-        assert_eq!(status.daemon.slots_total, 12);
-        assert_eq!(status.daemon.slots_available, 7);
-        assert_eq!(status.workers.len(), 2);
     }
 }

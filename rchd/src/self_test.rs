@@ -419,16 +419,23 @@ impl SelfTestService {
             return Ok(Vec::new());
         }
 
-        let selected = if let Some(ids) = override_ids {
-            workers
-                .into_iter()
-                .filter(|worker| ids.contains(&worker.config.id))
-                .collect::<Vec<_>>()
-        } else {
-            workers
-        };
+        let mut result = Vec::new();
 
-        Ok(selected.into_iter().map(|w| w.config.clone()).collect())
+        if let Some(ids) = override_ids {
+            for worker in workers {
+                let config = worker.config.read().await;
+                if ids.contains(&config.id) {
+                    result.push(config.clone());
+                }
+            }
+        } else {
+            for worker in workers {
+                let config = worker.config.read().await;
+                result.push(config.clone());
+            }
+        }
+
+        Ok(result)
     }
 
     async fn run_worker_with_retries(

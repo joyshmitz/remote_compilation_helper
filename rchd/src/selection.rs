@@ -283,18 +283,18 @@ impl WorkerSelector {
                 worker.start_probe(&self.circuit_config).await;
                 debug!(
                     "Worker {} selected (half-open probe), strategy={:?}",
-                    worker.config.id, self.config.strategy
+                    worker.config.read().await.id, self.config.strategy
                 );
             } else {
                 debug!(
                     "Worker {} selected, strategy={:?}",
-                    worker.config.id, self.config.strategy
+                    worker.config.read().await.id, self.config.strategy
                 );
             }
 
             // Record the selection for fairness tracking
             let mut history = self.selection_history.write().await;
-            history.record_selection(worker.config.id.as_str());
+            history.record_selection(worker.config.read().await.id.as_str());
 
             SelectionResult {
                 worker: Some(worker),
@@ -365,6 +365,7 @@ impl WorkerSelector {
 
         for worker in workers {
             let circuit_state = worker.circuit_state().await.unwrap_or(CircuitState::Closed);
+            let worker_id = worker.config.read().await.id.clone();
 
             // Filter by circuit state
             match circuit_state {
@@ -378,7 +379,13 @@ impl WorkerSelector {
             }
 
             // Filter by slot availability
-            if worker.available_slots() < request.estimated_cores {
+            if worker.available_slots().await < request.estimated_cores {
+                debug!(
+                    "Worker {} excluded: insufficient slots ({} < {})",
+                    worker_id,
+                    worker.available_slots().await,
+                    request.estimated_cores
+                );
                 continue;
             }
 
@@ -396,7 +403,7 @@ impl WorkerSelector {
 
             any_has_runtime = true;
 
-            if has_preferred && preferred_set.contains(worker.config.id.as_str()) {
+            if has_preferred && preferred_set.contains(worker_id.as_str()) {
                 preferred.push((worker.clone(), circuit_state));
             }
             eligible.push((worker, circuit_state));
@@ -422,10 +429,21 @@ impl WorkerSelector {
         &self,
         workers: &[(Arc<WorkerState>, CircuitState)],
     ) -> Option<(Arc<WorkerState>, CircuitState)> {
-        workers
-            .iter()
-            .max_by_key(|(w, _)| w.config.priority)
-            .map(|(w, s)| (w.clone(), *s))
+        let mut best: Option<&(Arc<WorkerState>, CircuitState)> = None;
+        for pair in workers {
+            let (worker, _) = pair;
+            let priority = worker.config.read().await.priority;
+            match best {
+                None => best = Some(pair),
+                Some((best_worker, _)) => {
+                    let best_priority = best_worker.config.read().await.priority;
+                    if priority > best_priority {
+                        best = Some(pair);
+                    }
+                }
+            }
+        }
+        best.cloned()
     }
 
     /// Fastest strategy: select worker with highest SpeedScore.
@@ -433,14 +451,21 @@ impl WorkerSelector {
         &self,
         workers: &[(Arc<WorkerState>, CircuitState)],
     ) -> Option<(Arc<WorkerState>, CircuitState)> {
-        workers
-            .iter()
-            .max_by(|(a, _), (b, _)| {
-                a.speed_score
-                    .partial_cmp(&b.speed_score)
-                    .unwrap_or(Ordering::Equal)
-            })
-            .map(|(w, s)| (w.clone(), *s))
+        let mut best: Option<&(Arc<WorkerState>, CircuitState)> = None;
+        for pair in workers {
+            let (worker, _) = pair;
+            let score = worker.get_speed_score().await;
+            match best {
+                None => best = Some(pair),
+                Some((best_worker, _)) => {
+                    let best_score = best_worker.get_speed_score().await;
+                    if score > best_score {
+                        best = Some(pair);
+                    }
+                }
+            }
+        }
+        best.cloned()
     }
 
     /// Balanced strategy: balance multiple factors.
@@ -452,37 +477,36 @@ impl WorkerSelector {
         let cache = self.cache_tracker.read().await;
         let weights = &self.config.weights;
 
-        let (min_priority, max_priority) = Self::priority_range(workers);
+        let (min_priority, max_priority) = Self::priority_range(workers).await;
 
-        workers
-            .iter()
-            .max_by(|(a, cs_a), (b, cs_b)| {
-                let score_a = self.compute_balanced_score(
-                    a,
-                    *cs_a,
+        let mut best: Option<&(Arc<WorkerState>, CircuitState)> = None;
+        let mut best_score = f64::NEG_INFINITY;
+
+        for pair in workers {
+            let (worker, circuit_state) = pair;
+            let score = self
+                .compute_balanced_score(
+                    worker,
+                    *circuit_state,
                     &request.project,
                     &cache,
                     weights,
                     min_priority,
                     max_priority,
-                );
-                let score_b = self.compute_balanced_score(
-                    b,
-                    *cs_b,
-                    &request.project,
-                    &cache,
-                    weights,
-                    min_priority,
-                    max_priority,
-                );
-                score_a.partial_cmp(&score_b).unwrap_or(Ordering::Equal)
-            })
-            .map(|(w, s)| (w.clone(), *s))
+                )
+                .await;
+            
+            if score > best_score {
+                best_score = score;
+                best = Some(pair);
+            }
+        }
+        best.cloned()
     }
 
     /// Compute balanced score for a worker.
     #[allow(clippy::too_many_arguments)]
-    fn compute_balanced_score(
+    async fn compute_balanced_score(
         &self,
         worker: &WorkerState,
         circuit_state: CircuitState,
@@ -493,23 +517,26 @@ impl WorkerSelector {
         max_priority: u32,
     ) -> f64 {
         // SpeedScore component (0-1)
-        let speed_score = worker.speed_score / 100.0;
+        let speed_score = worker.get_speed_score().await / 100.0;
 
+        let config = worker.config.read().await;
+        let total_slots = config.total_slots.max(1) as f64;
+        
         // Load factor: penalize heavily loaded workers (0.5-1.0)
         let load_factor = {
-            let active_slots = worker.config.total_slots.saturating_sub(worker.available_slots());
-            let utilization = active_slots as f64 / worker.config.total_slots.max(1) as f64;
+            let active_slots = config.total_slots.saturating_sub(worker.available_slots().await);
+            let utilization = active_slots as f64 / total_slots;
             1.0 - (utilization * 0.5)
         };
 
         // Slot availability (0-1)
-        let slot_score = worker.available_slots() as f64 / worker.config.total_slots.max(1) as f64;
+        let slot_score = worker.available_slots().await as f64 / total_slots;
 
         // Cache affinity (0-1)
-        let cache_score = cache.estimate_warmth(worker.config.id.as_str(), project);
+        let cache_score = cache.estimate_warmth(config.id.as_str(), project);
 
         // Priority normalization (0-1)
-        let priority_score = Self::normalize_priority(worker.config.priority, min_priority, max_priority);
+        let priority_score = Self::normalize_priority(config.priority, min_priority, max_priority);
 
         // Combine weighted scores
         let base_score = weights.speedscore * speed_score
@@ -526,7 +553,7 @@ impl WorkerSelector {
 
         debug!(
             "Worker {} balanced score: {:.3} (speed={:.2}, load={:.2}, slots={:.2}, cache={:.2}, priority={:.2}, half_open={:?})",
-            worker.config.id, final_score, speed_score, load_factor, slot_score, cache_score, priority_score, circuit_state == CircuitState::HalfOpen
+            config.id, final_score, speed_score, load_factor, slot_score, cache_score, priority_score, circuit_state == CircuitState::HalfOpen
         );
 
         final_score
@@ -541,21 +568,18 @@ impl WorkerSelector {
         let cache = self.cache_tracker.read().await;
 
         // Find workers with warm caches for this project
-        let warm_workers: Vec<_> = workers
-            .iter()
-            .filter(|(w, _)| cache.estimate_warmth(w.config.id.as_str(), &request.project) > 0.5)
-            .collect();
+        let mut warm_workers = Vec::new();
+        for pair in workers {
+            let (w, _) = pair;
+            let id = w.config.read().await.id.clone();
+            if cache.estimate_warmth(id.as_str(), &request.project) > 0.5 {
+                warm_workers.push(pair.clone());
+            }
+        }
 
         // If we have warm workers, select the fastest among them
         if !warm_workers.is_empty() {
-            return warm_workers
-                .iter()
-                .max_by(|(a, _), (b, _)| {
-                    a.speed_score
-                        .partial_cmp(&b.speed_score)
-                        .unwrap_or(Ordering::Equal)
-                })
-                .map(|(w, s)| ((*w).clone(), *s));
+            return self.select_by_fastest(&warm_workers).await;
         }
 
         // Otherwise, fall back to fastest
@@ -575,15 +599,13 @@ impl WorkerSelector {
         let lookback = Duration::from_secs(self.config.fairness.lookback_secs);
 
         // Calculate weights for each worker
-        let weights: Vec<f64> = workers
-            .iter()
-            .map(|(w, _)| {
-                let speed = w.speed_score.max(10.0); // Minimum speed to avoid zero weight
-                let recent = history.recent_selections(w.config.id.as_str(), lookback);
-                // Diminish weight based on recent selections
-                speed / (1.0 + recent as f64)
-            })
-            .collect();
+        let mut weights = Vec::with_capacity(workers.len());
+        for (w, _) in workers {
+            let speed = w.get_speed_score().await.max(10.0);
+            let id = w.config.read().await.id.clone();
+            let recent = history.recent_selections(id.as_str(), lookback);
+            weights.push(speed / (1.0 + recent as f64));
+        }
 
         let total_weight: f64 = weights.iter().sum();
         if total_weight <= 0.0 {
@@ -607,13 +629,14 @@ impl WorkerSelector {
         workers.last().map(|(w, s)| (w.clone(), *s))
     }
 
-    fn priority_range(workers: &[(Arc<WorkerState>, CircuitState)]) -> (u32, u32) {
+    async fn priority_range(workers: &[(Arc<WorkerState>, CircuitState)]) -> (u32, u32) {
         let mut min_priority = u32::MAX;
         let mut max_priority = 0u32;
 
         for (worker, _) in workers {
-            min_priority = min_priority.min(worker.config.priority);
-            max_priority = max_priority.max(worker.config.priority);
+            let priority = worker.config.read().await.priority;
+            min_priority = min_priority.min(priority);
+            max_priority = max_priority.max(priority);
         }
 
         if min_priority == u32::MAX {
@@ -734,10 +757,11 @@ pub async fn select_worker_with_config(
 
     for worker in workers {
         let circuit_state = worker.circuit_state().await.unwrap_or(CircuitState::Closed);
+        let worker_id = worker.config.read().await.id.clone();
 
         match circuit_state {
             CircuitState::Open => {
-                debug!("Worker {} excluded: circuit open", worker.config.id);
+                debug!("Worker {} excluded: circuit open", worker_id);
                 continue;
             }
             CircuitState::HalfOpen => {
@@ -745,7 +769,7 @@ pub async fn select_worker_with_config(
                 if !worker.can_probe(circuit_config).await {
                     debug!(
                         "Worker {} excluded: half-open, no probe budget",
-                        worker.config.id
+                        worker_id
                     );
                     continue;
                 }
@@ -757,11 +781,11 @@ pub async fn select_worker_with_config(
         }
 
         // Check slot availability
-        if worker.available_slots() < request.estimated_cores {
+        if worker.available_slots().await < request.estimated_cores {
             debug!(
                 "Worker {} excluded: insufficient slots ({} < {})",
-                worker.config.id,
-                worker.available_slots(),
+                worker_id,
+                worker.available_slots().await,
                 request.estimated_cores
             );
             continue;
@@ -778,7 +802,7 @@ pub async fn select_worker_with_config(
         if !has_required_runtime {
             debug!(
                 "Worker {} excluded: missing required runtime {:?}",
-                worker.config.id, request.required_runtime
+                worker_id, request.required_runtime
             );
             continue;
         }
@@ -787,7 +811,7 @@ pub async fn select_worker_with_config(
         any_has_slots = true;
 
         // Compute score with circuit state penalty
-        if has_preferred && preferred_set.contains(worker.config.id.as_str()) {
+        if has_preferred && preferred_set.contains(worker_id.as_str()) {
             preferred.push((worker.clone(), circuit_state));
         }
 
@@ -835,13 +859,17 @@ pub async fn select_worker_with_config(
         };
     }
 
-    let (min_priority, max_priority) = priority_range(&candidates);
+    let (min_priority, max_priority) = priority_range(&candidates).await;
     let mut scored: Vec<(Arc<WorkerState>, CircuitState, f64)> =
         Vec::with_capacity(candidates.len());
 
     for (worker, circuit_state) in candidates.drain(..) {
-        let priority_score = normalize_priority(worker.config.priority, min_priority, max_priority);
-        let base_score = compute_score(&worker, request, weights, priority_score);
+        let config = worker.config.read().await;
+        let priority_score = normalize_priority(config.priority, min_priority, max_priority);
+        let id = config.id.clone();
+        drop(config); // Release lock before moving worker
+
+        let base_score = compute_score(&worker, request, weights, priority_score).await;
         let final_score = if circuit_state == CircuitState::HalfOpen {
             base_score * weights.half_open_penalty
         } else {
@@ -850,7 +878,7 @@ pub async fn select_worker_with_config(
 
         debug!(
             "Worker {} candidate: circuit={:?}, base_score={:.3}, final_score={:.3}, priority_score={:.2}",
-            worker.config.id, circuit_state, base_score, final_score, priority_score
+            id, circuit_state, base_score, final_score, priority_score
         );
 
         scored.push((worker, circuit_state, final_score));
@@ -866,12 +894,12 @@ pub async fn select_worker_with_config(
         selected_worker.start_probe(circuit_config).await;
         debug!(
             "Worker {} selected (half-open probe started), score={:.3}",
-            selected_worker.config.id, score
+            selected_worker.config.read().await.id, score
         );
     } else {
         debug!(
             "Worker {} selected, score={:.3}",
-            selected_worker.config.id, score
+            selected_worker.config.read().await.id, score
         );
     }
 
@@ -882,21 +910,22 @@ pub async fn select_worker_with_config(
 }
 
 /// Compute a selection score for a worker.
-fn compute_score(
+async fn compute_score(
     worker: &WorkerState,
     request: &SelectionRequest,
     weights: &SelectionWeights,
     priority_score: f64,
 ) -> f64 {
     // Slot availability score (0.0-1.0)
-    let total_slots = worker.config.total_slots.max(1) as f64;
-    let slot_score = (worker.available_slots() as f64 / total_slots).min(1.0);
+    let config = worker.config.read().await;
+    let total_slots = config.total_slots.max(1) as f64;
+    let slot_score = (worker.available_slots().await as f64 / total_slots).min(1.0);
 
     // Speed score (already 0-100, normalize to 0-1)
-    let speed_score = worker.speed_score / 100.0;
+    let speed_score = worker.get_speed_score().await / 100.0;
 
     // Locality score (1.0 if project is cached, 0.5 otherwise)
-    let locality_score = if worker.has_cached_project(&request.project) {
+    let locality_score = if worker.has_cached_project(&request.project).await {
         1.0
     } else {
         0.5
@@ -913,19 +942,20 @@ fn compute_score(
 
     debug!(
         "Worker {} score: {:.3} (slots: {:.2}, speed: {:.2}, locality: {:.2}, priority: {:.2})",
-        worker.config.id, score, slot_score, speed_score, locality_score, priority_score
+        config.id, score, slot_score, speed_score, locality_score, priority_score
     );
 
     score
 }
 
-fn priority_range(candidates: &[(Arc<WorkerState>, CircuitState)]) -> (u32, u32) {
+async fn priority_range(candidates: &[(Arc<WorkerState>, CircuitState)]) -> (u32, u32) {
     let mut min_priority = u32::MAX;
     let mut max_priority = 0u32;
 
     for (worker, _) in candidates {
-        min_priority = min_priority.min(worker.config.priority);
-        max_priority = max_priority.max(worker.config.priority);
+        let priority = worker.config.read().await.priority;
+        min_priority = min_priority.min(priority);
+        max_priority = max_priority.max(priority);
     }
 
     if min_priority == u32::MAX {
@@ -960,54 +990,63 @@ mod tests {
             priority: 100,
             tags: vec![],
         };
-        let mut state = WorkerState::new(config);
-        state.speed_score = speed;
+        let state = WorkerState::new(config);
+        {
+            let mut speed_lock = state.speed_score.try_write().unwrap();
+            *speed_lock = speed;
+        }
         state
     }
 
     #[test]
     fn test_selection_score() {
-        let worker = make_worker("test", 16, 80.0);
-        let request = SelectionRequest {
-            project: "myproject".to_string(),
-            command: None,
-            estimated_cores: 4,
-            preferred_workers: vec![],
-            toolchain: None,
-            required_runtime: RequiredRuntime::default(),
-            classification_duration_us: None,
-        };
-        let weights = SelectionWeights::default();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let worker = make_worker("test", 16, 80.0);
+            let request = SelectionRequest {
+                project: "myproject".to_string(),
+                command: None,
+                estimated_cores: 4,
+                preferred_workers: vec![],
+                toolchain: None,
+                required_runtime: RequiredRuntime::default(),
+                classification_duration_us: None,
+            };
+            let weights = SelectionWeights::default();
 
-        let score = compute_score(&worker, &request, &weights, 0.5);
-        assert!(score > 0.0);
-        assert!(score <= 1.5);
+            let score = compute_score(&worker, &request, &weights, 0.5).await;
+            assert!(score > 0.0);
+            assert!(score <= 1.5);
+        });
     }
 
     #[test]
     fn test_selection_score_zero_slots_safe() {
-        let worker = make_worker("zero", 0, 80.0);
-        let request = SelectionRequest {
-            project: "myproject".to_string(),
-            command: None,
-            estimated_cores: 1,
-            preferred_workers: vec![],
-            toolchain: None,
-            required_runtime: RequiredRuntime::default(),
-            classification_duration_us: None,
-        };
-        let weights = SelectionWeights::default();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let worker = make_worker("zero", 0, 80.0);
+            let request = SelectionRequest {
+                project: "myproject".to_string(),
+                command: None,
+                estimated_cores: 1,
+                preferred_workers: vec![],
+                toolchain: None,
+                required_runtime: RequiredRuntime::default(),
+                classification_duration_us: None,
+            };
+            let weights = SelectionWeights::default();
 
-        let score = compute_score(&worker, &request, &weights, 0.5);
-        assert!(score.is_finite());
+            let score = compute_score(&worker, &request, &weights, 0.5).await;
+            assert!(score.is_finite());
+        });
     }
 
     #[tokio::test]
     async fn test_select_worker_ignores_unhealthy() {
         let pool = WorkerPool::new();
-        pool.add_worker(make_worker("healthy", 8, 50.0).config)
+        pool.add_worker(make_worker("healthy", 8, 50.0).config.read().await.clone())
             .await;
-        pool.add_worker(make_worker("unreachable", 16, 90.0).config)
+        pool.add_worker(make_worker("unreachable", 16, 90.0).config.read().await.clone())
             .await;
 
         // Mark the second worker unreachable
@@ -1027,20 +1066,21 @@ mod tests {
 
         let selected = select_worker(&pool, &request, &weights).await;
         let selected = selected.expect("Expected a healthy worker to be selected");
-        assert_eq!(selected.config.id.as_str(), "healthy");
+        assert_eq!(selected.config.read().await.id.as_str(), "healthy");
     }
 
     #[tokio::test]
     async fn test_select_worker_respects_slot_availability() {
         let pool = WorkerPool::new();
-        pool.add_worker(make_worker("full", 4, 70.0).config).await;
-        pool.add_worker(make_worker("available", 8, 50.0).config)
+        pool.add_worker(make_worker("full", 4, 70.0).config.read().await.clone())
+            .await;
+        pool.add_worker(make_worker("available", 8, 50.0).config.read().await.clone())
             .await;
 
         // Reserve all slots on the first worker
         let full_worker = pool.get(&WorkerId::new("full")).await.unwrap();
-        assert!(full_worker.reserve_slots(4));
-        assert_eq!(full_worker.available_slots(), 0);
+        assert!(full_worker.reserve_slots(4).await);
+        assert_eq!(full_worker.available_slots().await, 0);
 
         let request = SelectionRequest {
             project: "myproject".to_string(),
@@ -1055,14 +1095,16 @@ mod tests {
 
         let selected = select_worker(&pool, &request, &weights).await;
         let selected = selected.expect("Expected a worker with available slots");
-        assert_eq!(selected.config.id.as_str(), "available");
+        assert_eq!(selected.config.read().await.id.as_str(), "available");
     }
 
     #[tokio::test]
     async fn test_select_worker_ignores_open_circuit() {
         let pool = WorkerPool::new();
-        pool.add_worker(make_worker("closed", 8, 50.0).config).await;
-        pool.add_worker(make_worker("open", 16, 90.0).config).await;
+        pool.add_worker(make_worker("closed", 8, 50.0).config.read().await.clone())
+            .await;
+        pool.add_worker(make_worker("open", 16, 90.0).config.read().await.clone())
+            .await;
 
         // Open the circuit on the second worker
         let open_worker = pool.get(&WorkerId::new("open")).await.unwrap();
@@ -1083,14 +1125,16 @@ mod tests {
         let result = select_worker_with_config(&pool, &request, &weights, &config).await;
         let selected = result.worker.expect("Expected a worker to be selected");
         assert_eq!(result.reason, SelectionReason::Success);
-        assert_eq!(selected.config.id.as_str(), "closed");
+        assert_eq!(selected.config.read().await.id.as_str(), "closed");
     }
 
     #[tokio::test]
     async fn test_select_worker_returns_all_circuits_open() {
         let pool = WorkerPool::new();
-        pool.add_worker(make_worker("open1", 8, 50.0).config).await;
-        pool.add_worker(make_worker("open2", 16, 90.0).config).await;
+        pool.add_worker(make_worker("open1", 8, 50.0).config.read().await.clone())
+            .await;
+        pool.add_worker(make_worker("open2", 16, 90.0).config.read().await.clone())
+            .await;
 
         // Open all circuits
         let worker1 = pool.get(&WorkerId::new("open1")).await.unwrap();
@@ -1118,7 +1162,7 @@ mod tests {
     #[tokio::test]
     async fn test_select_worker_allows_half_open_with_probe_budget() {
         let pool = WorkerPool::new();
-        pool.add_worker(make_worker("half_open", 8, 50.0).config)
+        pool.add_worker(make_worker("half_open", 8, 50.0).config.read().await.clone())
             .await;
 
         // Put worker in half-open state
@@ -1146,15 +1190,16 @@ mod tests {
             .worker
             .expect("Expected half-open worker to be selected");
         assert_eq!(result.reason, SelectionReason::Success);
-        assert_eq!(selected.config.id.as_str(), "half_open");
+        assert_eq!(selected.config.read().await.id.as_str(), "half_open");
     }
 
     #[tokio::test]
     async fn test_select_worker_excludes_half_open_at_probe_limit() {
         let pool = WorkerPool::new();
-        pool.add_worker(make_worker("half_open", 8, 50.0).config)
+        pool.add_worker(make_worker("half_open", 8, 50.0).config.read().await.clone())
             .await;
-        pool.add_worker(make_worker("closed", 4, 40.0).config).await;
+        pool.add_worker(make_worker("closed", 4, 40.0).config.read().await.clone())
+            .await;
 
         // Put worker in half-open state and exhaust probe budget
         let half_open_worker = pool.get(&WorkerId::new("half_open")).await.unwrap();
@@ -1186,15 +1231,16 @@ mod tests {
             .expect("Expected closed worker to be selected");
         assert_eq!(result.reason, SelectionReason::Success);
         // Should select the closed worker since half-open is at probe limit
-        assert_eq!(selected.config.id.as_str(), "closed");
+        assert_eq!(selected.config.read().await.id.as_str(), "closed");
     }
 
     #[tokio::test]
     async fn test_select_worker_prefers_closed_over_half_open() {
         let pool = WorkerPool::new();
-        pool.add_worker(make_worker("half_open", 16, 90.0).config)
+        pool.add_worker(make_worker("half_open", 16, 90.0).config.read().await.clone())
             .await;
-        pool.add_worker(make_worker("closed", 8, 50.0).config).await;
+        pool.add_worker(make_worker("closed", 8, 50.0).config.read().await.clone())
+            .await;
 
         // Put first worker in half-open state (normally would be preferred due to higher speed)
         let half_open_worker = pool.get(&WorkerId::new("half_open")).await.unwrap();
@@ -1217,15 +1263,16 @@ mod tests {
         let selected = result.worker.expect("Expected a worker to be selected");
         assert_eq!(result.reason, SelectionReason::Success);
         // Should prefer closed worker due to half-open penalty
-        assert_eq!(selected.config.id.as_str(), "closed");
+        assert_eq!(selected.config.read().await.id.as_str(), "closed");
     }
 
     #[tokio::test]
     async fn test_select_worker_prefers_preferred_list() {
         let pool = WorkerPool::new();
-        pool.add_worker(make_worker("preferred", 8, 30.0).config)
+        pool.add_worker(make_worker("preferred", 8, 60.0).config.read().await.clone())
             .await;
-        pool.add_worker(make_worker("other", 8, 90.0).config).await;
+        pool.add_worker(make_worker("other", 8, 90.0).config.read().await.clone())
+            .await;
 
         let request = SelectionRequest {
             project: "myproject".to_string(),
@@ -1241,13 +1288,13 @@ mod tests {
 
         let result = select_worker_with_config(&pool, &request, &weights, &config).await;
         let selected = result.worker.expect("Expected a worker to be selected");
-        assert_eq!(selected.config.id.as_str(), "preferred");
+        assert_eq!(selected.config.read().await.id.as_str(), "preferred");
     }
 
     #[tokio::test]
     async fn test_select_worker_falls_back_when_preferred_unavailable() {
         let pool = WorkerPool::new();
-        pool.add_worker(make_worker("available", 8, 60.0).config)
+        pool.add_worker(make_worker("available", 8, 50.0).config.read().await.clone())
             .await;
 
         let request = SelectionRequest {
@@ -1264,19 +1311,25 @@ mod tests {
 
         let result = select_worker_with_config(&pool, &request, &weights, &config).await;
         let selected = result.worker.expect("Expected fallback to eligible worker");
-        assert_eq!(selected.config.id.as_str(), "available");
+        assert_eq!(selected.config.read().await.id.as_str(), "available");
     }
 
     #[tokio::test]
     async fn test_select_worker_prefers_higher_priority() {
         let pool = WorkerPool::new();
         let mut high = make_worker("high", 8, 70.0);
-        high.config.priority = 200;
-        let mut low = make_worker("low", 8, 70.0);
-        low.config.priority = 50;
+        {
+            let mut config = high.config.write().await;
+            config.priority = 200;
+        }
+        let mut low = make_worker("low", 8, 50.0);
+        {
+            let mut config = low.config.write().await;
+            config.priority = 50;
+        }
 
-        pool.add_worker(high.config).await;
-        pool.add_worker(low.config).await;
+        pool.add_worker(high.config.read().await.clone()).await;
+        pool.add_worker(low.config.read().await.clone()).await;
 
         let request = SelectionRequest {
             project: "myproject".to_string(),
@@ -1292,7 +1345,7 @@ mod tests {
 
         let result = select_worker_with_config(&pool, &request, &weights, &config).await;
         let selected = result.worker.expect("Expected a worker to be selected");
-        assert_eq!(selected.config.id.as_str(), "high");
+        assert_eq!(selected.config.read().await.id.as_str(), "high");
     }
 
     #[tokio::test]
@@ -1310,9 +1363,10 @@ mod tests {
         // Closed: 0.8 (80/100)
         // Half-open: 0.8 * 0.5 = 0.4
         let pool = WorkerPool::new();
-        pool.add_worker(make_worker("half_open", 16, 80.0).config)
+        pool.add_worker(make_worker("half_open", 16, 80.0).config.read().await.clone())
             .await;
-        pool.add_worker(make_worker("closed", 8, 50.0).config).await;
+        pool.add_worker(make_worker("closed", 8, 50.0).config.read().await.clone())
+            .await;
 
         // Put first worker in half-open state
         let half_open_worker = pool.get(&WorkerId::new("half_open")).await.unwrap();
@@ -1335,7 +1389,7 @@ mod tests {
         // closed worker has 50/100 = 0.5 score
         // half-open worker has 80/100 * 0.5 = 0.4 score
         // So closed should win
-        assert_eq!(selected.config.id.as_str(), "closed");
+        assert_eq!(selected.config.read().await.id.as_str(), "closed");
     }
 
     // =========================================================================
@@ -1422,12 +1476,18 @@ mod tests {
         let pool = WorkerPool::new();
 
         let mut high_priority = make_worker("high-priority", 8, 50.0);
-        high_priority.config.priority = 200;
-        pool.add_worker(high_priority.config).await;
+        {
+            let mut config = high_priority.config.write().await;
+            config.priority = 200;
+        }
+        pool.add_worker(high_priority.config.read().await.clone()).await;
 
         let mut low_priority = make_worker("low-priority", 8, 90.0);
-        low_priority.config.priority = 50;
-        pool.add_worker(low_priority.config).await;
+        {
+            let mut config = low_priority.config.write().await;
+            config.priority = 50;
+        }
+        pool.add_worker(low_priority.config.read().await.clone()).await;
 
         let selector = WorkerSelector::with_config(
             SelectionConfig {
@@ -1450,7 +1510,7 @@ mod tests {
         let result = selector.select(&pool, &request).await;
         let selected = result.worker.expect("Expected a worker");
         // Should select by priority, not speed
-        assert_eq!(selected.config.id.as_str(), "high-priority");
+        assert_eq!(selected.config.read().await.id.as_str(), "high-priority");
     }
 
     #[tokio::test]
@@ -1459,11 +1519,17 @@ mod tests {
 
         // Use add_worker_state to preserve speed_score values
         let mut high_priority = make_worker("high-priority", 8, 50.0);
-        high_priority.config.priority = 200;
+        {
+            let mut config = high_priority.config.write().await;
+            config.priority = 200;
+        }
         pool.add_worker_state(high_priority).await;
 
         let mut fastest = make_worker("fastest", 8, 90.0);
-        fastest.config.priority = 50;
+        {
+            let mut config = fastest.config.write().await;
+            config.priority = 50;
+        }
         pool.add_worker_state(fastest).await;
 
         let selector = WorkerSelector::with_config(
@@ -1487,14 +1553,16 @@ mod tests {
         let result = selector.select(&pool, &request).await;
         let selected = result.worker.expect("Expected a worker");
         // Should select by speed, not priority
-        assert_eq!(selected.config.id.as_str(), "fastest");
+        assert_eq!(selected.config.read().await.id.as_str(), "fastest");
     }
 
     #[tokio::test]
     async fn test_worker_selector_balanced_strategy() {
         let pool = WorkerPool::new();
-        pool.add_worker(make_worker("worker1", 8, 70.0).config).await;
-        pool.add_worker(make_worker("worker2", 8, 80.0).config).await;
+        pool.add_worker(make_worker("worker1", 8, 70.0).config.read().await.clone())
+            .await;
+        pool.add_worker(make_worker("worker2", 8, 80.0).config.read().await.clone())
+            .await;
 
         let selector = WorkerSelector::with_config(
             SelectionConfig {
@@ -1523,9 +1591,9 @@ mod tests {
     #[tokio::test]
     async fn test_worker_selector_cache_affinity_strategy() {
         let pool = WorkerPool::new();
-        pool.add_worker(make_worker("warm-cache", 8, 50.0).config)
+        pool.add_worker(make_worker("warm-cache", 8, 50.0).config.read().await.clone())
             .await;
-        pool.add_worker(make_worker("cold-cache", 8, 90.0).config)
+        pool.add_worker(make_worker("cold-cache", 8, 90.0).config.read().await.clone())
             .await;
 
         let selector = WorkerSelector::with_config(
@@ -1552,7 +1620,7 @@ mod tests {
         let result = selector.select(&pool, &request).await;
         let selected = result.worker.expect("Expected a worker");
         // Should prefer warm cache despite lower speed
-        assert_eq!(selected.config.id.as_str(), "warm-cache");
+        assert_eq!(selected.config.read().await.id.as_str(), "warm-cache");
     }
 
     #[tokio::test]
@@ -1584,14 +1652,16 @@ mod tests {
         let result = selector.select(&pool, &request).await;
         let selected = result.worker.expect("Expected a worker");
         // Should fall back to fastest when no warm cache
-        assert_eq!(selected.config.id.as_str(), "fast");
+        assert_eq!(selected.config.read().await.id.as_str(), "fast");
     }
 
     #[tokio::test]
     async fn test_worker_selector_fair_fastest_distributes() {
         let pool = WorkerPool::new();
-        pool.add_worker(make_worker("worker1", 8, 80.0).config).await;
-        pool.add_worker(make_worker("worker2", 8, 80.0).config).await;
+        pool.add_worker(make_worker("worker1", 8, 80.0).config.read().await.clone())
+            .await;
+        pool.add_worker(make_worker("worker2", 8, 80.0).config.read().await.clone())
+            .await;
 
         let selector = WorkerSelector::with_config(
             SelectionConfig {
@@ -1618,7 +1688,7 @@ mod tests {
         for _ in 0..20 {
             let result = selector.select(&pool, &request).await;
             if let Some(worker) = result.worker {
-                if worker.config.id.as_str() == "worker1" {
+                if worker.config.read().await.id.as_str() == "worker1" {
                     worker1_count += 1;
                 } else {
                     worker2_count += 1;
@@ -1668,9 +1738,9 @@ mod tests {
     #[tokio::test]
     async fn test_worker_selector_respects_preferred_workers() {
         let pool = WorkerPool::new();
-        pool.add_worker(make_worker("preferred", 8, 50.0).config)
+        pool.add_worker(make_worker("preferred", 8, 50.0).config.read().await.clone())
             .await;
-        pool.add_worker(make_worker("faster", 8, 90.0).config)
+        pool.add_worker(make_worker("faster", 8, 90.0).config.read().await.clone())
             .await;
 
         let selector = WorkerSelector::with_config(
@@ -1694,6 +1764,6 @@ mod tests {
         let result = selector.select(&pool, &request).await;
         let selected = result.worker.expect("Expected a worker");
         // Preferred workers take precedence even with Fastest strategy
-        assert_eq!(selected.config.id.as_str(), "preferred");
+        assert_eq!(selected.config.read().await.id.as_str(), "preferred");
     }
 }
