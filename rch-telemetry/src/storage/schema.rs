@@ -73,4 +73,21 @@ CREATE TABLE IF NOT EXISTS speedscore_latest (
     total_score REAL NOT NULL,
     measured_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS test_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    worker_id TEXT NOT NULL,
+    command TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    exit_code INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    completed_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_test_runs_time
+    ON test_runs(completed_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_test_runs_kind
+    ON test_runs(kind);
 "#;

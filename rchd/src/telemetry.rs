@@ -7,7 +7,9 @@ use anyhow::Context;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use directories::ProjectDirs;
 use rch_common::{SshClient, SshOptions, WorkerStatus};
-use rch_telemetry::protocol::{ReceivedTelemetry, TelemetrySource, WorkerTelemetry};
+use rch_telemetry::protocol::{
+    ReceivedTelemetry, TelemetrySource, TestRunRecord, TestRunStats, WorkerTelemetry,
+};
 use rch_telemetry::speedscore::SpeedScore;
 use rch_telemetry::storage::{SpeedScoreHistoryPage, TelemetryStorage};
 use std::collections::{HashMap, VecDeque};
@@ -22,6 +24,7 @@ use tracing::{debug, warn};
 pub struct TelemetryStore {
     retention: ChronoDuration,
     recent: RwLock<HashMap<String, VecDeque<ReceivedTelemetry>>>,
+    test_runs: RwLock<VecDeque<TestRunRecord>>,
     storage: Option<Arc<TelemetryStorage>>,
 }
 
@@ -33,6 +36,7 @@ impl TelemetryStore {
         Self {
             retention,
             recent: RwLock::new(HashMap::new()),
+            test_runs: RwLock::new(VecDeque::new()),
             storage,
         }
     }
@@ -85,6 +89,44 @@ impl TelemetryStore {
     /// Get the last received timestamp for a worker.
     pub fn last_received_at(&self, worker_id: &str) -> Option<DateTime<Utc>> {
         self.latest(worker_id).map(|entry| entry.received_at)
+    }
+
+    /// Record a test run for telemetry and optional persistence.
+    pub fn record_test_run(&self, record: TestRunRecord) {
+        let mut test_runs = self.test_runs.write().unwrap();
+        if test_runs.len() >= 200 {
+            test_runs.pop_front();
+        }
+        test_runs.push_back(record.clone());
+
+        if let Some(storage) = self.storage.as_ref() {
+            let storage = Arc::clone(storage);
+            task::spawn(async move {
+                let result =
+                    task::spawn_blocking(move || storage.insert_test_run(&record)).await;
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => warn!("Failed to persist test run: {}", e),
+                    Err(e) => warn!("Test run persistence task failed: {}", e),
+                }
+            });
+        }
+    }
+
+    /// Fetch aggregate test run stats.
+    pub fn test_run_stats(&self) -> TestRunStats {
+        if let Some(storage) = self.storage.as_ref() {
+            if let Ok(stats) = storage.test_run_stats() {
+                return stats;
+            }
+        }
+
+        let test_runs = self.test_runs.read().unwrap();
+        let mut stats = TestRunStats::default();
+        for record in test_runs.iter() {
+            stats.record(record);
+        }
+        stats
     }
 
     /// Fetch latest SpeedScore for a worker from persistent storage.
@@ -320,6 +362,7 @@ async fn poll_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rch_common::CompilationKind;
     use rch_telemetry::collect::cpu::{CpuTelemetry, LoadAverage};
     use rch_telemetry::collect::memory::MemoryTelemetry;
 
@@ -403,5 +446,28 @@ mod tests {
         let entries = recent.get("w1").expect("missing worker entry");
         assert_eq!(entries.len(), 1);
         assert!((entries[0].telemetry.cpu.overall_percent - 30.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_record_test_run_stats() {
+        let store = TelemetryStore::new(Duration::from_secs(300), None);
+        let record = TestRunRecord::new(
+            "proj".to_string(),
+            "worker-1".to_string(),
+            "cargo test".to_string(),
+            CompilationKind::CargoTest,
+            0,
+            1234,
+        );
+
+        store.record_test_run(record);
+        let stats = store.test_run_stats();
+
+        assert_eq!(stats.total_runs, 1);
+        assert_eq!(stats.passed_runs, 1);
+        assert_eq!(stats.failed_runs, 0);
+        assert_eq!(stats.build_error_runs, 0);
+        assert!(stats.avg_duration_ms > 0);
+        assert_eq!(stats.runs_by_kind.get("cargo_test"), Some(&1));
     }
 }

@@ -16,7 +16,7 @@ use rch_common::{
     BuildRecord, BuildStats, CircuitBreakerConfig, CircuitState, ReleaseRequest, RequiredRuntime,
     SelectedWorker, SelectionReason, SelectionRequest, SelectionResponse, WorkerId, WorkerStatus,
 };
-use rch_telemetry::protocol::{TelemetrySource, WorkerTelemetry};
+use rch_telemetry::protocol::{TelemetrySource, TestRunRecord, TestRunStats, WorkerTelemetry};
 use rch_telemetry::speedscore::SpeedScore;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -32,6 +32,7 @@ enum ApiRequest {
     SelectWorker(SelectionRequest),
     ReleaseWorker(ReleaseRequest),
     IngestTelemetry(TelemetrySource),
+    TestRun,
     TelemetryPoll {
         worker_id: WorkerId,
     },
@@ -81,6 +82,8 @@ pub struct StatusResponse {
     pub issues: Vec<Issue>,
     /// Aggregate statistics.
     pub stats: BuildStats,
+    /// Aggregate test run statistics.
+    pub test_stats: TestRunStats,
 }
 
 /// Daemon metadata.
@@ -368,6 +371,35 @@ pub async fn handle_connection(
                         warn!("Failed to parse telemetry JSON: {}", e);
                         (
                             "{\"status\":\"error\",\"error\":\"invalid telemetry payload\"}"
+                                .to_string(),
+                            "application/json",
+                        )
+                    }
+                }
+            }
+        }
+        Ok(ApiRequest::TestRun) => {
+            metrics::inc_requests("test-run");
+            let mut body = String::new();
+            reader.read_to_string(&mut body).await?;
+            let payload = body.trim();
+
+            if payload.is_empty() {
+                warn!("Test run ingestion received empty body");
+                (
+                    "{\"status\":\"error\",\"error\":\"empty test run payload\"}".to_string(),
+                    "application/json",
+                )
+            } else {
+                match TestRunRecord::from_json(payload) {
+                    Ok(record) => {
+                        ctx.telemetry.record_test_run(record);
+                        ("{\"status\":\"ok\"}".to_string(), "application/json")
+                    }
+                    Err(e) => {
+                        warn!("Failed to parse test run JSON: {}", e);
+                        (
+                            "{\"status\":\"error\",\"error\":\"invalid test run payload\"}"
                                 .to_string(),
                             "application/json",
                         )
@@ -775,6 +807,13 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
             slots,
             build_id,
         }));
+    }
+
+    if path.starts_with("/test-run") {
+        if method != "POST" {
+            return Err(anyhow!("Only POST method supported for test run"));
+        }
+        return Ok(ApiRequest::TestRun);
     }
 
     if path.starts_with("/telemetry") {
@@ -1529,6 +1568,7 @@ async fn handle_status(ctx: &DaemonContext) -> Result<StatusResponse> {
     // Get recent builds from history
     let recent_builds = ctx.history.recent(20);
     let stats = ctx.history.stats();
+    let test_stats = ctx.telemetry.test_run_stats();
 
     Ok(StatusResponse {
         daemon: DaemonStatusInfo {
@@ -1547,6 +1587,7 @@ async fn handle_status(ctx: &DaemonContext) -> Result<StatusResponse> {
         recent_builds,
         issues,
         stats,
+        test_stats,
     })
 }
 
@@ -1622,6 +1663,15 @@ mod tests {
         match req {
             ApiRequest::Status => {} // Correct
             _ => panic!("expected status request"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_test_run() {
+        let req = parse_request("POST /test-run").unwrap();
+        match req {
+            ApiRequest::TestRun => {}
+            _ => panic!("expected test run request"),
         }
     }
 

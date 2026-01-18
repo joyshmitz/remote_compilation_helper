@@ -382,6 +382,7 @@ mod tests {
                 local_count: 2,
                 avg_duration_ms: 1200,
             },
+            test_stats: None,
         }
     }
 

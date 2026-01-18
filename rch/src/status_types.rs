@@ -13,6 +13,8 @@ pub struct DaemonFullStatusResponse {
     pub recent_builds: Vec<BuildRecordFromApi>,
     pub issues: Vec<IssueFromApi>,
     pub stats: BuildStatsFromApi,
+    #[serde(default)]
+    pub test_stats: Option<TestRunStatsFromApi>,
 }
 
 /// Daemon metadata from API.
@@ -94,6 +96,18 @@ pub struct BuildStatsFromApi {
     pub remote_count: usize,
     pub local_count: usize,
     pub avg_duration_ms: u64,
+}
+
+/// Test execution statistics from API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestRunStatsFromApi {
+    pub total_runs: u64,
+    pub passed_runs: u64,
+    pub failed_runs: u64,
+    pub build_error_runs: u64,
+    pub avg_duration_ms: u64,
+    #[serde(default)]
+    pub runs_by_kind: std::collections::HashMap<String, u64>,
 }
 
 // ============================================================================

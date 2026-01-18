@@ -36,6 +36,7 @@ pub use collect::memory::{MemoryInfo, MemoryPressureStall, MemoryTelemetry};
 pub use collect::network::{
     NetDevStats, NetworkCollector, NetworkError, NetworkMetrics, NetworkTelemetry,
 };
+pub use protocol::{TestRunRecord, TestRunStats};
 pub use speedscore::{
     BenchmarkResults, SPEEDSCORE_VERSION, SpeedScore, SpeedScoreWeights, calculate_speedscore,
 };

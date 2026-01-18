@@ -132,6 +132,28 @@ fn render_full_status_to<W: Write>(
         success_rate
     )?;
 
+    if let Some(test_stats) = &status.test_stats {
+        let pass_rate = if test_stats.total_runs > 0 {
+            (test_stats.passed_runs as f64 / test_stats.total_runs as f64) * 100.0
+        } else {
+            100.0
+        };
+        let avg_duration = if test_stats.avg_duration_ms < 1000 {
+            format!("{}ms", test_stats.avg_duration_ms)
+        } else {
+            format_duration((test_stats.avg_duration_ms + 500) / 1000)
+        };
+        writeln!(
+            out,
+            "  {} {} {} total, {:.0}% pass rate, avg {}",
+            style.key("Tests"),
+            style.muted(":"),
+            style.highlight(&test_stats.total_runs.to_string()),
+            pass_rate,
+            style.info(&avg_duration)
+        )?;
+    }
+
     // Hook status (check locally)
     let hook_installed = check_hook_installed();
     writeln!(
@@ -556,7 +578,7 @@ mod tests {
     use super::*;
     use crate::status_types::{
         ActiveBuildFromApi, BuildRecordFromApi, BuildStatsFromApi, DaemonFullStatusResponse,
-        DaemonInfoFromApi, IssueFromApi, WorkerStatusFromApi,
+        DaemonInfoFromApi, IssueFromApi, TestRunStatsFromApi, WorkerStatusFromApi,
     };
     use tracing::info;
 
@@ -649,6 +671,17 @@ mod tests {
                 local_count: 1,
                 avg_duration_ms: 895,
             },
+            test_stats: Some(TestRunStatsFromApi {
+                total_runs: 3,
+                passed_runs: 2,
+                failed_runs: 1,
+                build_error_runs: 0,
+                avg_duration_ms: 1200,
+                runs_by_kind: std::collections::HashMap::from([(
+                    "cargo_test".to_string(),
+                    3,
+                )]),
+            }),
         }
     }
 

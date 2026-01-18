@@ -4,7 +4,9 @@
 //! workers to the daemon via SSH (piggyback or poll).
 
 use chrono::{DateTime, Utc};
+use rch_common::CompilationKind;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use crate::collect::cpu::CpuTelemetry;
 use crate::collect::disk::DiskTelemetry;
@@ -141,6 +143,97 @@ impl std::fmt::Display for TelemetrySummary {
 
         Ok(())
     }
+}
+
+/// Record of a completed test run for telemetry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestRunRecord {
+    /// Project identifier.
+    pub project_id: String,
+    /// Worker identifier that executed the test.
+    pub worker_id: String,
+    /// Full command executed.
+    pub command: String,
+    /// Classification kind label (e.g., cargo_test, cargo_nextest).
+    pub kind: String,
+    /// Exit code from the test run.
+    pub exit_code: i32,
+    /// Duration in milliseconds.
+    pub duration_ms: u64,
+    /// When the test run completed.
+    pub completed_at: DateTime<Utc>,
+}
+
+impl TestRunRecord {
+    /// Create a new test run record from a compilation kind.
+    pub fn new(
+        project_id: String,
+        worker_id: String,
+        command: String,
+        kind: CompilationKind,
+        exit_code: i32,
+        duration_ms: u64,
+    ) -> Self {
+        Self {
+            project_id,
+            worker_id,
+            command,
+            kind: compilation_kind_label(kind),
+            exit_code,
+            duration_ms,
+            completed_at: Utc::now(),
+        }
+    }
+
+    /// Serialize to JSON for transmission.
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
+    }
+
+    /// Deserialize from JSON.
+    pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(json)
+    }
+}
+
+/// Aggregate stats for recent test runs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TestRunStats {
+    pub total_runs: u64,
+    pub passed_runs: u64,
+    pub failed_runs: u64,
+    pub build_error_runs: u64,
+    pub avg_duration_ms: u64,
+    #[serde(default)]
+    pub runs_by_kind: HashMap<String, u64>,
+}
+
+impl TestRunStats {
+    /// Add a test run record into the aggregate stats.
+    pub fn record(&mut self, record: &TestRunRecord) {
+        let total_duration =
+            self.avg_duration_ms.saturating_mul(self.total_runs) + record.duration_ms;
+        self.total_runs = self.total_runs.saturating_add(1);
+        if self.total_runs > 0 {
+            self.avg_duration_ms = total_duration / self.total_runs;
+        }
+
+        match record.exit_code {
+            0 => self.passed_runs = self.passed_runs.saturating_add(1),
+            101 => self.failed_runs = self.failed_runs.saturating_add(1),
+            1 => self.build_error_runs = self.build_error_runs.saturating_add(1),
+            _ => self.failed_runs = self.failed_runs.saturating_add(1),
+        }
+
+        *self.runs_by_kind.entry(record.kind.clone()).or_insert(0) += 1;
+    }
+}
+
+fn compilation_kind_label(kind: CompilationKind) -> String {
+    serde_json::to_value(kind)
+        .ok()
+        .and_then(|value| value.as_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| format!("{:?}", kind))
 }
 
 /// Result of extracting piggybacked telemetry from build output.

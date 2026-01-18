@@ -3,11 +3,12 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tracing::{debug, warn};
 
-use crate::protocol::WorkerTelemetry;
+use crate::protocol::{TestRunRecord, TestRunStats, WorkerTelemetry};
 use crate::speedscore::SpeedScore;
 
 mod schema;
@@ -170,6 +171,74 @@ impl TelemetryStorage {
 
         tx.commit()?;
         Ok(())
+    }
+
+    /// Insert a test run record.
+    pub fn insert_test_run(&self, record: &TestRunRecord) -> Result<()> {
+        let conn = self.conn.lock().expect("telemetry db lock");
+        conn.execute(
+            "INSERT INTO test_runs (
+                project_id, worker_id, command, kind, exit_code, duration_ms, completed_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                record.project_id,
+                record.worker_id,
+                record.command,
+                record.kind,
+                record.exit_code,
+                record.duration_ms as i64,
+                record.completed_at.timestamp(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Fetch aggregate test run statistics.
+    pub fn test_run_stats(&self) -> Result<TestRunStats> {
+        let conn = self.conn.lock().expect("telemetry db lock");
+        let (total, passed, failed, build_error, avg_duration): (i64, i64, i64, i64, Option<f64>) =
+            conn.query_row(
+                "SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN exit_code = 0 THEN 1 ELSE 0 END) as passed,
+                    SUM(CASE WHEN exit_code = 101 THEN 1 ELSE 0 END) as failed,
+                    SUM(CASE WHEN exit_code = 1 THEN 1 ELSE 0 END) as build_error,
+                    AVG(duration_ms) as avg_duration
+                 FROM test_runs",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<f64>>(4)?,
+                    ))
+                },
+            )?;
+
+        let mut stats = TestRunStats {
+            total_runs: total.max(0) as u64,
+            passed_runs: passed.max(0) as u64,
+            failed_runs: failed.max(0) as u64,
+            build_error_runs: build_error.max(0) as u64,
+            avg_duration_ms: avg_duration.unwrap_or(0.0).round() as u64,
+            runs_by_kind: HashMap::new(),
+        };
+
+        let mut stmt = conn.prepare_cached("SELECT kind, COUNT(*) FROM test_runs GROUP BY kind")?;
+        let rows = stmt.query_map([], |row| {
+            let kind: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            Ok((kind, count))
+        })?;
+
+        for row in rows {
+            let (kind, count) = row?;
+            stats.runs_by_kind.insert(kind, count.max(0) as u64);
+        }
+
+        Ok(stats)
     }
 
     /// Fetch the latest SpeedScore for a worker.
@@ -439,5 +508,29 @@ mod tests {
             .expect("count query");
 
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_insert_test_run_and_stats() {
+        let storage = TelemetryStorage::new_in_memory().expect("storage");
+        let record = TestRunRecord {
+            project_id: "proj".to_string(),
+            worker_id: "worker-1".to_string(),
+            command: "cargo test".to_string(),
+            kind: "cargo_test".to_string(),
+            exit_code: 0,
+            duration_ms: 1234,
+            completed_at: Utc::now(),
+        };
+
+        storage.insert_test_run(&record).expect("insert test run");
+        let stats = storage.test_run_stats().expect("test run stats");
+
+        assert_eq!(stats.total_runs, 1);
+        assert_eq!(stats.passed_runs, 1);
+        assert_eq!(stats.failed_runs, 0);
+        assert_eq!(stats.build_error_runs, 0);
+        assert!(stats.avg_duration_ms > 0);
+        assert_eq!(stats.runs_by_kind.get("cargo_test"), Some(&1));
     }
 }

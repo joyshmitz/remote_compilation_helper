@@ -17,7 +17,8 @@ use rch_common::{
     classify_command,
 };
 use rch_telemetry::protocol::{
-    PIGGYBACK_MARKER, TelemetrySource, WorkerTelemetry, extract_piggybacked_telemetry,
+    PIGGYBACK_MARKER, TelemetrySource, TestRunRecord, WorkerTelemetry,
+    extract_piggybacked_telemetry,
 };
 use std::io::{self, BufRead, Write};
 use std::path::Path;
@@ -365,6 +366,13 @@ fn estimate_cores_for_command(
             .max(1),
         None => build_default,
     }
+}
+
+fn is_test_kind(kind: Option<CompilationKind>) -> bool {
+    matches!(
+        kind,
+        Some(CompilationKind::CargoTest | CompilationKind::CargoNextest | CompilationKind::BunTest)
+    )
 }
 
 fn emit_first_run_message(worker: &SelectedWorker, remote_ms: u64, local_ms: Option<u64>) {
@@ -974,7 +982,7 @@ async fn execute_remote_compilation(
     // Create transfer pipeline with color mode for output preservation
     let pipeline = TransferPipeline::new(
         project_root.clone(),
-        project_id,
+        project_id.clone(),
         project_hash,
         transfer_config,
     )
@@ -1078,6 +1086,22 @@ async fn execute_remote_compilation(
         }
     }
 
+    if is_test_kind(kind) {
+        if let Some(kind) = kind {
+            let record = TestRunRecord::new(
+                project_id.clone(),
+                worker_config.id.as_str().to_string(),
+                command.to_string(),
+                kind,
+                result.exit_code,
+                result.duration_ms,
+            );
+            if let Err(e) = send_test_run(socket_path, &record).await {
+                warn!("Failed to forward test run telemetry: {}", e);
+            }
+        }
+    }
+
     Ok(RemoteExecutionResult {
         exit_code: result.exit_code,
         stderr: stderr_capture,
@@ -1116,6 +1140,27 @@ async fn send_telemetry(
         urlencoding_encode(&source.to_string()),
         body
     );
+
+    writer.write_all(request.as_bytes()).await?;
+    writer.flush().await?;
+
+    let mut reader = BufReader::new(reader);
+    let mut line = String::new();
+    reader.read_line(&mut line).await?;
+
+    Ok(())
+}
+
+async fn send_test_run(socket_path: &str, record: &TestRunRecord) -> anyhow::Result<()> {
+    if !Path::new(socket_path).exists() {
+        return Ok(());
+    }
+
+    let stream = UnixStream::connect(socket_path).await?;
+    let (reader, mut writer) = stream.into_split();
+
+    let body = record.to_json()?;
+    let request = format!("POST /test-run\n{}\n", body);
 
     writer.write_all(request.as_bytes()).await?;
     writer.flush().await?;
@@ -2773,10 +2818,22 @@ mod tests {
             "Test artifacts should not include full target/"
         );
 
-        // Build patterns should be more comprehensive
+        // Build patterns should include full build outputs
         assert!(
-            build_patterns.len() >= test_patterns.len(),
-            "Build should have at least as many patterns as test"
+            build_patterns.iter().any(|p| p == "target/debug/**"),
+            "Build artifacts should include target/debug/**"
+        );
+        assert!(
+            build_patterns.iter().any(|p| p == "target/release/**"),
+            "Build artifacts should include target/release/**"
+        );
+        assert!(
+            !test_patterns.iter().any(|p| p == "target/debug/**"),
+            "Test artifacts should not include target/debug/**"
+        );
+        assert!(
+            !test_patterns.iter().any(|p| p == "target/release/**"),
+            "Test artifacts should not include target/release/**"
         );
     }
 
