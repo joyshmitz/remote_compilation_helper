@@ -3,6 +3,7 @@
 //! Maintains the dashboard state including worker status, active builds, and UI state.
 
 use chrono::{DateTime, Utc};
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -38,6 +39,27 @@ impl Panel {
     }
 }
 
+/// Color blind accessibility modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[value(rename_all = "kebab_case")]
+#[serde(rename_all = "kebab-case")]
+pub enum ColorBlindMode {
+    /// Default palette.
+    None,
+    /// Red-green (deuteranopia) friendly palette.
+    Deuteranopia,
+    /// Red-green (protanopia) friendly palette.
+    Protanopia,
+    /// Blue-yellow (tritanopia) friendly palette.
+    Tritanopia,
+}
+
+impl Default for ColorBlindMode {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
 /// Main TUI state container.
 #[derive(Debug, Clone)]
 pub struct TuiState {
@@ -58,6 +80,8 @@ pub struct TuiState {
     pub filter_mode: bool,
     /// High contrast mode for accessibility.
     pub high_contrast: bool,
+    /// Color blind palette selection.
+    pub color_blind: ColorBlindMode,
     /// Last copied text (for feedback).
     pub last_copied: Option<String>,
 }
@@ -79,6 +103,7 @@ impl Default for TuiState {
             show_help: false,
             filter_mode: false,
             high_contrast: false,
+            color_blind: ColorBlindMode::None,
             last_copied: None,
         }
     }
@@ -402,8 +427,12 @@ mod tests {
         info!("TEST START: test_state_default_values");
         let state = TuiState::default();
         info!(
-            "VERIFY: panel={:?} index={} show_help={} filter_mode={}",
-            state.selected_panel, state.selected_index, state.show_help, state.filter_mode
+            "VERIFY: panel={:?} index={} show_help={} filter_mode={} color_blind={:?}",
+            state.selected_panel,
+            state.selected_index,
+            state.show_help,
+            state.filter_mode,
+            state.color_blind
         );
         assert_eq!(state.selected_panel, Panel::Workers);
         assert_eq!(state.selected_index, 0);
@@ -412,6 +441,7 @@ mod tests {
         assert!(state.build_history.is_empty());
         assert!(state.filter.query.is_empty());
         assert!(state.log_view.is_none());
+        assert_eq!(state.color_blind, ColorBlindMode::None);
         info!("TEST PASS: test_state_default_values");
     }
 

@@ -9,7 +9,7 @@ mod state;
 mod widgets;
 
 pub use app::{TuiConfig, run_tui};
-pub use state::{Panel, TuiState};
+pub use state::{ColorBlindMode, Panel, TuiState};
 
 #[cfg(test)]
 mod tests {

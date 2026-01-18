@@ -7,8 +7,8 @@ use crate::status_types::DaemonFullStatusResponse;
 use crate::tui::{
     event::{Action, poll_event_with_mode},
     state::{
-        ActiveBuild, BuildProgress, BuildStatus, CircuitState, DaemonState, HistoricalBuild,
-        Status, TuiState, WorkerState, WorkerStatus,
+        ActiveBuild, BuildProgress, BuildStatus, CircuitState, ColorBlindMode, DaemonState,
+        HistoricalBuild, Status, TuiState, WorkerState, WorkerStatus,
     },
     widgets,
 };
@@ -33,6 +33,8 @@ pub struct TuiConfig {
     pub mouse_support: bool,
     /// High contrast mode for accessibility.
     pub high_contrast: bool,
+    /// Color blind palette selection.
+    pub color_blind: ColorBlindMode,
 }
 
 impl Default for TuiConfig {
@@ -41,6 +43,7 @@ impl Default for TuiConfig {
             refresh_interval_ms: 1000,
             mouse_support: true,
             high_contrast: false,
+            color_blind: ColorBlindMode::None,
         }
     }
 }
@@ -61,6 +64,7 @@ pub async fn run_tui(config: TuiConfig) -> Result<()> {
     // Initialize state and fetch initial data
     let mut state = TuiState::new();
     state.high_contrast = config.high_contrast;
+    state.color_blind = config.color_blind;
     refresh_state(&mut state).await;
 
     // Run main loop
@@ -429,12 +433,16 @@ mod tests {
         info!("TEST START: test_tui_config_default");
         let config = TuiConfig::default();
         info!(
-            "VERIFY: refresh_interval_ms={} mouse_support={} high_contrast={}",
-            config.refresh_interval_ms, config.mouse_support, config.high_contrast
+            "VERIFY: refresh_interval_ms={} mouse_support={} high_contrast={} color_blind={:?}",
+            config.refresh_interval_ms,
+            config.mouse_support,
+            config.high_contrast,
+            config.color_blind
         );
         assert_eq!(config.refresh_interval_ms, 1000);
         assert!(config.mouse_support);
         assert!(!config.high_contrast);
+        assert_eq!(config.color_blind, ColorBlindMode::None);
         info!("TEST PASS: test_tui_config_default");
     }
 

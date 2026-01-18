@@ -2,7 +2,7 @@
 //!
 //! Custom widgets for workers, builds, and status display.
 
-use crate::tui::state::{BuildStatus, CircuitState, Panel, TuiState, WorkerStatus};
+use crate::tui::state::{BuildStatus, CircuitState, ColorBlindMode, Panel, TuiState, WorkerStatus};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -12,9 +12,9 @@ use ratatui::{
 };
 
 /// Get color scheme based on high contrast mode.
-fn get_colors(high_contrast: bool) -> ColorScheme {
+fn get_colors(high_contrast: bool, color_blind: ColorBlindMode) -> ColorScheme {
     if high_contrast {
-        ColorScheme {
+        return ColorScheme {
             fg: Color::White,
             bg: Color::Black,
             highlight: Color::Yellow,
@@ -25,9 +25,11 @@ fn get_colors(high_contrast: bool) -> ColorScheme {
             muted: Color::Gray,
             selected_bg: Color::White,
             selected_fg: Color::Black,
-        }
-    } else {
-        ColorScheme {
+        };
+    }
+
+    match color_blind {
+        ColorBlindMode::None => ColorScheme {
             fg: Color::White,
             bg: Color::Reset,
             highlight: Color::Cyan,
@@ -38,7 +40,31 @@ fn get_colors(high_contrast: bool) -> ColorScheme {
             muted: Color::DarkGray,
             selected_bg: Color::DarkGray,
             selected_fg: Color::White,
-        }
+        },
+        ColorBlindMode::Deuteranopia | ColorBlindMode::Protanopia => ColorScheme {
+            fg: Color::White,
+            bg: Color::Reset,
+            highlight: Color::LightCyan,
+            success: Color::LightCyan,
+            warning: Color::Yellow,
+            error: Color::LightMagenta,
+            info: Color::LightBlue,
+            muted: Color::DarkGray,
+            selected_bg: Color::DarkGray,
+            selected_fg: Color::White,
+        },
+        ColorBlindMode::Tritanopia => ColorScheme {
+            fg: Color::White,
+            bg: Color::Reset,
+            highlight: Color::LightMagenta,
+            success: Color::LightGreen,
+            warning: Color::LightRed,
+            error: Color::Red,
+            info: Color::LightCyan,
+            muted: Color::DarkGray,
+            selected_bg: Color::DarkGray,
+            selected_fg: Color::White,
+        },
     }
 }
 
@@ -58,7 +84,7 @@ struct ColorScheme {
 
 /// Render the main dashboard layout.
 pub fn render(frame: &mut Frame, state: &TuiState) {
-    let colors = get_colors(state.high_contrast);
+    let colors = get_colors(state.high_contrast, state.color_blind);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -791,13 +817,28 @@ mod tests {
             ..Default::default()
         };
         let content = render_to_string(60, 10, |f| {
-            let colors = get_colors(false);
+            let colors = get_colors(false, ColorBlindMode::None);
             render_workers_panel(f, Rect::new(0, 0, 60, 10), &state, &colors);
         });
         info!("VERIFY: content contains worker ids");
         assert!(content.contains("worker-a"));
         assert!(content.contains("worker-b"));
         info!("TEST PASS: test_render_workers_panel_contains_ids");
+    }
+
+    #[test]
+    fn test_color_blind_palette_selection() {
+        init_test_logging();
+        info!("TEST START: test_color_blind_palette_selection");
+        let deuter = get_colors(false, ColorBlindMode::Deuteranopia);
+        let tritan = get_colors(false, ColorBlindMode::Tritanopia);
+        info!(
+            "VERIFY: deuter_highlight={:?} tritan_highlight={:?}",
+            deuter.highlight, tritan.highlight
+        );
+        assert_eq!(deuter.highlight, Color::LightCyan);
+        assert_eq!(tritan.highlight, Color::LightMagenta);
+        info!("TEST PASS: test_color_blind_palette_selection");
     }
 
     #[test]
@@ -810,7 +851,7 @@ mod tests {
             ..Default::default()
         };
         let content = render_to_string(80, 10, |f| {
-            let colors = get_colors(false);
+            let colors = get_colors(false, ColorBlindMode::None);
             render_active_builds_panel(f, Rect::new(0, 0, 80, 10), &state, &colors);
         });
         assert!(content.contains("cargo build"));
@@ -855,7 +896,7 @@ mod tests {
                 exit_code: Some(1),
             });
         let content = render_to_string(80, 10, |f| {
-            let colors = get_colors(false);
+            let colors = get_colors(false, ColorBlindMode::None);
             render_build_history_panel(f, Rect::new(0, 0, 80, 10), &state, &colors);
         });
         assert!(content.contains("Build History [1/2]"));
@@ -877,7 +918,7 @@ mod tests {
             ..Default::default()
         };
         let content = render_to_string(80, 6, |f| {
-            let colors = get_colors(false);
+            let colors = get_colors(false, ColorBlindMode::None);
             render_logs_panel(f, Rect::new(0, 0, 80, 6), &state, &colors);
         });
         assert!(content.contains("[3-6/10]"));
