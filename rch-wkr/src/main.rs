@@ -273,7 +273,23 @@ fn probe_capabilities() -> WorkerCapabilities {
     }
 
     // Probe bun version
-    if let Ok(output) = Command::new("bun").args(["--version"]).output() {
+    let bun_cmd = if let Ok(output) = Command::new("bun").args(["--version"]).output() {
+        Some(output)
+    } else {
+        // Fallback: try ~/.bun/bin/bun
+        if let Ok(home) = std::env::var("HOME") {
+            let bun_path = std::path::Path::new(&home).join(".bun/bin/bun");
+            if bun_path.exists() {
+                Command::new(bun_path).args(["--version"]).output().ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    if let Some(output) = bun_cmd {
         if output.status.success() {
             let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !version.is_empty() {

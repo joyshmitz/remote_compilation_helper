@@ -112,18 +112,28 @@ pub async fn cleanup(max_age_hours: u64) -> Result<()> {
             }
         }
 
-        // If project dir is empty after cleanup, remove it
+        // If project dir is empty after cleanup, try to remove it
         if active_caches == 0 {
-            // Re-check directory emptiness to be safe
-            if let Ok(mut read_dir) = std::fs::read_dir(&project_path) {
-                if read_dir.next().is_none() {
-                    debug!("Removing empty project directory: {:?}", project_path);
-                    if let Err(e) = std::fs::remove_dir(&project_path) {
-                        warn!(
-                            "Failed to remove empty project dir {:?}: {}",
-                            project_path, e
-                        );
+            // We optimistically try to remove it. If it's not empty (race condition with new build),
+            // remove_dir will fail safely. We don't need to lock or strictly check emptiness first.
+            debug!(
+                "Attempting to remove empty project directory: {:?}",
+                project_path
+            );
+            match std::fs::remove_dir(&project_path) {
+                Ok(_) => {
+                    cleaned += 1;
+                }
+                Err(e) => {
+                    // Ignore DirectoryNotEmpty error (race condition or not actually empty)
+                    if e.kind() != std::io::ErrorKind::DirectoryNotEmpty {
+                        warn!("Failed to remove project dir {:?}: {}", project_path, e);
                         errors += 1;
+                    } else {
+                        debug!(
+                            "Project dir {:?} became non-empty, skipping removal",
+                            project_path
+                        );
                     }
                 }
             }
