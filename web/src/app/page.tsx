@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import useSWR from 'swr';
 import { Server, Hammer, Clock, AlertTriangle } from 'lucide-react';
+import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { Header } from '@/components/layout';
 import { BuildHistoryTable, TableSkeleton } from '@/components/builds';
@@ -66,6 +67,7 @@ function DashboardSkeleton() {
 export default function DashboardPage() {
   const [isRetrying, setIsRetrying] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const hadErrorRef = useRef(false);
   const { data, error, isLoading, mutate } = useSWR<StatusResponse>(
     'status',
     () => api.getStatus(),
@@ -75,10 +77,20 @@ export default function DashboardPage() {
     }
   );
 
+  useEffect(() => {
+    if (hadErrorRef.current && !error) {
+      toast.success('Connection restored');
+    }
+    hadErrorRef.current = Boolean(error);
+  }, [error]);
+
   const handleRetry = async () => {
     setIsRetrying(true);
+    toast('Retrying connection...');
     try {
       await mutate();
+    } catch (err) {
+      toast.error('Retry failed');
     } finally {
       setIsRetrying(false);
     }
@@ -88,6 +100,9 @@ export default function DashboardPage() {
     setIsRefreshing(true);
     try {
       await mutate();
+      toast.success('Dashboard refreshed');
+    } catch (err) {
+      toast.error('Failed to refresh dashboard');
     } finally {
       setIsRefreshing(false);
     }
