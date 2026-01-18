@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
@@ -83,6 +84,47 @@ function TableHead({
   )
 }
 
+type SortDirection = "asc" | "desc"
+
+interface SortableTableHeadProps extends React.ComponentProps<"th"> {
+  sorted?: boolean
+  direction?: SortDirection
+  onSort?: () => void
+}
+
+function SortableTableHead({
+  className,
+  sorted = false,
+  direction = "asc",
+  onSort,
+  children,
+  ...props
+}: SortableTableHeadProps) {
+  const Icon = !sorted ? ChevronsUpDown : direction === "asc" ? ArrowUp : ArrowDown
+  const ariaSort = sorted ? (direction === "asc" ? "ascending" : "descending") : "none"
+
+  return (
+    <th
+      data-slot="table-head"
+      aria-sort={ariaSort}
+      className={cn(
+        "text-foreground h-10 px-2 text-left align-middle font-medium whitespace-nowrap",
+        className
+      )}
+      {...props}
+    >
+      <button
+        type="button"
+        onClick={onSort}
+        className="group inline-flex items-center gap-1.5 text-left"
+      >
+        <span>{children}</span>
+        <Icon className={cn("size-3.5 text-muted-foreground", sorted && "text-foreground")} />
+      </button>
+    </th>
+  )
+}
+
 function TableCell({ className, ...props }: React.ComponentProps<"td">) {
   return (
     <td
@@ -115,6 +157,7 @@ export {
   TableBody,
   TableFooter,
   TableHead,
+  SortableTableHead,
   TableRow,
   TableCell,
   TableCaption,
