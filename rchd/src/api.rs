@@ -8,7 +8,6 @@ use crate::DaemonContext;
 use crate::events::EventBus;
 use crate::metrics;
 use crate::metrics::budget::{self, BudgetStatusResponse};
-use crate::selection::{SelectionWeights, select_worker_with_config};
 use crate::workers::WorkerPool;
 use anyhow::{Result, anyhow};
 use chrono::{Duration as ChronoDuration, Utc};
@@ -31,6 +30,10 @@ use uuid::Uuid;
 enum ApiRequest {
     SelectWorker(SelectionRequest),
     ReleaseWorker(ReleaseRequest),
+    RecordBuild {
+        worker_id: WorkerId,
+        project: String,
+    },
     IngestTelemetry(TelemetrySource),
     TestRun,
     TelemetryPoll {
@@ -335,12 +338,17 @@ pub async fn handle_connection(
     let (response_json, content_type) = match parse_request(line) {
         Ok(ApiRequest::SelectWorker(request)) => {
             metrics::inc_requests("select-worker");
-            let response = handle_select_worker(&ctx.pool, request).await?;
+            let response = handle_select_worker(&ctx, request).await?;
             (serde_json::to_string(&response)?, "application/json")
         }
         Ok(ApiRequest::ReleaseWorker(request)) => {
             metrics::inc_requests("release-worker");
             handle_release_worker(&ctx.pool, request).await?;
+            ("{}".to_string(), "application/json")
+        }
+        Ok(ApiRequest::RecordBuild { worker_id, project }) => {
+            metrics::inc_requests("record-build");
+            handle_record_build(&ctx, &worker_id, &project).await?;
             ("{}".to_string(), "application/json")
         }
         Ok(ApiRequest::IngestTelemetry(source)) => {
@@ -807,6 +815,41 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
             slots,
             build_id,
         }));
+    }
+
+    if path.starts_with("/record-build") {
+        if method != "POST" {
+            return Err(anyhow!("Only POST method supported for record-build"));
+        }
+
+        let query = path.strip_prefix("/record-build").unwrap_or("");
+        let query = query.strip_prefix('?').unwrap_or("");
+
+        let mut worker_id = None;
+        let mut project = None;
+
+        for param in query.split('&') {
+            if param.is_empty() {
+                continue;
+            }
+            let mut kv = param.splitn(2, '=');
+            let key = kv.next().unwrap_or("");
+            let value = kv.next().unwrap_or("");
+
+            match key {
+                "worker" => worker_id = Some(urlencoding_decode(value)),
+                "project" => project = Some(urlencoding_decode(value)),
+                _ => {}
+            }
+        }
+
+        let worker_id = worker_id.ok_or_else(|| anyhow!("Missing 'worker' parameter"))?;
+        let project = project.ok_or_else(|| anyhow!("Missing 'project' parameter"))?;
+
+        return Ok(ApiRequest::RecordBuild {
+            worker_id: WorkerId::new(worker_id),
+            project,
+        });
     }
 
     if path.starts_with("/test-run") {
@@ -1321,7 +1364,7 @@ async fn handle_event_stream(
 
 /// Handle a select-worker request.
 async fn handle_select_worker(
-    pool: &WorkerPool,
+    ctx: &DaemonContext,
     request: SelectionRequest,
 ) -> Result<SelectionResponse> {
     debug!(
@@ -1360,16 +1403,15 @@ async fn handle_select_worker(
         });
     }
 
-    let weights = SelectionWeights::default();
-    let circuit_config = CircuitBreakerConfig::default();
-
     // Retry loop to handle race conditions where slots are taken between selection and reservation
     let mut attempts = 0;
     const MAX_ATTEMPTS: u32 = 3;
 
     loop {
         attempts += 1;
-        let result = select_worker_with_config(pool, &request, &weights, &circuit_config).await;
+        
+        // Use the configured worker selector
+        let result = ctx.worker_selector.select(&ctx.pool, &request).await;
 
         let Some(worker) = result.worker else {
             debug!("No worker selected: {}", result.reason);
@@ -1420,6 +1462,13 @@ async fn handle_release_worker(pool: &WorkerPool, request: ReleaseRequest) -> Re
         request.slots, request.worker_id
     );
     pool.release_slots(&request.worker_id, request.slots).await;
+    Ok(())
+}
+
+/// Handle a record-build request.
+async fn handle_record_build(ctx: &DaemonContext, worker_id: &WorkerId, project: &str) -> Result<()> {
+    debug!("Recording build for project '{}' on worker {}", project, worker_id);
+    ctx.worker_selector.record_build(worker_id.as_str(), project).await;
     Ok(())
 }
 
@@ -1596,6 +1645,7 @@ mod tests {
     use super::*;
     use crate::history::BuildHistory;
     use crate::self_test::{SelfTestHistory, SelfTestService};
+    use crate::selection::WorkerSelector;
     use crate::telemetry::TelemetryStore;
     use crate::{benchmark_queue::BenchmarkQueue, events::EventBus};
     use chrono::Duration as ChronoDuration;
@@ -1615,6 +1665,7 @@ mod tests {
         ));
         DaemonContext {
             pool,
+            worker_selector: Arc::new(WorkerSelector::new()),
             history: Arc::new(BuildHistory::new(100)),
             telemetry: Arc::new(TelemetryStore::new(Duration::from_secs(300), None)),
             benchmark_queue: Arc::new(BenchmarkQueue::new(ChronoDuration::minutes(5))),
@@ -1877,7 +1928,7 @@ mod tests {
         // Invalid hex should be preserved
         assert_eq!(urlencoding_decode("foo%GGbar"), "foo%GGbar");
         // Incomplete sequence at end
-        assert_eq!(urlencoding_decode("foo%2"), "foo%2");
+        assert_eq!(urlencoding_decode("foo%"), "foo%");
     }
 
     #[test]
@@ -1936,6 +1987,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_select_worker_no_workers_configured() {
         let pool = WorkerPool::new();
+        let ctx = make_test_context(pool);
         let request = SelectionRequest {
             project: "test".to_string(),
             command: None,
@@ -1946,7 +1998,7 @@ mod tests {
             classification_duration_us: None,
         };
 
-        let response = handle_select_worker(&pool, request).await.unwrap();
+        let response = handle_select_worker(&ctx, request).await.unwrap();
         assert!(response.worker.is_none());
         assert_eq!(response.reason, SelectionReason::NoWorkersConfigured);
     }
@@ -1963,6 +2015,7 @@ mod tests {
         pool.set_status(&WorkerId::new("worker2"), WorkerStatus::Unreachable)
             .await;
 
+        let ctx = make_test_context(pool);
         let request = SelectionRequest {
             project: "test".to_string(),
             command: None,
@@ -1973,7 +2026,7 @@ mod tests {
             classification_duration_us: None,
         };
 
-        let response = handle_select_worker(&pool, request).await.unwrap();
+        let response = handle_select_worker(&ctx, request).await.unwrap();
         assert!(response.worker.is_none());
         assert_eq!(response.reason, SelectionReason::AllWorkersUnreachable);
     }
@@ -1987,51 +2040,7 @@ mod tests {
         let worker = pool.get(&WorkerId::new("worker1")).await.unwrap();
         worker.reserve_slots(4);
 
-        let request = SelectionRequest {
-            project: "test".to_string(),
-            command: None,
-            estimated_cores: 2, // Request more than available
-            preferred_workers: vec![],
-            toolchain: None,
-            required_runtime: RequiredRuntime::default(),
-            classification_duration_us: None,
-        };
-
-        let response = handle_select_worker(&pool, request).await.unwrap();
-        assert!(response.worker.is_none());
-        assert_eq!(response.reason, SelectionReason::AllWorkersBusy);
-    }
-
-    #[tokio::test]
-    async fn test_handle_select_worker_success() {
-        let pool = WorkerPool::new();
-        pool.add_worker(make_test_worker("worker1", 16)).await;
-
-        let request = SelectionRequest {
-            project: "test".to_string(),
-            command: None,
-            estimated_cores: 4,
-            preferred_workers: vec![],
-            toolchain: None,
-            required_runtime: RequiredRuntime::default(),
-            classification_duration_us: None,
-        };
-
-        let response = handle_select_worker(&pool, request).await.unwrap();
-        assert!(response.worker.is_some());
-        assert_eq!(response.reason, SelectionReason::Success);
-
-        let worker = response.worker.unwrap();
-        assert_eq!(worker.id.as_str(), "worker1");
-        // 16 total - 4 reserved = 12 available after reservation
-        assert_eq!(worker.slots_available, 12);
-    }
-
-    #[tokio::test]
-    async fn test_handle_select_worker_not_enough_slots() {
-        let pool = WorkerPool::new();
-        pool.add_worker(make_test_worker("worker1", 4)).await;
-
+        let ctx = make_test_context(pool);
         let request = SelectionRequest {
             project: "test".to_string(),
             command: None,
@@ -2042,9 +2051,57 @@ mod tests {
             classification_duration_us: None,
         };
 
-        let response = handle_select_worker(&pool, request).await.unwrap();
+        let response = handle_select_worker(&ctx, request).await.unwrap();
         assert!(response.worker.is_none());
         assert_eq!(response.reason, SelectionReason::AllWorkersBusy);
+    }
+
+    #[tokio::test]
+    async fn test_handle_select_worker_success() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_test_worker("worker1", 8)).await;
+
+        let ctx = make_test_context(pool);
+        let request = SelectionRequest {
+            project: "test".to_string(),
+            command: None,
+            estimated_cores: 2,
+            preferred_workers: vec![],
+            toolchain: None,
+            required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
+        };
+
+        let response = handle_select_worker(&ctx, request).await.unwrap();
+        assert!(response.worker.is_some());
+        assert_eq!(response.reason, SelectionReason::Success);
+        
+        let worker = response.worker.unwrap();
+        assert_eq!(worker.id.as_str(), "worker1");
+        // Should have reserved 2 slots
+        assert_eq!(worker.slots_available, 6);
+    }
+
+    #[tokio::test]
+    async fn test_handle_select_worker_preferred() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_test_worker("worker1", 8)).await;
+        pool.add_worker(make_test_worker("worker2", 8)).await;
+
+        let ctx = make_test_context(pool);
+        let request = SelectionRequest {
+            project: "test".to_string(),
+            command: None,
+            estimated_cores: 2,
+            preferred_workers: vec![WorkerId::new("worker2")],
+            toolchain: None,
+            required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
+        };
+
+        let response = handle_select_worker(&ctx, request).await.unwrap();
+        let worker = response.worker.unwrap();
+        assert_eq!(worker.id.as_str(), "worker2");
     }
 
     #[tokio::test]

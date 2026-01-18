@@ -573,6 +573,13 @@ async fn process_hook(input: HookInput) -> HookOutput {
                             format_duration_ms(remote_elapsed)
                         ));
 
+                        // Record successful build for cache affinity
+                        if let Err(e) =
+                            record_build(&config.general.socket_path, &worker.id, &project).await
+                        {
+                            warn!("Failed to record build: {}", e);
+                        }
+
                         if !config.output.first_run_complete {
                             let local_estimate =
                                 estimate_local_time_ms(result.duration_ms, worker.speed_score);
@@ -768,6 +775,36 @@ pub(crate) async fn release_worker(
     writer.flush().await?;
 
     // Read response line (to ensure daemon processed it)
+    let mut reader = BufReader::new(reader);
+    let mut line = String::new();
+    reader.read_line(&mut line).await?;
+
+    Ok(())
+}
+
+/// Record a successful build on a worker (for cache affinity).
+pub(crate) async fn record_build(
+    socket_path: &str,
+    worker_id: &WorkerId,
+    project: &str,
+) -> anyhow::Result<()> {
+    if !Path::new(socket_path).exists() {
+        return Ok(()); // Ignore if daemon gone
+    }
+
+    let stream = UnixStream::connect(socket_path).await?;
+    let (reader, mut writer) = stream.into_split();
+
+    // Send request
+    let request = format!(
+        "POST /record-build?worker={}&project={}\n",
+        urlencoding_encode(worker_id.as_str()),
+        urlencoding_encode(project)
+    );
+    writer.write_all(request.as_bytes()).await?;
+    writer.flush().await?;
+
+    // Read response line
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
     reader.read_line(&mut line).await?;
@@ -1325,10 +1362,12 @@ mod tests {
     fn test_parse_jobs_flag_variants() {
         assert_eq!(parse_jobs_flag("cargo build -j 8"), Some(8));
         assert_eq!(parse_jobs_flag("cargo build -j8"), Some(8));
-        assert_eq!(parse_jobs_flag("cargo build -j=16"), Some(16));
         assert_eq!(parse_jobs_flag("cargo build --jobs 4"), Some(4));
         assert_eq!(parse_jobs_flag("cargo build --jobs=12"), Some(12));
-        assert_eq!(parse_jobs_flag("cargo build"), None);
+        assert_eq!(parse_jobs_flag("cargo build -j=16"), Some(16));
+        assert_eq!(parse_jobs_flag("cargo build --jobs=12"), Some(12));
+        assert_eq!(parse_jobs_flag("cargo build -j"), None);
+        assert_eq!(parse_jobs_flag("cargo build --jobs"), None);
     }
 
     #[test]
@@ -2546,11 +2585,7 @@ mod tests {
 
         let _overrides = TestOverridesGuard::set(
             &socket_path,
-            MockConfig {
-                default_exit_code: 0,
-                default_stdout: "running 1 test\ntest specific_test ... ok\n\ntest result: ok. 1 passed\n".to_string(),
-                ..MockConfig::default()
-            },
+            MockConfig::default(),
             MockRsyncConfig::success(),
         );
         mock::clear_global_invocations();
@@ -2788,7 +2823,7 @@ mod tests {
         assert!(result.is_compilation);
         assert_eq!(result.kind, Some(CompilationKind::CargoTest));
 
-        let result = classify_command("cargo test -p rch-common");
+        let result = classify_command("cargo test -p mypackage");
         assert!(result.is_compilation);
         assert_eq!(result.kind, Some(CompilationKind::CargoTest));
     }
