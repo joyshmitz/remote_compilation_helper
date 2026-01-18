@@ -21,6 +21,8 @@ use tempfile::NamedTempFile;
 use tokio::process::Command;
 use tracing::{debug, info, trace, warn};
 
+use super::retry::{BenchmarkRetryPolicy, RetryableError, run_with_retry};
+
 /// Result of a network benchmark run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkBenchmarkResult {
@@ -132,6 +134,8 @@ pub struct NetworkBenchmark {
     pub timeout_secs: u64,
     /// Whether to perform a warmup connection before measurement.
     pub warmup: bool,
+    /// Retry policy for transient failures.
+    pub retry_policy: BenchmarkRetryPolicy,
 }
 
 impl NetworkBenchmark {
@@ -143,6 +147,7 @@ impl NetworkBenchmark {
             latency_samples: 10,
             timeout_secs: 120,
             warmup: true,
+            retry_policy: BenchmarkRetryPolicy::default(),
         }
     }
 
@@ -155,6 +160,7 @@ impl NetworkBenchmark {
             latency_samples: 5,
             timeout_secs: 60,
             warmup: false,
+            retry_policy: BenchmarkRetryPolicy::default(),
         }
     }
 
@@ -186,6 +192,13 @@ impl NetworkBenchmark {
         self
     }
 
+    /// Set the retry policy for transient failures.
+    #[must_use]
+    pub fn with_retry_policy(mut self, policy: BenchmarkRetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
+    }
+
     /// Run the network benchmark and return results.
     ///
     /// This runs all three network benchmark components:
@@ -193,6 +206,10 @@ impl NetworkBenchmark {
     /// 2. Download throughput test (rsync from worker)
     /// 3. Latency test (SSH echo commands)
     pub async fn run(&self) -> Result<NetworkBenchmarkResult, NetworkBenchmarkError> {
+        run_with_retry("network_benchmark", &self.retry_policy, || self.run_once()).await
+    }
+
+    async fn run_once(&self) -> Result<NetworkBenchmarkResult, NetworkBenchmarkError> {
         debug!(
             worker = %self.worker.worker_id,
             payload_size_mb = self.payload_size_mb,
@@ -612,6 +629,19 @@ pub enum NetworkBenchmarkError {
 
     #[error("Timeout: benchmark exceeded {0} seconds")]
     Timeout(u64),
+}
+
+impl RetryableError for NetworkBenchmarkError {
+    fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            NetworkBenchmarkError::ConnectionFailed(_)
+                | NetworkBenchmarkError::SshError(_)
+                | NetworkBenchmarkError::RsyncError(_)
+                | NetworkBenchmarkError::LatencyTestFailed(_)
+                | NetworkBenchmarkError::Timeout(_)
+        )
+    }
 }
 
 #[cfg(test)]
