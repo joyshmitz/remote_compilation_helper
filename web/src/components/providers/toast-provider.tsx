@@ -5,7 +5,11 @@ import { Toaster } from 'sonner';
 
 export function ToastProvider() {
   const { resolvedTheme } = useTheme();
-  const theme = resolvedTheme === 'dark' ? 'dark' : 'light';
+  const theme = resolvedTheme === 'dark'
+    ? 'dark'
+    : resolvedTheme === 'light'
+      ? 'light'
+      : 'system';
 
   return (
     <Toaster
