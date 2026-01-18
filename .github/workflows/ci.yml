@@ -219,10 +219,8 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             packages: musl-tools
-          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm  # Native ARM64 runner (10x faster than cross-compile)
             target: aarch64-unknown-linux-gnu
-            packages: gcc-aarch64-linux-gnu
-            linker: aarch64-linux-gnu-gcc
           - os: macos-latest
             target: x86_64-apple-darwin
           - os: macos-latest
