@@ -5,22 +5,26 @@
 //! - Response: JSON `SelectionResponse` or error
 
 use crate::DaemonContext;
+use crate::events::EventBus;
 use crate::metrics;
 use crate::metrics::budget::{self, BudgetStatusResponse};
 use crate::selection::{SelectionWeights, select_worker_with_config};
 use crate::workers::WorkerPool;
 use anyhow::{Result, anyhow};
+use chrono::{Duration as ChronoDuration, Utc};
 use rch_common::{
     BuildRecord, BuildStats, CircuitBreakerConfig, CircuitState, ReleaseRequest, RequiredRuntime,
     SelectedWorker, SelectionReason, SelectionRequest, SelectionResponse, WorkerId, WorkerStatus,
 };
 use rch_telemetry::protocol::{TelemetrySource, WorkerTelemetry};
+use rch_telemetry::speedscore::SpeedScore;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tracing::{debug, warn};
+use uuid::Uuid;
 
 /// Parsed API request variants.
 #[derive(Debug)]
@@ -28,13 +32,32 @@ enum ApiRequest {
     SelectWorker(SelectionRequest),
     ReleaseWorker(ReleaseRequest),
     IngestTelemetry(TelemetrySource),
+    TelemetryPoll {
+        worker_id: WorkerId,
+    },
+    SpeedScore {
+        worker_id: WorkerId,
+    },
+    SpeedScoreHistory {
+        worker_id: WorkerId,
+        days: u32,
+        limit: usize,
+        offset: usize,
+    },
+    SpeedScores,
+    BenchmarkTrigger {
+        worker_id: WorkerId,
+    },
+    Events,
     Status,
     Metrics,
     Health,
     Ready,
     Budget,
     SelfTestStatus,
-    SelfTestHistory { limit: usize },
+    SelfTestHistory {
+        limit: usize,
+    },
     SelfTestRun(SelfTestRunRequest),
     Shutdown,
 }
@@ -204,6 +227,88 @@ pub struct SelfTestRunResponse {
     pub results: Vec<crate::self_test::SelfTestResultRecord>,
 }
 
+// ============================================================================
+// SpeedScore Response Types (per bead remote_compilation_helper-y8n)
+// ============================================================================
+
+/// API view of a SpeedScore.
+#[derive(Debug, Serialize)]
+pub struct SpeedScoreView {
+    pub total: f64,
+    pub cpu_score: f64,
+    pub memory_score: f64,
+    pub disk_score: f64,
+    pub network_score: f64,
+    pub compilation_score: f64,
+    pub measured_at: String,
+    pub version: u32,
+}
+
+/// Latest SpeedScore response.
+#[derive(Debug, Serialize)]
+pub struct SpeedScoreResponse {
+    pub worker_id: String,
+    pub speedscore: Option<SpeedScoreView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// History pagination metadata.
+#[derive(Debug, Serialize)]
+pub struct PaginationInfo {
+    pub total: u64,
+    pub offset: usize,
+    pub limit: usize,
+    pub has_more: bool,
+}
+
+/// SpeedScore history response.
+#[derive(Debug, Serialize)]
+pub struct SpeedScoreHistoryResponse {
+    pub worker_id: String,
+    pub history: Vec<SpeedScoreView>,
+    pub pagination: PaginationInfo,
+}
+
+/// SpeedScore list response.
+#[derive(Debug, Serialize)]
+pub struct SpeedScoreListResponse {
+    pub workers: Vec<SpeedScoreWorker>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SpeedScoreWorker {
+    pub worker_id: String,
+    pub speedscore: Option<SpeedScoreView>,
+    pub status: WorkerStatus,
+}
+
+/// Benchmark trigger response.
+#[derive(Debug, Serialize)]
+pub struct BenchmarkTriggerResponse {
+    pub status: String,
+    pub worker_id: String,
+    pub request_id: String,
+}
+
+/// Error response with optional rate limit info.
+#[derive(Debug, Serialize)]
+pub struct ErrorResponse {
+    pub error: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum ApiResponse<T: Serialize> {
+    Ok(T),
+    Error(ErrorResponse),
+}
+
 /// Handle an incoming connection on the Unix socket.
 pub async fn handle_connection(
     stream: UnixStream,
@@ -269,6 +374,42 @@ pub async fn handle_connection(
                     }
                 }
             }
+        }
+        Ok(ApiRequest::TelemetryPoll { worker_id }) => {
+            metrics::inc_requests("telemetry-poll");
+            let response = handle_telemetry_poll(&ctx, &worker_id).await;
+            let response_json = serde_json::to_string(&response)?;
+            (response_json, "application/json")
+        }
+        Ok(ApiRequest::SpeedScore { worker_id }) => {
+            metrics::inc_requests("speedscore");
+            let response = handle_speedscore(&ctx, &worker_id).await;
+            (serde_json::to_string(&response)?, "application/json")
+        }
+        Ok(ApiRequest::SpeedScoreHistory {
+            worker_id,
+            days,
+            limit,
+            offset,
+        }) => {
+            metrics::inc_requests("speedscore-history");
+            let response = handle_speedscore_history(&ctx, &worker_id, days, limit, offset).await;
+            (serde_json::to_string(&response)?, "application/json")
+        }
+        Ok(ApiRequest::SpeedScores) => {
+            metrics::inc_requests("speedscore-list");
+            let response = handle_speedscore_list(&ctx).await;
+            (serde_json::to_string(&response)?, "application/json")
+        }
+        Ok(ApiRequest::BenchmarkTrigger { worker_id }) => {
+            metrics::inc_requests("benchmark-trigger");
+            let response = handle_benchmark_trigger(&ctx, &worker_id).await;
+            (serde_json::to_string(&response)?, "application/json")
+        }
+        Ok(ApiRequest::Events) => {
+            metrics::inc_requests("events");
+            handle_event_stream(&mut writer, ctx.events.clone()).await?;
+            return Ok(());
         }
         Ok(ApiRequest::Status) => {
             metrics::inc_requests("status");
@@ -386,6 +527,120 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
         return Err(anyhow!("Only GET and POST methods supported"));
     }
 
+    if path == "/events" && method == "GET" {
+        return Ok(ApiRequest::Events);
+    }
+
+    if path == "/speedscores" && method == "GET" {
+        return Ok(ApiRequest::SpeedScores);
+    }
+
+    if path.starts_with("/speedscore") && method == "GET" {
+        let (path_only, query) = split_path_query(path);
+
+        if path_only == "/speedscore/history" {
+            let mut worker_id = None;
+            let mut days = 30u32;
+            let mut limit = 100usize;
+            let mut offset = 0usize;
+
+            for param in query.split('&') {
+                if param.is_empty() {
+                    continue;
+                }
+                let mut kv = param.splitn(2, '=');
+                let key = kv.next().unwrap_or("");
+                let value = kv.next().unwrap_or("");
+                match key {
+                    "worker" => worker_id = Some(urlencoding_decode(value)),
+                    "days" => days = value.parse().unwrap_or(days),
+                    "limit" => limit = value.parse().unwrap_or(limit),
+                    "offset" => offset = value.parse().unwrap_or(offset),
+                    _ => {}
+                }
+            }
+
+            if let Some(worker_id) = worker_id {
+                return Ok(ApiRequest::SpeedScoreHistory {
+                    worker_id: WorkerId::new(worker_id),
+                    days,
+                    limit,
+                    offset,
+                });
+            }
+        }
+
+        if let Some(rest) = path_only.strip_prefix("/speedscore/") {
+            let rest = rest.trim_matches('/');
+            if rest.is_empty() {
+                return Err(anyhow!("Missing worker id"));
+            }
+
+            if let Some(worker_part) = rest.strip_suffix("/history") {
+                let worker_part = worker_part.trim_end_matches('/');
+                let mut days = 30u32;
+                let mut limit = 100usize;
+                let mut offset = 0usize;
+
+                for param in query.split('&') {
+                    if param.is_empty() {
+                        continue;
+                    }
+                    let mut kv = param.splitn(2, '=');
+                    let key = kv.next().unwrap_or("");
+                    let value = kv.next().unwrap_or("");
+                    match key {
+                        "days" => days = value.parse().unwrap_or(days),
+                        "limit" => limit = value.parse().unwrap_or(limit),
+                        "offset" => offset = value.parse().unwrap_or(offset),
+                        _ => {}
+                    }
+                }
+
+                return Ok(ApiRequest::SpeedScoreHistory {
+                    worker_id: WorkerId::new(urlencoding_decode(worker_part)),
+                    days,
+                    limit,
+                    offset,
+                });
+            }
+
+            return Ok(ApiRequest::SpeedScore {
+                worker_id: WorkerId::new(urlencoding_decode(rest)),
+            });
+        }
+    }
+
+    if path.starts_with("/benchmark/trigger") {
+        if method != "POST" {
+            return Err(anyhow!("Only POST method supported for benchmark trigger"));
+        }
+        let (path_only, query) = split_path_query(path);
+        let mut worker_id = path_only
+            .strip_prefix("/benchmark/trigger/")
+            .map(urlencoding_decode);
+
+        for param in query.split('&') {
+            if param.is_empty() {
+                continue;
+            }
+            let mut kv = param.splitn(2, '=');
+            let key = kv.next().unwrap_or("");
+            let value = kv.next().unwrap_or("");
+            if key == "worker" {
+                worker_id = Some(urlencoding_decode(value));
+            }
+        }
+
+        let Some(worker_id) = worker_id.filter(|value| !value.is_empty()) else {
+            return Err(anyhow!("Missing worker id"));
+        };
+
+        return Ok(ApiRequest::BenchmarkTrigger {
+            worker_id: WorkerId::new(worker_id),
+        });
+    }
+
     if path == "/shutdown" && method == "POST" {
         return Ok(ApiRequest::Shutdown);
     }
@@ -494,6 +749,7 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
 
         let mut worker_id = None;
         let mut slots = None;
+        let mut build_id = None;
 
         for param in query.split('&') {
             if param.is_empty() {
@@ -506,6 +762,7 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
             match key {
                 "worker" => worker_id = Some(urlencoding_decode(value)),
                 "slots" => slots = value.parse().ok(),
+                "build_id" => build_id = value.parse().ok(),
                 _ => {} // Ignore unknown parameters
             }
         }
@@ -516,10 +773,38 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
         return Ok(ApiRequest::ReleaseWorker(ReleaseRequest {
             worker_id: rch_common::WorkerId::new(worker_id),
             slots,
+            build_id,
         }));
     }
 
     if path.starts_with("/telemetry") {
+        if path.starts_with("/telemetry/poll") {
+            if method != "POST" {
+                return Err(anyhow!("Only POST method supported for telemetry polling"));
+            }
+
+            let query = path.strip_prefix("/telemetry/poll").unwrap_or("");
+            let query = query.strip_prefix('?').unwrap_or("");
+            let mut worker_id = None;
+
+            for param in query.split('&') {
+                if param.is_empty() {
+                    continue;
+                }
+                let mut kv = param.splitn(2, '=');
+                let key = kv.next().unwrap_or("");
+                let value = kv.next().unwrap_or("");
+                if key == "worker" {
+                    worker_id = Some(urlencoding_decode(value));
+                }
+            }
+
+            let worker_id = worker_id.ok_or_else(|| anyhow!("Missing 'worker' parameter"))?;
+            return Ok(ApiRequest::TelemetryPoll {
+                worker_id: WorkerId::new(worker_id),
+            });
+        }
+
         if method != "POST" {
             return Err(anyhow!(
                 "Only POST method supported for telemetry ingestion"
@@ -556,6 +841,7 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
     let query = query.strip_prefix('?').unwrap_or("");
 
     let mut project = None;
+    let mut command = None;
     let mut cores = None;
     let mut toolchain = None;
     let mut required_runtime = RequiredRuntime::default();
@@ -571,6 +857,7 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
 
         match key {
             "project" => project = Some(urlencoding_decode(value)),
+            "command" => command = Some(urlencoding_decode(value)),
             "cores" => cores = value.parse().ok(),
             "toolchain" => {
                 let json = urlencoding_decode(value);
@@ -598,6 +885,7 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
 
     Ok(ApiRequest::SelectWorker(SelectionRequest {
         project,
+        command,
         estimated_cores,
         preferred_workers: vec![],
         toolchain,
@@ -612,6 +900,13 @@ fn parse_telemetry_source(value: &str) -> Option<TelemetrySource> {
         "ssh-poll" | "ssh_poll" | "ssh" => Some(TelemetrySource::SshPoll),
         "on-demand" | "on_demand" | "ondemand" => Some(TelemetrySource::OnDemand),
         _ => None,
+    }
+}
+
+fn split_path_query(path: &str) -> (&str, &str) {
+    match path.split_once('?') {
+        Some((path, query)) => (path, query),
+        None => (path, ""),
     }
 }
 
@@ -647,6 +942,342 @@ fn urlencoding_decode(s: &str) -> String {
     }
 
     String::from_utf8_lossy(&bytes).into_owned()
+}
+
+#[derive(Debug, Serialize)]
+struct TelemetryPollResponse {
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    telemetry: Option<WorkerTelemetry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    worker_id: Option<String>,
+}
+
+async fn handle_telemetry_poll(ctx: &DaemonContext, worker_id: &WorkerId) -> TelemetryPollResponse {
+    let worker = match ctx.pool.get(worker_id).await {
+        Some(worker) => worker,
+        None => {
+            return TelemetryPollResponse {
+                status: "error".to_string(),
+                telemetry: None,
+                error: Some("worker_not_found".to_string()),
+                worker_id: Some(worker_id.to_string()),
+            };
+        }
+    };
+
+    let status = worker.status().await;
+    if matches!(status, WorkerStatus::Unreachable | WorkerStatus::Disabled) {
+        return TelemetryPollResponse {
+            status: "error".to_string(),
+            telemetry: None,
+            error: Some("worker_unreachable".to_string()),
+            worker_id: Some(worker_id.to_string()),
+        };
+    }
+
+    let command = format!(
+        "rch-telemetry collect --format json --worker-id {}",
+        worker_id.as_str()
+    );
+    let options = rch_common::SshOptions {
+        connect_timeout: Duration::from_secs(5),
+        command_timeout: Duration::from_secs(5),
+        ..Default::default()
+    };
+
+    let mut client = rch_common::SshClient::new(worker.config.clone(), options);
+    if let Err(err) = client.connect().await {
+        return TelemetryPollResponse {
+            status: "error".to_string(),
+            telemetry: None,
+            error: Some(format!("ssh_connect_failed: {}", err)),
+            worker_id: Some(worker_id.to_string()),
+        };
+    }
+
+    let result = client.execute(&command).await;
+    client.disconnect().await.ok();
+
+    let result = match result {
+        Ok(res) => res,
+        Err(err) => {
+            return TelemetryPollResponse {
+                status: "error".to_string(),
+                telemetry: None,
+                error: Some(format!("ssh_execute_failed: {}", err)),
+                worker_id: Some(worker_id.to_string()),
+            };
+        }
+    };
+
+    if !result.success() {
+        return TelemetryPollResponse {
+            status: "error".to_string(),
+            telemetry: None,
+            error: Some(format!(
+                "telemetry_command_failed: {}",
+                result.stderr.trim()
+            )),
+            worker_id: Some(worker_id.to_string()),
+        };
+    }
+
+    let payload = result.stdout.trim();
+    if payload.is_empty() {
+        return TelemetryPollResponse {
+            status: "error".to_string(),
+            telemetry: None,
+            error: Some("empty telemetry payload".to_string()),
+            worker_id: Some(worker_id.to_string()),
+        };
+    }
+
+    match WorkerTelemetry::from_json(payload) {
+        Ok(telemetry) => {
+            if !telemetry.is_compatible() {
+                warn!(
+                    "Telemetry protocol version mismatch for worker {}",
+                    telemetry.worker_id
+                );
+            }
+            ctx.telemetry
+                .ingest(telemetry.clone(), TelemetrySource::OnDemand);
+            TelemetryPollResponse {
+                status: "ok".to_string(),
+                telemetry: Some(telemetry),
+                error: None,
+                worker_id: None,
+            }
+        }
+        Err(err) => TelemetryPollResponse {
+            status: "error".to_string(),
+            telemetry: None,
+            error: Some(format!("invalid telemetry payload: {}", err)),
+            worker_id: Some(worker_id.to_string()),
+        },
+    }
+}
+
+fn speedscore_view(score: SpeedScore) -> SpeedScoreView {
+    SpeedScoreView {
+        total: score.total,
+        cpu_score: score.cpu_score,
+        memory_score: score.memory_score,
+        disk_score: score.disk_score,
+        network_score: score.network_score,
+        compilation_score: score.compilation_score,
+        measured_at: score.calculated_at.to_rfc3339(),
+        version: score.version,
+    }
+}
+
+fn error_response(
+    code: &str,
+    message: impl Into<String>,
+    worker_id: Option<&WorkerId>,
+    retry_after: Option<ChronoDuration>,
+) -> ErrorResponse {
+    ErrorResponse {
+        error: code.to_string(),
+        message: message.into(),
+        worker_id: worker_id.map(|id| id.to_string()),
+        retry_after_secs: retry_after.map(|d| d.num_seconds().max(1) as u64),
+    }
+}
+
+async fn handle_speedscore(
+    ctx: &DaemonContext,
+    worker_id: &WorkerId,
+) -> ApiResponse<SpeedScoreResponse> {
+    if ctx.pool.get(worker_id).await.is_none() {
+        return ApiResponse::Error(error_response(
+            "worker_not_found",
+            format!("Worker '{}' does not exist", worker_id),
+            Some(worker_id),
+            None,
+        ));
+    }
+
+    match ctx.telemetry.latest_speedscore(worker_id.as_str()) {
+        Ok(Some(score)) => ApiResponse::Ok(SpeedScoreResponse {
+            worker_id: worker_id.to_string(),
+            speedscore: Some(speedscore_view(score)),
+            message: None,
+        }),
+        Ok(None) => ApiResponse::Ok(SpeedScoreResponse {
+            worker_id: worker_id.to_string(),
+            speedscore: None,
+            message: Some("Worker has not been benchmarked yet".to_string()),
+        }),
+        Err(err) => {
+            warn!("Failed to load SpeedScore for {}: {}", worker_id, err);
+            ApiResponse::Error(error_response(
+                "internal_error",
+                "Failed to retrieve SpeedScore",
+                Some(worker_id),
+                None,
+            ))
+        }
+    }
+}
+
+async fn handle_speedscore_history(
+    ctx: &DaemonContext,
+    worker_id: &WorkerId,
+    days: u32,
+    limit: usize,
+    offset: usize,
+) -> ApiResponse<SpeedScoreHistoryResponse> {
+    if ctx.pool.get(worker_id).await.is_none() {
+        return ApiResponse::Error(error_response(
+            "worker_not_found",
+            format!("Worker '{}' does not exist", worker_id),
+            Some(worker_id),
+            None,
+        ));
+    }
+
+    let days = days.clamp(1, 365);
+    let limit = limit.clamp(1, 1000);
+    let since = Utc::now() - ChronoDuration::days(days as i64);
+
+    match ctx
+        .telemetry
+        .speedscore_history(worker_id.as_str(), since, limit, offset)
+    {
+        Ok(page) => {
+            let has_more = ((offset + page.entries.len()) as u64) < page.total;
+            ApiResponse::Ok(SpeedScoreHistoryResponse {
+                worker_id: worker_id.to_string(),
+                history: page.entries.into_iter().map(speedscore_view).collect(),
+                pagination: PaginationInfo {
+                    total: page.total,
+                    offset,
+                    limit,
+                    has_more,
+                },
+            })
+        }
+        Err(err) => {
+            warn!(
+                "Failed to load SpeedScore history for {}: {}",
+                worker_id, err
+            );
+            ApiResponse::Error(error_response(
+                "internal_error",
+                "Failed to retrieve SpeedScore history",
+                Some(worker_id),
+                None,
+            ))
+        }
+    }
+}
+
+async fn handle_speedscore_list(ctx: &DaemonContext) -> ApiResponse<SpeedScoreListResponse> {
+    let workers = ctx.pool.all_workers().await;
+    let mut entries = Vec::with_capacity(workers.len());
+
+    for worker in workers {
+        let status = worker.status().await;
+        let speedscore = match ctx.telemetry.latest_speedscore(worker.config.id.as_str()) {
+            Ok(score) => score.map(speedscore_view),
+            Err(err) => {
+                warn!(
+                    "Failed to load SpeedScore for {}: {}",
+                    worker.config.id, err
+                );
+                None
+            }
+        };
+
+        entries.push(SpeedScoreWorker {
+            worker_id: worker.config.id.to_string(),
+            speedscore,
+            status,
+        });
+    }
+
+    ApiResponse::Ok(SpeedScoreListResponse { workers: entries })
+}
+
+async fn handle_benchmark_trigger(
+    ctx: &DaemonContext,
+    worker_id: &WorkerId,
+) -> ApiResponse<BenchmarkTriggerResponse> {
+    if ctx.pool.get(worker_id).await.is_none() {
+        return ApiResponse::Error(error_response(
+            "worker_not_found",
+            format!("Worker '{}' does not exist", worker_id),
+            Some(worker_id),
+            None,
+        ));
+    }
+
+    let request_id = Uuid::new_v4().to_string();
+    match ctx
+        .benchmark_queue
+        .enqueue(worker_id.clone(), request_id.clone())
+    {
+        Ok(request) => {
+            ctx.events.emit(
+                "benchmark_queued",
+                &serde_json::json!({
+                    "worker_id": worker_id.as_str(),
+                    "request_id": request.request_id,
+                    "queued_at": request.requested_at.to_rfc3339(),
+                }),
+            );
+            ApiResponse::Ok(BenchmarkTriggerResponse {
+                status: "queued".to_string(),
+                worker_id: worker_id.to_string(),
+                request_id,
+            })
+        }
+        Err(rate) => ApiResponse::Error(error_response(
+            "rate_limited",
+            "Benchmark trigger rate limited",
+            Some(worker_id),
+            Some(rate.retry_after),
+        )),
+    }
+}
+
+async fn handle_event_stream(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    events: EventBus,
+) -> Result<()> {
+    let mut rx = events.subscribe();
+    let header = "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n";
+    writer.write_all(header.as_bytes()).await?;
+    writer.flush().await?;
+
+    loop {
+        match rx.recv().await {
+            Ok(message) => {
+                if let Err(err) = writer.write_all(message.as_bytes()).await {
+                    warn!("Event stream write failed: {}", err);
+                    break;
+                }
+                if let Err(err) = writer.write_all(b"\n").await {
+                    warn!("Event stream write failed: {}", err);
+                    break;
+                }
+                if let Err(err) = writer.flush().await {
+                    warn!("Event stream flush failed: {}", err);
+                    break;
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                warn!("Event stream lagged, skipped {} messages", skipped);
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+        }
+    }
+
+    Ok(())
 }
 
 /// Handle a select-worker request.
@@ -686,6 +1317,7 @@ async fn handle_select_worker(
         return Ok(SelectionResponse {
             worker: None,
             reason: SelectionReason::AllCircuitsOpen,
+            build_id: None,
         });
     }
 
@@ -705,6 +1337,7 @@ async fn handle_select_worker(
             return Ok(SelectionResponse {
                 worker: None,
                 reason: result.reason,
+                build_id: None,
             });
         };
 
@@ -720,6 +1353,7 @@ async fn handle_select_worker(
                     speed_score: worker.speed_score,
                 }),
                 reason: SelectionReason::Success,
+                build_id: None,
             });
         }
 
@@ -733,6 +1367,7 @@ async fn handle_select_worker(
             return Ok(SelectionResponse {
                 worker: None,
                 reason: SelectionReason::AllWorkersBusy,
+                build_id: None,
             });
         }
         // Loop again - next selection will see reduced slot count
@@ -921,6 +1556,8 @@ mod tests {
     use crate::history::BuildHistory;
     use crate::self_test::{SelfTestHistory, SelfTestService};
     use crate::telemetry::TelemetryStore;
+    use crate::{benchmark_queue::BenchmarkQueue, events::EventBus};
+    use chrono::Duration as ChronoDuration;
     use rch_common::SelfTestConfig;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -938,7 +1575,9 @@ mod tests {
         DaemonContext {
             pool,
             history: Arc::new(BuildHistory::new(100)),
-            telemetry: Arc::new(TelemetryStore::new(Duration::from_secs(300))),
+            telemetry: Arc::new(TelemetryStore::new(Duration::from_secs(300), None)),
+            benchmark_queue: Arc::new(BenchmarkQueue::new(ChronoDuration::minutes(5))),
+            events: EventBus::new(16),
             self_test,
             started_at: Instant::now(),
             socket_path: "/tmp/test.sock".to_string(),
@@ -983,6 +1622,76 @@ mod tests {
         match req {
             ApiRequest::Status => {} // Correct
             _ => panic!("expected status request"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_speedscore() {
+        let req = parse_request("GET /speedscore/css").unwrap();
+        match req {
+            ApiRequest::SpeedScore { worker_id } => {
+                assert_eq!(worker_id.as_str(), "css");
+            }
+            _ => panic!("expected speedscore request"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_speedscore_history() {
+        let req = parse_request("GET /speedscore/css/history?days=7&limit=25&offset=5").unwrap();
+        match req {
+            ApiRequest::SpeedScoreHistory {
+                worker_id,
+                days,
+                limit,
+                offset,
+            } => {
+                assert_eq!(worker_id.as_str(), "css");
+                assert_eq!(days, 7);
+                assert_eq!(limit, 25);
+                assert_eq!(offset, 5);
+            }
+            _ => panic!("expected speedscore history request"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_speedscores() {
+        let req = parse_request("GET /speedscores").unwrap();
+        match req {
+            ApiRequest::SpeedScores => {}
+            _ => panic!("expected speedscores request"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_benchmark_trigger() {
+        let req = parse_request("POST /benchmark/trigger/css").unwrap();
+        match req {
+            ApiRequest::BenchmarkTrigger { worker_id } => {
+                assert_eq!(worker_id.as_str(), "css");
+            }
+            _ => panic!("expected benchmark trigger request"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_events() {
+        let req = parse_request("GET /events").unwrap();
+        match req {
+            ApiRequest::Events => {}
+            _ => panic!("expected events request"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_telemetry_poll() {
+        let req = parse_request("POST /telemetry/poll?worker=css").unwrap();
+        match req {
+            ApiRequest::TelemetryPoll { worker_id } => {
+                assert_eq!(worker_id.as_str(), "css");
+            }
+            _ => panic!("expected telemetry poll request"),
         }
     }
 
@@ -1179,6 +1888,7 @@ mod tests {
         let pool = WorkerPool::new();
         let request = SelectionRequest {
             project: "test".to_string(),
+            command: None,
             estimated_cores: 4,
             preferred_workers: vec![],
             toolchain: None,
@@ -1205,6 +1915,7 @@ mod tests {
 
         let request = SelectionRequest {
             project: "test".to_string(),
+            command: None,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -1228,6 +1939,7 @@ mod tests {
 
         let request = SelectionRequest {
             project: "test".to_string(),
+            command: None,
             estimated_cores: 2, // Request more than available
             preferred_workers: vec![],
             toolchain: None,
@@ -1247,6 +1959,7 @@ mod tests {
 
         let request = SelectionRequest {
             project: "test".to_string(),
+            command: None,
             estimated_cores: 4,
             preferred_workers: vec![],
             toolchain: None,
@@ -1271,6 +1984,7 @@ mod tests {
 
         let request = SelectionRequest {
             project: "test".to_string(),
+            command: None,
             estimated_cores: 8, // Request more than total slots
             preferred_workers: vec![],
             toolchain: None,
