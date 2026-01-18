@@ -1254,4 +1254,129 @@ mod tests {
         assert_eq!(detailed.normalized, "cargo check");
         assert!(detailed.classification.is_compilation);
     }
+
+    // =========================================================================
+    // Comprehensive cargo test variant tests (bead remote_compilation_helper-xcvl)
+    // =========================================================================
+
+    #[test]
+    fn test_cargo_test_release() {
+        let result = classify_command("cargo test --release");
+        assert!(result.is_compilation, "cargo test --release should be classified as compilation");
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+        assert!(result.confidence >= 0.90);
+    }
+
+    #[test]
+    fn test_cargo_test_specific_test_name() {
+        let result = classify_command("cargo test my_test_function");
+        assert!(result.is_compilation, "cargo test with specific test name should be classified");
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+    }
+
+    #[test]
+    fn test_cargo_test_with_nocapture() {
+        let result = classify_command("cargo test -- --nocapture");
+        assert!(result.is_compilation, "cargo test -- --nocapture should be classified");
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+    }
+
+    #[test]
+    fn test_cargo_test_workspace() {
+        let result = classify_command("cargo test --workspace");
+        assert!(result.is_compilation, "cargo test --workspace should be classified");
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+    }
+
+    #[test]
+    fn test_cargo_test_package() {
+        let result = classify_command("cargo test -p rch-common");
+        assert!(result.is_compilation, "cargo test -p should be classified");
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+    }
+
+    #[test]
+    fn test_cargo_test_short_alias() {
+        // cargo t is an alias for cargo test
+        let result = classify_command("cargo t");
+        assert!(result.is_compilation, "cargo t (short alias) should be classified");
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+    }
+
+    #[test]
+    fn test_cargo_test_all_features() {
+        let result = classify_command("cargo test --all-features");
+        assert!(result.is_compilation, "cargo test --all-features should be classified");
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+    }
+
+    #[test]
+    fn test_cargo_test_no_default_features() {
+        let result = classify_command("cargo test --no-default-features");
+        assert!(result.is_compilation, "cargo test --no-default-features should be classified");
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+    }
+
+    #[test]
+    fn test_cargo_test_with_env_var() {
+        let result = classify_command("RUST_BACKTRACE=1 cargo test");
+        assert!(result.is_compilation, "cargo test with env var should be classified");
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+    }
+
+    #[test]
+    fn test_cargo_test_with_multiple_flags() {
+        let result = classify_command("cargo test --release --workspace -p rch -- --nocapture");
+        assert!(result.is_compilation, "cargo test with multiple flags should be classified");
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+    }
+
+    #[test]
+    fn test_cargo_test_with_jobs() {
+        let result = classify_command("cargo test -j 8");
+        assert!(result.is_compilation, "cargo test -j should be classified");
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+    }
+
+    #[test]
+    fn test_cargo_test_target() {
+        let result = classify_command("cargo test --target x86_64-unknown-linux-gnu");
+        assert!(result.is_compilation, "cargo test --target should be classified");
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+    }
+
+    #[test]
+    fn test_cargo_test_lib() {
+        let result = classify_command("cargo test --lib");
+        assert!(result.is_compilation, "cargo test --lib should be classified");
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+    }
+
+    #[test]
+    fn test_cargo_test_bins() {
+        let result = classify_command("cargo test --bins");
+        assert!(result.is_compilation, "cargo test --bins should be classified");
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+    }
+
+    #[test]
+    fn test_cargo_test_doc() {
+        let result = classify_command("cargo test --doc");
+        assert!(result.is_compilation, "cargo test --doc should be classified");
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+    }
+
+    #[test]
+    fn test_cargo_test_filter_pattern() {
+        let result = classify_command("cargo test test_classification");
+        assert!(result.is_compilation, "cargo test with filter pattern should be classified");
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+    }
+
+    #[test]
+    fn test_cargo_test_exact() {
+        let result = classify_command("cargo test --exact my_test");
+        assert!(result.is_compilation, "cargo test --exact should be classified");
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+    }
 }

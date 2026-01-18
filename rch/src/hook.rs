@@ -24,6 +24,39 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tracing::{debug, info, warn};
 
+// ============================================================================
+// Exit Code Constants
+// ============================================================================
+//
+// Cargo test (and cargo build/check/clippy) use specific exit codes:
+//
+// - 0:   Success (all tests passed, or build succeeded)
+// - 1:   Build/compilation error (couldn't compile tests or crate)
+// - 101: Test failures (tests compiled and ran, but some failed)
+// - 128+N: Process killed by signal N (e.g., 137 = SIGKILL, 143 = SIGTERM)
+//
+// For RCH, ALL non-zero exits should deny local re-execution because:
+// 1. Exit 101: Tests failed remotely, re-running locally won't help
+// 2. Exit 1: Build error would occur locally too
+// 3. Exit 128+N: Likely resource exhaustion (OOM), local might also fail
+//
+// The only exception is toolchain failures (missing rust version), which
+// should fall back to local in case the local machine has the toolchain.
+
+/// Exit code for successful cargo command (tests passed, build succeeded).
+#[allow(dead_code)]
+const EXIT_SUCCESS: i32 = 0;
+
+/// Exit code for build/compilation error.
+const EXIT_BUILD_ERROR: i32 = 1;
+
+/// Exit code for cargo test when tests ran but some failed.
+const EXIT_TEST_FAILURES: i32 = 101;
+
+/// Minimum exit code indicating the process was killed by a signal.
+/// Exit code = 128 + signal number (e.g., 137 = 128 + 9 = SIGKILL).
+const EXIT_SIGNAL_BASE: i32 = 128;
+
 /// Run the hook, reading from stdin and writing to stdout.
 pub async fn run_hook() -> anyhow::Result<()> {
     let stdin = io::stdin();
@@ -325,17 +358,58 @@ async fn process_hook(input: HookInput) -> HookOutput {
                     } else {
                         // Command failed remotely - still deny to prevent re-execution
                         // The agent saw the error output via stderr
-                        info!(
-                            "Remote compilation failed (exit {}), denying local execution",
-                            result.exit_code
-                        );
-                        reporter.summary(&format!(
-                            "[RCH] remote {} failed (exit {})",
-                            worker.id, result.exit_code
-                        ));
+                        //
+                        // Exit code semantics:
+                        // - 101: Test failures (cargo test ran but tests failed)
+                        // - 1: Build/compilation error
+                        // - 128+N: Process killed by signal N
+                        let exit_code = result.exit_code;
+
+                        // Check for signal-killed processes (OOM, etc.)
+                        if let Some(signal) = is_signal_killed(exit_code) {
+                            warn!(
+                                "Remote command killed by signal {} ({}) on {}, denying local execution",
+                                signal, signal_name(signal), worker.id
+                            );
+                            reporter.summary(&format!(
+                                "[RCH] remote {} killed ({})",
+                                worker.id, signal_name(signal)
+                            ));
+                        } else if exit_code == EXIT_TEST_FAILURES {
+                            // Cargo test exit 101: tests ran but some failed
+                            info!(
+                                "Remote tests failed (exit 101) on {}, denying local re-execution",
+                                worker.id
+                            );
+                            reporter.summary(&format!(
+                                "[RCH] remote {} tests failed",
+                                worker.id
+                            ));
+                        } else if exit_code == EXIT_BUILD_ERROR {
+                            // Build/compilation error
+                            info!(
+                                "Remote build error (exit 1) on {}, denying local re-execution",
+                                worker.id
+                            );
+                            reporter.summary(&format!(
+                                "[RCH] remote {} build error",
+                                worker.id
+                            ));
+                        } else {
+                            // Other non-zero exit code
+                            info!(
+                                "Remote command failed (exit {}) on {}, denying local execution",
+                                exit_code, worker.id
+                            );
+                            reporter.summary(&format!(
+                                "[RCH] remote {} failed (exit {})",
+                                worker.id, exit_code
+                            ));
+                        }
+
                         HookOutput::deny(format!(
                             "RCH: Remote compilation failed with exit code {}",
-                            result.exit_code
+                            exit_code
                         ))
                     }
                 }
@@ -543,6 +617,39 @@ fn is_toolchain_failure(stderr: &str, exit_code: i32) -> bool {
     toolchain_patterns
         .iter()
         .any(|pattern| stderr_lower.contains(&pattern.to_lowercase()))
+}
+
+/// Check if the process was killed by a signal.
+///
+/// Exit codes > 128 indicate the process was terminated by a signal.
+/// The signal number is exit_code - 128.
+///
+/// Common signals:
+/// - 137 (SIGKILL = 9): Typically OOM killer
+/// - 143 (SIGTERM = 15): Graceful termination request
+/// - 139 (SIGSEGV = 11): Segmentation fault
+fn is_signal_killed(exit_code: i32) -> Option<i32> {
+    if exit_code > EXIT_SIGNAL_BASE {
+        Some(exit_code - EXIT_SIGNAL_BASE)
+    } else {
+        None
+    }
+}
+
+/// Format a signal number as a human-readable name.
+fn signal_name(signal: i32) -> &'static str {
+    match signal {
+        1 => "SIGHUP",
+        2 => "SIGINT",
+        3 => "SIGQUIT",
+        6 => "SIGABRT",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        13 => "SIGPIPE",
+        14 => "SIGALRM",
+        15 => "SIGTERM",
+        _ => "UNKNOWN",
+    }
 }
 
 /// Map a classification kind to required runtime.
@@ -1788,5 +1895,78 @@ mod tests {
 
         // Should fall back to local execution (fail-open on connection error)
         assert!(output.is_allow());
+    }
+
+    // =========================================================================
+    // Exit code handling tests (bead remote_compilation_helper-zerp)
+    // =========================================================================
+
+    #[test]
+    fn test_is_signal_killed() {
+        // Normal exit codes should not be signal-killed
+        assert!(is_signal_killed(0).is_none());
+        assert!(is_signal_killed(1).is_none());
+        assert!(is_signal_killed(101).is_none());
+        assert!(is_signal_killed(128).is_none()); // 128 is exactly at boundary
+
+        // Signal kills (128 + signal)
+        assert_eq!(is_signal_killed(129), Some(1)); // SIGHUP
+        assert_eq!(is_signal_killed(130), Some(2)); // SIGINT
+        assert_eq!(is_signal_killed(137), Some(9)); // SIGKILL
+        assert_eq!(is_signal_killed(139), Some(11)); // SIGSEGV
+        assert_eq!(is_signal_killed(143), Some(15)); // SIGTERM
+    }
+
+    #[test]
+    fn test_signal_name() {
+        assert_eq!(signal_name(1), "SIGHUP");
+        assert_eq!(signal_name(2), "SIGINT");
+        assert_eq!(signal_name(9), "SIGKILL");
+        assert_eq!(signal_name(11), "SIGSEGV");
+        assert_eq!(signal_name(15), "SIGTERM");
+        assert_eq!(signal_name(99), "UNKNOWN");
+    }
+
+    #[test]
+    fn test_exit_code_constants() {
+        // Verify exit code constants match cargo's documented behavior
+        assert_eq!(EXIT_SUCCESS, 0);
+        assert_eq!(EXIT_BUILD_ERROR, 1);
+        assert_eq!(EXIT_TEST_FAILURES, 101);
+        assert_eq!(EXIT_SIGNAL_BASE, 128);
+    }
+
+    #[test]
+    fn test_is_toolchain_failure_basic() {
+        // Should detect toolchain issues
+        assert!(is_toolchain_failure("error: toolchain 'nightly-2025-01-01' is not installed", 1));
+        assert!(is_toolchain_failure("rustup: command not found", 127));
+        assert!(is_toolchain_failure("error: no such command: `build`", 1));
+
+        // Should not flag normal failures
+        assert!(!is_toolchain_failure("error[E0425]: cannot find value `x`", 1));
+        assert!(!is_toolchain_failure("test result: FAILED. 1 passed; 2 failed", 101));
+
+        // Success should never be a toolchain failure
+        assert!(!is_toolchain_failure("anything", 0));
+    }
+
+    #[test]
+    fn test_exit_code_semantics_documented() {
+        // This test documents the expected behavior for different exit codes
+        // Exit 0: Success - should deny local (verified in other tests)
+        // Exit 101: Test failures - should deny local (re-running won't help)
+        // Exit 1: Build error - should deny local (same error locally)
+        // Exit 137: SIGKILL - should deny local (likely OOM)
+
+        // Verify constants are what we expect
+        assert_eq!(EXIT_SUCCESS, 0, "Success exit code should be 0");
+        assert_eq!(EXIT_BUILD_ERROR, 1, "Build error exit code should be 1");
+        assert_eq!(EXIT_TEST_FAILURES, 101, "Test failures exit code should be 101");
+
+        // Verify signal detection
+        let sigkill = 128 + 9;
+        assert_eq!(is_signal_killed(sigkill), Some(9), "Should detect SIGKILL");
+        assert_eq!(signal_name(9), "SIGKILL", "Should name SIGKILL correctly");
     }
 }
