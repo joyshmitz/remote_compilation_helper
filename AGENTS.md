@@ -163,6 +163,38 @@ Bun's `test` and `typecheck` commands are CPU-intensive operations (running test
 2. Full regex classification
 3. Context extraction (working dir, project root, flags)
 
+### Classification Details: cargo test
+
+`cargo test` is fully supported with these characteristics:
+
+| Property | Value |
+|----------|-------|
+| **CompilationKind** | `CargoTest` |
+| **Confidence** | 0.95 |
+| **RequiredRuntime** | `Rust` |
+| **Artifact Patterns** | `target/debug/**`, `target/release/**` |
+
+**Supported Variants (all classified as CargoTest):**
+- `cargo test` — Basic test execution
+- `cargo test --release` — Release mode tests
+- `cargo test filter` — Run tests matching filter
+- `cargo test -- --nocapture` — Show stdout during tests
+- `cargo test --workspace` — Test all workspace packages
+- `cargo test -p package` — Test specific package
+- `cargo t` — Short alias for cargo test
+- `cargo test --lib`, `--bins`, `--doc` — Target-specific tests
+- `RUST_BACKTRACE=1 cargo test` — Environment variable wrappers
+
+**Exit Code Semantics:**
+```rust
+const EXIT_SUCCESS: i32 = 0;        // All tests passed
+const EXIT_BUILD_ERROR: i32 = 1;    // Build/compilation error
+const EXIT_TEST_FAILURES: i32 = 101; // Tests ran but some failed
+const EXIT_SIGNAL_BASE: i32 = 128;   // Process killed by signal N (exit = 128+N)
+```
+
+All non-zero exits deny local re-execution (correct behavior—re-running won't help).
+
 ### 2. Worker Fleet Management
 
 Workers are remote Linux machines with:

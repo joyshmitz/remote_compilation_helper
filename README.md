@@ -581,6 +581,68 @@ rch daemon restart
 
 ---
 
+## Test Execution
+
+RCH fully supports `cargo test` and streams test output back to your agent in real-time.
+
+### Supported Test Commands
+
+| Command | Offloaded | Notes |
+|---------|-----------|-------|
+| `cargo test` | ✅ Yes | Basic test execution |
+| `cargo test --release` | ✅ Yes | Release mode tests |
+| `cargo test specific_test` | ✅ Yes | Run specific test by name |
+| `cargo test -- --nocapture` | ✅ Yes | Shows test stdout |
+| `cargo test --workspace` | ✅ Yes | Tests all workspace packages |
+| `cargo test -p crate_name` | ✅ Yes | Test specific package |
+| `cargo t` | ✅ Yes | Short alias for cargo test |
+| `cargo test --lib` | ✅ Yes | Library tests only |
+| `cargo test --bins` | ✅ Yes | Binary tests only |
+| `cargo test --doc` | ✅ Yes | Documentation tests |
+| `RUST_BACKTRACE=1 cargo test` | ✅ Yes | Environment variables preserved |
+
+### Exit Code Handling
+
+RCH correctly handles cargo test's specific exit codes:
+
+| Exit Code | Meaning | RCH Behavior |
+|-----------|---------|--------------|
+| 0 | All tests passed | Deny local execution (success) |
+| 1 | Build/compilation error | Deny local execution (error) |
+| 101 | Tests ran but some failed | Deny local execution (test failure) |
+| 128+N | Killed by signal N | Deny local execution (resource issue) |
+
+**Why deny local after failure?** Re-running tests locally won't help—the agent already saw the failure output. This prevents redundant execution.
+
+### Output Streaming
+
+Test output streams back in real-time as tests execute:
+- Pass/fail results appear as they complete
+- `--nocapture` output is visible immediately
+- Compilation errors show before tests run
+
+### Example Usage
+
+```bash
+# Run all tests on remote worker
+$ cargo test
+   Compiling my-crate v0.1.0
+    Finished test [unoptimized + debuginfo]
+     Running unittests src/lib.rs
+running 42 tests
+test module::test_feature ... ok
+test module::test_edge_case ... ok
+...
+test result: ok. 42 passed; 0 failed; 0 ignored
+
+# Run specific tests with output capture disabled
+$ cargo test my_function -- --nocapture
+running 1 test
+test my_function ... [debug output here] ok
+```
+
+---
+
 ## Limitations
 
 ### What RCH Doesn't Handle (Yet)
