@@ -3,6 +3,7 @@ import type {
   HealthResponse,
   ReadyResponse,
   BudgetStatusResponse,
+  SpeedScoreHistoryResponse,
 } from './types';
 
 // Default to local daemon socket proxy
@@ -88,6 +89,20 @@ export const api = {
       },
     });
     return response.text();
+  },
+
+  /**
+   * Get SpeedScore history for a worker with pagination
+   */
+  async getSpeedScoreHistory(
+    workerId: string,
+    options?: { limit?: number; offset?: number }
+  ): Promise<SpeedScoreHistoryResponse> {
+    const params = new URLSearchParams();
+    if (options?.limit) params.set('limit', String(options.limit));
+    if (options?.offset) params.set('offset', String(options.offset));
+    const query = params.toString() ? `?${params}` : '';
+    return fetchApi<SpeedScoreHistoryResponse>(`/api/speedscore/${workerId}/history${query}`);
   },
 };
 
