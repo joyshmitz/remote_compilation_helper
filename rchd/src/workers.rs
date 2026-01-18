@@ -265,11 +265,14 @@ impl WorkerPool {
     }
 
     /// Get all healthy workers (for job assignment).
+    ///
+    /// Includes workers with status Healthy or Degraded.
     pub async fn healthy_workers(&self) -> Vec<Arc<WorkerState>> {
         let workers = self.workers.read().await;
         let mut healthy = Vec::new();
         for worker in workers.values() {
-            if worker.status().await == WorkerStatus::Healthy {
+            let status = worker.status().await;
+            if status == WorkerStatus::Healthy || status == WorkerStatus::Degraded {
                 healthy.push(worker.clone());
             }
         }

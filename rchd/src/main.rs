@@ -6,7 +6,9 @@
 #![forbid(unsafe_code)]
 
 mod api;
+mod benchmark_queue;
 mod config;
+mod events;
 mod health;
 mod history;
 mod http_api;
@@ -17,16 +19,20 @@ mod telemetry;
 mod workers;
 
 use anyhow::Result;
+use chrono::Duration as ChronoDuration;
 use clap::Parser;
 use rch_common::{LogConfig, SelfTestConfig, init_logging};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::net::UnixListener;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+use benchmark_queue::BenchmarkQueue;
+use events::EventBus;
 use history::BuildHistory;
+use rch_telemetry::storage::TelemetryStorage;
 use self_test::{DEFAULT_RESULT_CAPACITY, DEFAULT_RUN_CAPACITY, SelfTestHistory, SelfTestService};
 use telemetry::{TelemetryPoller, TelemetryPollerConfig, TelemetryStore};
 
@@ -72,6 +78,10 @@ pub struct DaemonContext {
     pub history: Arc<BuildHistory>,
     /// Telemetry store.
     pub telemetry: Arc<TelemetryStore>,
+    /// Benchmark trigger queue.
+    pub benchmark_queue: Arc<BenchmarkQueue>,
+    /// Event broadcast bus.
+    pub events: EventBus,
     /// Self-test service.
     pub self_test: Arc<SelfTestService>,
     /// Daemon start time.
@@ -200,12 +210,40 @@ async fn main() -> Result<()> {
     info!("Listening on {:?}", cli.socket);
 
     // Create daemon context
-    let telemetry_store = Arc::new(TelemetryStore::new(std::time::Duration::from_secs(300)));
+    let telemetry_storage = match telemetry::default_telemetry_db_path() {
+        Ok(path) => match TelemetryStorage::new(&path, 30, 24, 365, 100) {
+            Ok(storage) => {
+                info!("Telemetry storage initialized at {:?}", path);
+                Some(Arc::new(storage))
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to initialize telemetry storage at {:?}: {}",
+                    path, e
+                );
+                None
+            }
+        },
+        Err(e) => {
+            warn!("Failed to resolve telemetry storage path: {}", e);
+            None
+        }
+    };
+
+    let telemetry_store = Arc::new(TelemetryStore::new(
+        Duration::from_secs(300),
+        telemetry_storage.clone(),
+    ));
+
+    let event_bus = EventBus::new(256);
+    let benchmark_queue = Arc::new(BenchmarkQueue::new(ChronoDuration::minutes(5)));
 
     let context = DaemonContext {
         pool: worker_pool.clone(),
         history,
         telemetry: telemetry_store.clone(),
+        benchmark_queue: benchmark_queue.clone(),
+        events: event_bus.clone(),
         self_test: self_test_service.clone(),
         started_at: Instant::now(),
         socket_path: cli.socket.to_string_lossy().to_string(),
@@ -227,6 +265,11 @@ async fn main() -> Result<()> {
     );
     let _telemetry_handle = telemetry_poller.start();
     info!("Telemetry poller started");
+
+    if let Some(storage) = telemetry_storage {
+        let _maintenance = telemetry::start_storage_maintenance(storage);
+        info!("Telemetry storage maintenance started");
+    }
 
     // Start HTTP server for metrics/health endpoints (if enabled)
     let _http_handle = if cli.metrics_port > 0 {
@@ -290,12 +333,14 @@ mod tests {
     use super::*;
     use crate::self_test::{SelfTestHistory, SelfTestService};
     use crate::telemetry::TelemetryStore;
+    use crate::{benchmark_queue::BenchmarkQueue, events::EventBus};
+    use chrono::Duration as ChronoDuration;
     use rch_common::SelfTestConfig;
     use std::time::Duration;
     use std::time::Instant;
 
     fn make_test_telemetry() -> Arc<TelemetryStore> {
-        Arc::new(TelemetryStore::new(Duration::from_secs(300)))
+        Arc::new(TelemetryStore::new(Duration::from_secs(300), None))
     }
 
     fn init_test_logging() {
@@ -333,6 +378,8 @@ mod tests {
             pool: pool.clone(),
             history: history.clone(),
             telemetry: make_test_telemetry(),
+            benchmark_queue: Arc::new(BenchmarkQueue::new(ChronoDuration::minutes(5))),
+            events: EventBus::new(16),
             self_test: make_test_self_test(pool.clone()),
             started_at,
             socket_path: "/tmp/test.sock".to_string(),
@@ -372,6 +419,8 @@ mod tests {
             pool: pool.clone(),
             history,
             telemetry: make_test_telemetry(),
+            benchmark_queue: Arc::new(BenchmarkQueue::new(ChronoDuration::minutes(5))),
+            events: EventBus::new(16),
             self_test: make_test_self_test(pool.clone()),
             started_at,
             socket_path: rch_common::default_socket_path(),
@@ -411,6 +460,8 @@ mod tests {
             pool: pool.clone(),
             history,
             telemetry: make_test_telemetry(),
+            benchmark_queue: Arc::new(BenchmarkQueue::new(ChronoDuration::minutes(5))),
+            events: EventBus::new(16),
             self_test: make_test_self_test(pool.clone()),
             started_at: Instant::now(),
             socket_path: rch_common::default_socket_path(),
@@ -435,6 +486,8 @@ mod tests {
             pool: pool.clone(),
             history: history.clone(),
             telemetry: make_test_telemetry(),
+            benchmark_queue: Arc::new(BenchmarkQueue::new(ChronoDuration::minutes(5))),
+            events: EventBus::new(16),
             self_test: make_test_self_test(pool.clone()),
             started_at: Instant::now(),
             socket_path: rch_common::default_socket_path(),
@@ -478,6 +531,8 @@ mod tests {
             pool: pool.clone(),
             history,
             telemetry: make_test_telemetry(),
+            benchmark_queue: Arc::new(BenchmarkQueue::new(ChronoDuration::minutes(5))),
+            events: EventBus::new(16),
             self_test: make_test_self_test(pool.clone()),
             started_at,
             socket_path: rch_common::default_socket_path(),
@@ -519,6 +574,8 @@ mod tests {
             pool: pool.clone(),
             history,
             telemetry: make_test_telemetry(),
+            benchmark_queue: Arc::new(BenchmarkQueue::new(ChronoDuration::minutes(5))),
+            events: EventBus::new(16),
             self_test: make_test_self_test(pool.clone()),
             started_at: Instant::now(),
             socket_path: rch_common::default_socket_path(),

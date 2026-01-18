@@ -389,8 +389,9 @@ pub fn set_build_queue_depth(depth: usize) {
 
 /// Record a classification decision.
 pub fn inc_build_classification(tier: u8, decision: &str) {
+    let tier_str = tier.to_string();
     BUILD_CLASSIFICATION_TOTAL
-        .with_label_values(&[&tier.to_string(), decision])
+        .with_label_values(&[tier_str.as_str(), decision])
         .inc();
 }
 
@@ -473,7 +474,7 @@ mod tests {
         // Gather and verify
         let metrics = test_registry.gather();
         assert!(!metrics.is_empty());
-        let names: Vec<_> = metrics.iter().map(|m| m.get_name()).collect();
+        let names: Vec<_> = metrics.iter().map(|m| m.name()).collect();
         assert!(names.contains(&"test_counter"));
     }
 

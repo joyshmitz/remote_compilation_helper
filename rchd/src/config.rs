@@ -3,7 +3,7 @@
 //! Loads worker definitions from workers.toml and daemon settings from config.toml.
 
 use anyhow::{Context, Result};
-use rch_common::WorkerConfig;
+use rch_common::{RchConfig, SelfTestConfig, WorkerConfig};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
@@ -230,6 +230,23 @@ pub fn load_workers(path: Option<&Path>) -> Result<Vec<WorkerConfig>> {
 
     debug!("Loaded {} enabled workers", workers.len());
     Ok(workers)
+}
+
+/// Load self-test configuration from the main config.toml.
+pub fn load_self_test_config() -> Result<SelfTestConfig> {
+    let Some(dir) = config_dir() else {
+        return Ok(SelfTestConfig::default());
+    };
+    let path = dir.join("config.toml");
+    if !path.exists() {
+        return Ok(SelfTestConfig::default());
+    }
+
+    let contents = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read config {:?}", path))?;
+    let config: RchConfig =
+        toml::from_str(&contents).with_context(|| format!("Failed to parse {:?}", path))?;
+    Ok(config.self_test)
 }
 
 /// Generate an example workers.toml configuration.

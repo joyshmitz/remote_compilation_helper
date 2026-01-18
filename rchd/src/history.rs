@@ -2,13 +2,15 @@
 //!
 //! Maintains a ring buffer of recent builds for status reporting and analytics.
 
+use chrono::Utc;
 use rch_common::{BuildLocation, BuildRecord, BuildStats};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use tokio::fs::OpenOptions as AsyncOpenOptions;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, warn};
@@ -16,12 +18,28 @@ use tracing::{debug, warn};
 /// Default maximum number of builds to retain.
 const DEFAULT_CAPACITY: usize = 100;
 
+/// In-flight build state tracked for active build visibility.
+#[derive(Debug, Clone)]
+pub struct ActiveBuildState {
+    pub id: u64,
+    pub project_id: String,
+    pub worker_id: String,
+    pub command: String,
+    pub started_at: String,
+    pub started_at_mono: Instant,
+    pub hook_pid: u32,
+    pub slots: u32,
+    pub location: BuildLocation,
+}
+
 /// Build history manager.
 ///
 /// Thread-safe ring buffer of recent builds with optional persistence.
 pub struct BuildHistory {
     /// Ring buffer of recent builds.
     records: RwLock<VecDeque<BuildRecord>>,
+    /// Active builds (in-flight).
+    active: RwLock<HashMap<u64, ActiveBuildState>>,
     /// Maximum capacity.
     capacity: usize,
     /// Next build ID.
@@ -35,6 +53,7 @@ impl BuildHistory {
     pub fn new(capacity: usize) -> Self {
         Self {
             records: RwLock::new(VecDeque::with_capacity(capacity)),
+            active: RwLock::new(HashMap::new()),
             capacity,
             next_id: AtomicU64::new(1),
             persistence_path: None,
@@ -94,6 +113,106 @@ impl BuildHistory {
         } else {
             None
         }
+    }
+
+    /// Register a new active build and return its state.
+    pub fn start_active_build(
+        &self,
+        project_id: String,
+        worker_id: String,
+        command: String,
+        hook_pid: u32,
+        slots: u32,
+        location: BuildLocation,
+    ) -> ActiveBuildState {
+        let id = self.next_id();
+        let started_at = Utc::now().to_rfc3339();
+        let state = ActiveBuildState {
+            id,
+            project_id,
+            worker_id,
+            command,
+            started_at,
+            started_at_mono: Instant::now(),
+            hook_pid,
+            slots,
+            location,
+        };
+
+        let mut active = self.active.write().unwrap();
+        active.insert(id, state.clone());
+        state
+    }
+
+    /// Complete an active build, moving it into history.
+    pub fn finish_active_build(
+        &self,
+        build_id: u64,
+        exit_code: i32,
+        duration_ms: Option<u64>,
+        bytes_transferred: Option<u64>,
+    ) -> Option<BuildRecord> {
+        let state = {
+            let mut active = self.active.write().unwrap();
+            active.remove(&build_id)
+        }?;
+
+        let duration_ms =
+            duration_ms.unwrap_or_else(|| state.started_at_mono.elapsed().as_millis() as u64);
+        let record = BuildRecord {
+            id: state.id,
+            started_at: state.started_at,
+            completed_at: Utc::now().to_rfc3339(),
+            project_id: state.project_id,
+            worker_id: Some(state.worker_id),
+            command: state.command,
+            exit_code,
+            duration_ms,
+            location: state.location,
+            bytes_transferred,
+        };
+
+        self.record(record.clone());
+        Some(record)
+    }
+
+    /// Cancel an active build, moving it into history with a cancel exit code.
+    pub fn cancel_active_build(
+        &self,
+        build_id: u64,
+        bytes_transferred: Option<u64>,
+    ) -> Option<BuildRecord> {
+        let state = {
+            let mut active = self.active.write().unwrap();
+            active.remove(&build_id)
+        }?;
+
+        let duration_ms = state.started_at_mono.elapsed().as_millis() as u64;
+        let record = BuildRecord {
+            id: state.id,
+            started_at: state.started_at,
+            completed_at: Utc::now().to_rfc3339(),
+            project_id: state.project_id,
+            worker_id: Some(state.worker_id),
+            command: state.command,
+            exit_code: 130,
+            duration_ms,
+            location: state.location,
+            bytes_transferred,
+        };
+
+        self.record(record.clone());
+        Some(record)
+    }
+
+    /// Get a specific active build by ID.
+    pub fn active_build(&self, build_id: u64) -> Option<ActiveBuildState> {
+        self.active.read().unwrap().get(&build_id).cloned()
+    }
+
+    /// Get all active builds.
+    pub fn active_builds(&self) -> Vec<ActiveBuildState> {
+        self.active.read().unwrap().values().cloned().collect()
     }
 
     /// Get recent builds (most recent first).
@@ -208,6 +327,7 @@ impl BuildHistory {
 
         Ok(Self {
             records: RwLock::new(records),
+            active: RwLock::new(HashMap::new()),
             capacity,
             next_id: AtomicU64::new(max_id + 1),
             persistence_path: Some(path.to_path_buf()),

@@ -147,13 +147,6 @@ impl WorkerHealth {
             self.circuit.record_success();
             self.last_error = None;
 
-            // Check if response is slow (degraded)
-            if result.response_time_ms > config.degraded_threshold_ms {
-                self.current_status = WorkerStatus::Degraded;
-            } else {
-                self.current_status = WorkerStatus::Healthy;
-            }
-
             // Check if circuit should close (half-open -> closed)
             if self.circuit.should_close(&config.circuit) {
                 info!(
@@ -175,10 +168,6 @@ impl WorkerHealth {
                     self.circuit.consecutive_failures()
                 );
                 self.circuit.open();
-                self.current_status = WorkerStatus::Unreachable;
-            } else if self.circuit.state() == CircuitState::Open {
-                // Already open, keep unreachable
-                self.current_status = WorkerStatus::Unreachable;
             } else if self.circuit.state() == CircuitState::HalfOpen {
                 // Failure in half-open means reopen circuit
                 info!(
@@ -186,10 +175,6 @@ impl WorkerHealth {
                     worker_id
                 );
                 self.circuit.open();
-                self.current_status = WorkerStatus::Unreachable;
-            } else {
-                // Still trying, mark as degraded
-                self.current_status = WorkerStatus::Degraded;
             }
         }
 
@@ -203,6 +188,24 @@ impl WorkerHealth {
             );
             self.circuit.half_open();
         }
+
+        // Determine status based on circuit state and check result
+        self.current_status = match self.circuit.state() {
+            CircuitState::Open => WorkerStatus::Unreachable,
+            CircuitState::HalfOpen => WorkerStatus::Degraded,
+            CircuitState::Closed => {
+                if !result.healthy {
+                    // Failed but circuit not open yet -> Degraded
+                    WorkerStatus::Degraded
+                } else if result.response_time_ms > config.degraded_threshold_ms {
+                    // Slow response -> Degraded
+                    WorkerStatus::Degraded
+                } else {
+                    // Healthy and fast
+                    WorkerStatus::Healthy
+                }
+            }
+        };
 
         // Log state transitions
         let new_circuit_state = self.circuit.state();
@@ -873,6 +876,7 @@ mod tests {
         fn make_request(project: &str, cores: u32) -> SelectionRequest {
             SelectionRequest {
                 project: project.to_string(),
+                command: None,
                 estimated_cores: cores,
                 preferred_workers: vec![],
                 toolchain: None,
@@ -1199,7 +1203,7 @@ mod tests {
             );
             // With cooldown=0, after opening it checks should_half_open which is true
             assert_eq!(health.circuit_state(), CircuitState::HalfOpen);
-            assert_eq!(health.status(), WorkerStatus::Unreachable);
+            assert_eq!(health.status(), WorkerStatus::Degraded);
 
             // Success 1: Still half-open
             health.update(HealthCheckResult::success(50), &config, "test-worker");
