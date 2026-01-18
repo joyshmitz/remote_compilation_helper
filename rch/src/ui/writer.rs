@@ -186,9 +186,15 @@ impl Write for BufferWriter {
 mod tests {
     use super::*;
     use std::thread;
+    use tracing::info;
+
+    fn log_test_start(name: &str) {
+        info!("TEST START: {}", name);
+    }
 
     #[test]
     fn test_output_buffer_write_and_read() {
+        log_test_start("test_output_buffer_write_and_read");
         let mut buffer = OutputBuffer::new();
         write!(buffer, "Hello, ").unwrap();
         write!(buffer, "World!").unwrap();
@@ -197,6 +203,7 @@ mod tests {
 
     #[test]
     fn test_output_buffer_clear() {
+        log_test_start("test_output_buffer_clear");
         let mut buffer = OutputBuffer::new();
         write!(buffer, "test").unwrap();
         assert!(!buffer.is_empty());
@@ -206,6 +213,7 @@ mod tests {
 
     #[test]
     fn test_output_writer_line() {
+        log_test_start("test_output_writer_line");
         let buffer = SharedOutputBuffer::new();
         let writer = buffer.as_writer(false);
         writer.write_line("test line");
@@ -214,6 +222,7 @@ mod tests {
 
     #[test]
     fn test_output_writer_thread_safe() {
+        log_test_start("test_output_writer_thread_safe");
         let buffer = SharedOutputBuffer::new();
         let writer = buffer.as_writer(false);
 

@@ -6,8 +6,8 @@
 use anyhow::{Context, Result, bail};
 use rch_common::mock::{self, MockConfig, MockRsync, MockRsyncConfig, MockSshClient};
 use rch_common::{
-    CommandResult, SshClient, SshOptions, ToolchainInfo, TransferConfig, WorkerConfig,
-    wrap_command_with_toolchain,
+    ColorMode, CommandResult, SshClient, SshOptions, ToolchainInfo, TransferConfig, WorkerConfig,
+    wrap_command_with_color, wrap_command_with_toolchain,
 };
 use shell_escape::escape;
 use std::borrow::Cow;
@@ -35,6 +35,8 @@ pub struct TransferPipeline {
     transfer_config: TransferConfig,
     /// SSH options.
     ssh_options: SshOptions,
+    /// Color mode for remote command output.
+    color_mode: ColorMode,
 }
 
 impl TransferPipeline {
@@ -51,6 +53,7 @@ impl TransferPipeline {
             project_hash,
             transfer_config,
             ssh_options: SshOptions::default(),
+            color_mode: ColorMode::default(),
         }
     }
 
@@ -58,6 +61,13 @@ impl TransferPipeline {
     #[allow(dead_code)] // Reserved for future CLI/config support
     pub fn with_ssh_options(mut self, options: SshOptions) -> Self {
         self.ssh_options = options;
+        self
+    }
+
+    /// Set color mode for remote command output.
+    #[allow(dead_code)] // Reserved for future CLI/config support
+    pub fn with_color_mode(mut self, color_mode: ColorMode) -> Self {
+        self.color_mode = color_mode;
         self
     }
 
@@ -172,6 +182,7 @@ impl TransferPipeline {
     /// Execute a compilation command on the remote worker.
     ///
     /// If `toolchain` is provided, the command will be wrapped with `rustup run <toolchain>`.
+    /// Color-forcing environment variables are applied based on the configured color mode.
     #[allow(dead_code)] // Reserved for future usage
     pub async fn execute_remote(
         &self,
@@ -185,8 +196,11 @@ impl TransferPipeline {
         // Wrap command with toolchain if provided
         let toolchain_command = wrap_command_with_toolchain(command, toolchain);
 
+        // Apply color mode environment variables
+        let colored_command = wrap_command_with_color(&toolchain_command, self.color_mode);
+
         // Wrap command to run in project directory
-        let wrapped_command = format!("cd {} && {}", escaped_remote_path, toolchain_command);
+        let wrapped_command = format!("cd {} && {}", escaped_remote_path, colored_command);
 
         if use_mock_transport(worker) {
             let mut client = MockSshClient::new(worker.clone(), MockConfig::from_env());
@@ -220,6 +234,8 @@ impl TransferPipeline {
     /// Execute a command and stream output in real-time.
     ///
     /// If `toolchain` is provided, the command will be wrapped with `rustup run <toolchain>`.
+    /// Color-forcing environment variables are applied based on the configured color mode
+    /// to preserve ANSI colors in the streamed output.
     pub async fn execute_remote_streaming<F, G>(
         &self,
         worker: &WorkerConfig,
@@ -235,7 +251,9 @@ impl TransferPipeline {
         let remote_path = self.remote_path();
         let escaped_remote_path = escape(Cow::from(&remote_path));
         let toolchain_command = wrap_command_with_toolchain(command, toolchain);
-        let wrapped_command = format!("cd {} && {}", escaped_remote_path, toolchain_command);
+        // Apply color mode environment variables to preserve ANSI colors
+        let colored_command = wrap_command_with_color(&toolchain_command, self.color_mode);
+        let wrapped_command = format!("cd {} && {}", escaped_remote_path, colored_command);
 
         if use_mock_transport(worker) {
             let mut client = MockSshClient::new(worker.clone(), MockConfig::from_env());
@@ -477,6 +495,37 @@ pub fn default_rust_artifact_patterns() -> Vec<String> {
     ]
 }
 
+/// Minimal artifact patterns for Rust test-only commands.
+///
+/// Test runs stream their output via stdout/stderr and don't need the full
+/// target/ directory returned. This function returns only patterns for:
+/// - Coverage reports (when using cargo-llvm-cov, tarpaulin, etc.)
+/// - Nextest archive/junit artifacts
+/// - Benchmark results
+///
+/// This dramatically reduces artifact transfer time for test commands,
+/// especially on large projects where target/ can be several gigabytes.
+#[allow(dead_code)] // Reserved for future test-only artifact optimization
+pub fn default_rust_test_artifact_patterns() -> Vec<String> {
+    vec![
+        // cargo-llvm-cov coverage data
+        "target/llvm-cov-target/**".to_string(),
+        // Alternative coverage output locations
+        "target/coverage/**".to_string(),
+        // Tarpaulin coverage reports
+        "tarpaulin-report.html".to_string(),
+        "tarpaulin-report.json".to_string(),
+        "cobertura.xml".to_string(),
+        // cargo-nextest artifacts
+        "target/nextest/**".to_string(),
+        // JUnit test result format (common CI integration)
+        "junit.xml".to_string(),
+        "test-results.xml".to_string(),
+        // Criterion benchmark results
+        "target/criterion/**".to_string(),
+    ]
+}
+
 /// Default artifact patterns for Bun/Node.js projects.
 ///
 /// These patterns retrieve test results and coverage reports generated
@@ -576,5 +625,40 @@ mod tests {
         assert!(!patterns.is_empty());
         assert!(patterns.iter().any(|p| p.contains("coverage")));
         assert!(patterns.iter().any(|p| p.contains("tsbuildinfo")));
+    }
+
+    #[test]
+    fn test_default_rust_test_artifact_patterns() {
+        let patterns = default_rust_test_artifact_patterns();
+        // Test patterns should be non-empty but minimal
+        assert!(!patterns.is_empty());
+
+        // Should include coverage-related patterns
+        assert!(patterns.iter().any(|p| p.contains("llvm-cov")));
+        assert!(patterns.iter().any(|p| p.contains("coverage")));
+
+        // Should include nextest artifacts
+        assert!(patterns.iter().any(|p| p.contains("nextest")));
+
+        // Should NOT include full debug/release directories (that's the point!)
+        assert!(!patterns.iter().any(|p| p == "target/debug/**"));
+        assert!(!patterns.iter().any(|p| p == "target/release/**"));
+    }
+
+    #[test]
+    fn test_rust_test_patterns_vs_full_patterns() {
+        let test_patterns = default_rust_test_artifact_patterns();
+        let full_patterns = default_rust_artifact_patterns();
+
+        // Test patterns should have fewer items than full patterns
+        // (since we're excluding the bulk of target/)
+        assert!(
+            test_patterns.len() <= full_patterns.len(),
+            "Test patterns should be minimal, not larger than full patterns"
+        );
+
+        // Full patterns should include debug/release
+        assert!(full_patterns.iter().any(|p| p.contains("debug")));
+        assert!(full_patterns.iter().any(|p| p.contains("release")));
     }
 }

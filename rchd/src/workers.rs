@@ -248,6 +248,17 @@ impl WorkerPool {
         debug!("Added worker: {}", id);
     }
 
+    /// Add a worker with a pre-configured state (for testing).
+    #[cfg(test)]
+    pub async fn add_worker_state(&self, state: WorkerState) {
+        let id = state.config.id.clone();
+        let mut workers = self.workers.write().await;
+        if workers.insert(id.clone(), Arc::new(state)).is_none() {
+            self.worker_count.fetch_add(1, Ordering::SeqCst);
+        }
+        debug!("Added worker: {}", id);
+    }
+
     /// Get the number of workers in the pool.
     pub fn len(&self) -> usize {
         self.worker_count.load(Ordering::SeqCst)

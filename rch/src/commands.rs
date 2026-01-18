@@ -5889,7 +5889,7 @@ pub async fn speedscore(
                 "  {} {} {} {}",
                 style.symbols.bullet_filled,
                 format_score(entry.total, style),
-                style.muted(&entry.rating()),
+                style.muted(entry.rating()),
                 style.muted(&format!("({})", entry.measured_at))
             );
             if verbose {

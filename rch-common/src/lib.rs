@@ -36,12 +36,13 @@ pub use patterns::{
 pub use protocol::{HookInput, HookOutput, ToolInput};
 pub use ssh::{CommandResult, KnownHostsPolicy, SshClient, SshOptions, SshPool};
 pub use test_change::{TestChangeGuard, TestCodeChange};
-pub use toolchain::{ToolchainInfo, wrap_command_with_toolchain};
+pub use toolchain::{ToolchainInfo, wrap_command_with_color, wrap_command_with_toolchain};
 pub use types::{
     BuildLocation, BuildRecord, BuildStats, CircuitBreakerConfig, CircuitState, CircuitStats,
-    CompilationConfig, CompilationMetrics, CompilationTimer, CompilationTimingBreakdown,
-    GeneralConfig, MetricsAggregator, OutputConfig, OutputVisibility, RchConfig, ReleaseRequest,
-    RequiredRuntime, SelectedWorker, SelectionReason, SelectionRequest, SelectionResponse,
+    ColorMode, CompilationConfig, CompilationMetrics, CompilationTimer,
+    CompilationTimingBreakdown, FairnessConfig, GeneralConfig, MetricsAggregator, OutputConfig,
+    OutputVisibility, RchConfig, ReleaseRequest, RequiredRuntime, SelectedWorker, SelectionConfig,
+    SelectionReason, SelectionRequest, SelectionResponse, SelectionStrategy, SelectionWeightConfig,
     SelfTestConfig, SelfTestFailureAction, SelfTestWorkers, TransferConfig, WorkerCapabilities,
     WorkerConfig, WorkerId, WorkerStatus, default_socket_path,
 };

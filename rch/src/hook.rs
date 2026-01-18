@@ -8,11 +8,13 @@ use crate::error::{DaemonError, TransferError};
 use crate::toolchain::detect_toolchain;
 use crate::transfer::{
     TransferPipeline, compute_project_hash, default_bun_artifact_patterns,
-    default_c_cpp_artifact_patterns, default_rust_artifact_patterns, project_id_from_path,
+    default_c_cpp_artifact_patterns, default_rust_artifact_patterns,
+    default_rust_test_artifact_patterns, project_id_from_path,
 };
 use rch_common::{
-    CompilationKind, HookInput, HookOutput, OutputVisibility, RequiredRuntime, SelectedWorker,
-    SelectionResponse, ToolchainInfo, TransferConfig, WorkerConfig, WorkerId, classify_command,
+    ColorMode, CompilationKind, HookInput, HookOutput, OutputVisibility, RequiredRuntime,
+    SelectedWorker, SelectionResponse, ToolchainInfo, TransferConfig, WorkerConfig, WorkerId,
+    classify_command,
 };
 use rch_telemetry::protocol::{
     PIGGYBACK_MARKER, TelemetrySource, WorkerTelemetry, extract_piggybacked_telemetry,
@@ -139,6 +141,93 @@ fn estimate_local_time_ms(remote_ms: u64, worker_speed_score: f64) -> Option<u64
     Some(estimate.round().max(1.0) as u64)
 }
 
+fn parse_u32(value: &str) -> Option<u32> {
+    value
+        .trim_matches('"')
+        .parse::<u32>()
+        .ok()
+        .filter(|n| *n > 0)
+}
+
+fn parse_env_u32(command: &str, key: &str) -> Option<u32> {
+    let needle = format!("{}=", key);
+    command
+        .split_whitespace()
+        .find_map(|token| token.strip_prefix(&needle).and_then(parse_u32))
+}
+
+fn parse_jobs_flag(command: &str) -> Option<u32> {
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    for (idx, token) in tokens.iter().enumerate() {
+        if *token == "-j" || *token == "--jobs" {
+            if let Some(next) = tokens.get(idx + 1) {
+                if let Some(value) = parse_u32(next) {
+                    return Some(value);
+                }
+            }
+        }
+        if let Some(value) = token.strip_prefix("-j=").and_then(parse_u32) {
+            return Some(value);
+        }
+        if let Some(value) = token.strip_prefix("-j").and_then(parse_u32) {
+            return Some(value);
+        }
+        if let Some(value) = token.strip_prefix("--jobs=").and_then(parse_u32) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn parse_test_threads(command: &str) -> Option<u32> {
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    for (idx, token) in tokens.iter().enumerate() {
+        if *token == "--test-threads" {
+            if let Some(next) = tokens.get(idx + 1) {
+                if let Some(value) = parse_u32(next) {
+                    return Some(value);
+                }
+            }
+        }
+        if let Some(value) = token.strip_prefix("--test-threads=").and_then(parse_u32) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn estimate_cores_for_command(
+    kind: Option<CompilationKind>,
+    command: &str,
+    config: &rch_common::CompilationConfig,
+) -> u32 {
+    let build_default = config.build_slots.max(1);
+    let test_default = config.test_slots.max(1);
+    let check_default = config.check_slots.max(1);
+
+    match kind {
+        Some(
+            CompilationKind::CargoTest | CompilationKind::CargoNextest | CompilationKind::BunTest,
+        ) => parse_test_threads(command)
+            .or_else(|| parse_env_u32(command, "RUST_TEST_THREADS"))
+            .unwrap_or(test_default)
+            .max(1),
+        Some(
+            CompilationKind::CargoCheck
+            | CompilationKind::CargoClippy
+            | CompilationKind::BunTypecheck,
+        ) => parse_jobs_flag(command)
+            .or_else(|| parse_env_u32(command, "CARGO_BUILD_JOBS"))
+            .unwrap_or(check_default)
+            .max(1),
+        Some(_) => parse_jobs_flag(command)
+            .or_else(|| parse_env_u32(command, "CARGO_BUILD_JOBS"))
+            .unwrap_or(build_default)
+            .max(1),
+        None => build_default,
+    }
+}
+
 fn emit_first_run_message(worker: &SelectedWorker, remote_ms: u64, local_ms: Option<u64>) {
     let divider = "----------------------------------------";
     let remote = format_duration_ms(Duration::from_millis(remote_ms));
@@ -247,7 +336,8 @@ async fn process_hook(input: HookInput) -> HookOutput {
 
     // Query daemon for a worker
     let project = extract_project_name();
-    let estimated_cores = 4;
+    let estimated_cores =
+        estimate_cores_for_command(classification.kind, command, &config.compilation);
     reporter.verbose("[RCH] selecting worker...");
 
     // Detect toolchain to send to daemon
@@ -311,6 +401,7 @@ async fn process_hook(input: HookInput) -> HookOutput {
                 classification.kind,
                 &reporter,
                 &config.general.socket_path,
+                config.output.color_mode,
             )
             .await;
             let remote_elapsed = remote_start.elapsed();
@@ -369,11 +460,14 @@ async fn process_hook(input: HookInput) -> HookOutput {
                         if let Some(signal) = is_signal_killed(exit_code) {
                             warn!(
                                 "Remote command killed by signal {} ({}) on {}, denying local execution",
-                                signal, signal_name(signal), worker.id
+                                signal,
+                                signal_name(signal),
+                                worker.id
                             );
                             reporter.summary(&format!(
                                 "[RCH] remote {} killed ({})",
-                                worker.id, signal_name(signal)
+                                worker.id,
+                                signal_name(signal)
                             ));
                         } else if exit_code == EXIT_TEST_FAILURES {
                             // Cargo test exit 101: tests ran but some failed
@@ -381,10 +475,7 @@ async fn process_hook(input: HookInput) -> HookOutput {
                                 "Remote tests failed (exit 101) on {}, denying local re-execution",
                                 worker.id
                             );
-                            reporter.summary(&format!(
-                                "[RCH] remote {} tests failed",
-                                worker.id
-                            ));
+                            reporter.summary(&format!("[RCH] remote {} tests failed", worker.id));
                         } else if exit_code == EXIT_BUILD_ERROR {
                             // Build/compilation error
                             info!(
@@ -673,18 +764,24 @@ pub(crate) fn required_runtime_for_kind(kind: Option<CompilationKind>) -> Requir
 }
 
 /// Get artifact patterns based on compilation kind.
+///
+/// Test commands use minimal patterns since test output is streamed and the full
+/// target/ directory is not needed. This significantly reduces artifact transfer
+/// time for test-only commands.
 fn get_artifact_patterns(kind: Option<CompilationKind>) -> Vec<String> {
     match kind {
         Some(CompilationKind::BunTest) | Some(CompilationKind::BunTypecheck) => {
             default_bun_artifact_patterns()
         }
+        // Test commands only need coverage/results artifacts, not full target/
+        Some(CompilationKind::CargoTest) | Some(CompilationKind::CargoNextest) => {
+            default_rust_test_artifact_patterns()
+        }
         Some(CompilationKind::Rustc)
         | Some(CompilationKind::CargoBuild)
-        | Some(CompilationKind::CargoTest)
         | Some(CompilationKind::CargoCheck)
         | Some(CompilationKind::CargoClippy)
-        | Some(CompilationKind::CargoDoc)
-        | Some(CompilationKind::CargoNextest) => default_rust_artifact_patterns(),
+        | Some(CompilationKind::CargoDoc) => default_rust_artifact_patterns(),
         Some(CompilationKind::Gcc)
         | Some(CompilationKind::Gpp)
         | Some(CompilationKind::Clang)
@@ -705,6 +802,7 @@ fn get_artifact_patterns(kind: Option<CompilationKind>) -> Vec<String> {
 /// 3. Retrieves build artifacts back to local
 ///
 /// Returns the execution result including exit code and stderr.
+#[allow(clippy::too_many_arguments)] // Pipeline wiring favors explicit params
 async fn execute_remote_compilation(
     worker: &SelectedWorker,
     command: &str,
@@ -713,6 +811,7 @@ async fn execute_remote_compilation(
     kind: Option<CompilationKind>,
     reporter: &HookReporter,
     socket_path: &str,
+    color_mode: ColorMode,
 ) -> anyhow::Result<RemoteExecutionResult> {
     let worker_config = selected_worker_to_config(worker);
 
@@ -732,13 +831,14 @@ async fn execute_remote_compilation(
         project_id, worker_config.id
     ));
 
-    // Create transfer pipeline
+    // Create transfer pipeline with color mode for output preservation
     let pipeline = TransferPipeline::new(
         project_root.clone(),
         project_id,
         project_hash,
         transfer_config,
-    );
+    )
+    .with_color_mode(color_mode);
 
     // Step 1: Sync project to remote
     info!("Syncing project to worker {}...", worker_config.id);
@@ -1030,6 +1130,68 @@ mod tests {
         let encoded = urlencoding_encode("café");
         assert!(encoded.contains("%")); // 'é' should be encoded
         assert!(encoded.starts_with("caf")); // ASCII part preserved
+    }
+
+    #[test]
+    fn test_parse_jobs_flag_variants() {
+        assert_eq!(parse_jobs_flag("cargo build -j 8"), Some(8));
+        assert_eq!(parse_jobs_flag("cargo build -j8"), Some(8));
+        assert_eq!(parse_jobs_flag("cargo build -j=16"), Some(16));
+        assert_eq!(parse_jobs_flag("cargo build --jobs 4"), Some(4));
+        assert_eq!(parse_jobs_flag("cargo build --jobs=12"), Some(12));
+        assert_eq!(parse_jobs_flag("cargo build"), None);
+    }
+
+    #[test]
+    fn test_parse_test_threads_variants() {
+        assert_eq!(
+            parse_test_threads("cargo test -- --test-threads=4"),
+            Some(4)
+        );
+        assert_eq!(
+            parse_test_threads("cargo test -- --test-threads 2"),
+            Some(2)
+        );
+        assert_eq!(parse_test_threads("cargo test"), None);
+    }
+
+    #[test]
+    fn test_estimate_cores_for_command() {
+        let config = rch_common::CompilationConfig {
+            build_slots: 6,
+            test_slots: 10,
+            check_slots: 3,
+            ..Default::default()
+        };
+
+        let build = estimate_cores_for_command(Some(CompilationKind::CargoBuild), "cargo build", &config);
+        assert_eq!(build, 6);
+
+        let build_jobs =
+            estimate_cores_for_command(Some(CompilationKind::CargoBuild), "cargo build -j 12", &config);
+        assert_eq!(build_jobs, 12);
+
+        let test_default =
+            estimate_cores_for_command(Some(CompilationKind::CargoTest), "cargo test", &config);
+        assert_eq!(test_default, 10);
+
+        let test_threads = estimate_cores_for_command(
+            Some(CompilationKind::CargoTest),
+            "cargo test -- --test-threads=4",
+            &config,
+        );
+        assert_eq!(test_threads, 4);
+
+        let test_env = estimate_cores_for_command(
+            Some(CompilationKind::CargoTest),
+            "RUST_TEST_THREADS=3 cargo test",
+            &config,
+        );
+        assert_eq!(test_env, 3);
+
+        let check_default =
+            estimate_cores_for_command(Some(CompilationKind::CargoCheck), "cargo check", &config);
+        assert_eq!(check_default, 3);
     }
 
     // =========================================================================

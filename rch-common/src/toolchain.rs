@@ -76,6 +76,56 @@ pub fn wrap_command_with_toolchain(command: &str, toolchain: Option<&ToolchainIn
     }
 }
 
+use crate::types::ColorMode;
+
+/// Wrap a command with environment variables to force color output.
+///
+/// Remote SSH connections typically don't allocate a PTY, which causes tools
+/// like cargo, rustc, and bun to detect a non-TTY and disable color output.
+/// This function adds environment variables that force color output regardless
+/// of terminal detection.
+///
+/// # Environment Variables Set
+///
+/// - `CARGO_TERM_COLOR=always` - Forces cargo to output ANSI colors
+/// - `RUST_LOG_STYLE=always` - Forces env_logger/tracing to use colors
+/// - `CLICOLOR_FORCE=1` - Standard env var for forcing color output
+/// - `FORCE_COLOR=1` - Used by many Node.js/JS tools including Bun
+///
+/// # Arguments
+///
+/// * `command` - The command to wrap
+/// * `color_mode` - The color mode configuration
+///
+/// # Returns
+///
+/// The command prefixed with color-forcing environment variables,
+/// or the original command if color mode is Auto or Never.
+pub fn wrap_command_with_color(command: &str, color_mode: ColorMode) -> String {
+    match color_mode {
+        ColorMode::Always => {
+            // Environment variables that force color output across different tools:
+            // - CARGO_TERM_COLOR: cargo's native color setting
+            // - RUST_LOG_STYLE: env_logger and tracing-subscriber color setting
+            // - CLICOLOR_FORCE: de facto standard for forcing colors (clicolors.org)
+            // - FORCE_COLOR: Node.js/JS ecosystem standard (used by Bun, chalk, etc.)
+            // - NO_COLOR: Ensure it's unset (some tools check this first)
+            format!(
+                "unset NO_COLOR; CARGO_TERM_COLOR=always RUST_LOG_STYLE=always CLICOLOR_FORCE=1 FORCE_COLOR=1 {}",
+                command
+            )
+        }
+        ColorMode::Auto => {
+            // Let the remote command auto-detect (default behavior)
+            command.to_string()
+        }
+        ColorMode::Never => {
+            // Explicitly disable colors
+            format!("NO_COLOR=1 CARGO_TERM_COLOR=never {}", command)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,5 +388,71 @@ mod tests {
             // Should have at most one true (custom channels have none)
             assert!(count <= 1, "Multiple channel types for: {}", channel);
         }
+    }
+
+    // === Color wrapping tests ===
+
+    #[test]
+    fn test_wrap_command_with_color_always() {
+        let wrapped = wrap_command_with_color("cargo test", ColorMode::Always);
+        assert!(wrapped.contains("CARGO_TERM_COLOR=always"));
+        assert!(wrapped.contains("RUST_LOG_STYLE=always"));
+        assert!(wrapped.contains("CLICOLOR_FORCE=1"));
+        assert!(wrapped.contains("FORCE_COLOR=1"));
+        assert!(wrapped.contains("unset NO_COLOR"));
+        assert!(wrapped.contains("cargo test"));
+    }
+
+    #[test]
+    fn test_wrap_command_with_color_auto() {
+        let wrapped = wrap_command_with_color("cargo test", ColorMode::Auto);
+        // Auto mode should not modify the command
+        assert_eq!(wrapped, "cargo test");
+    }
+
+    #[test]
+    fn test_wrap_command_with_color_never() {
+        let wrapped = wrap_command_with_color("cargo test", ColorMode::Never);
+        assert!(wrapped.contains("NO_COLOR=1"));
+        assert!(wrapped.contains("CARGO_TERM_COLOR=never"));
+        assert!(wrapped.contains("cargo test"));
+    }
+
+    #[test]
+    fn test_wrap_command_with_color_preserves_complex_command() {
+        let cmd = "cargo test --release -- --test-threads=4";
+        let wrapped = wrap_command_with_color(cmd, ColorMode::Always);
+        assert!(wrapped.contains(cmd));
+    }
+
+    #[test]
+    fn test_wrap_command_with_color_bun_commands() {
+        // Verify Bun commands work with color wrapping (uses FORCE_COLOR)
+        let wrapped = wrap_command_with_color("bun test", ColorMode::Always);
+        assert!(wrapped.contains("FORCE_COLOR=1"));
+        assert!(wrapped.contains("bun test"));
+    }
+
+    #[test]
+    fn test_color_mode_display() {
+        assert_eq!(ColorMode::Always.to_string(), "always");
+        assert_eq!(ColorMode::Auto.to_string(), "auto");
+        assert_eq!(ColorMode::Never.to_string(), "never");
+    }
+
+    #[test]
+    fn test_color_mode_from_str() {
+        assert_eq!("always".parse::<ColorMode>(), Ok(ColorMode::Always));
+        assert_eq!("force".parse::<ColorMode>(), Ok(ColorMode::Always));
+        assert_eq!("auto".parse::<ColorMode>(), Ok(ColorMode::Auto));
+        assert_eq!("never".parse::<ColorMode>(), Ok(ColorMode::Never));
+        assert_eq!("no".parse::<ColorMode>(), Ok(ColorMode::Never));
+        assert!("invalid".parse::<ColorMode>().is_err());
+    }
+
+    #[test]
+    fn test_color_mode_default() {
+        // Default should be Always to preserve colors in remote SSH
+        assert_eq!(ColorMode::default(), ColorMode::Always);
     }
 }

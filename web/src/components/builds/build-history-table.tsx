@@ -238,8 +238,9 @@ export function BuildHistoryTable({ activeBuilds, recentBuilds }: BuildHistoryTa
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div className="flex flex-wrap gap-3">
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-muted-foreground">Status</label>
+            <label htmlFor="build-status-filter" className="text-xs font-medium text-muted-foreground">Status</label>
             <select
+              id="build-status-filter"
               value={statusFilter}
               onChange={(event) => setStatusFilter(event.target.value as BuildStatusFilter)}
               className="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
@@ -252,8 +253,9 @@ export function BuildHistoryTable({ activeBuilds, recentBuilds }: BuildHistoryTa
           </div>
 
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-muted-foreground">Worker</label>
+            <label htmlFor="build-worker-filter" className="text-xs font-medium text-muted-foreground">Worker</label>
             <select
+              id="build-worker-filter"
               value={workerFilter}
               onChange={(event) => setWorkerFilter(event.target.value)}
               className="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"

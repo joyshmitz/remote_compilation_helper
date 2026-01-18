@@ -129,6 +129,9 @@ struct PartialGeneralConfig {
 struct PartialCompilationConfig {
     confidence_threshold: Option<f64>,
     min_local_time_ms: Option<u64>,
+    build_slots: Option<u32>,
+    test_slots: Option<u32>,
+    check_slots: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -249,6 +252,15 @@ pub fn validate_rch_config_file(path: &Path) -> FileValidation {
         || config.compilation.confidence_threshold > 1.0
     {
         validation.error("compilation.confidence_threshold must be within [0.0, 1.0]".to_string());
+    }
+    if config.compilation.build_slots == 0 {
+        validation.error("compilation.build_slots must be greater than 0".to_string());
+    }
+    if config.compilation.test_slots == 0 {
+        validation.error("compilation.test_slots must be greater than 0".to_string());
+    }
+    if config.compilation.check_slots == 0 {
+        validation.error("compilation.check_slots must be greater than 0".to_string());
     }
 
     if config.transfer.compression_level > 19 {
@@ -447,6 +459,9 @@ fn default_sources_map() -> ConfigSourceMap {
         "general.socket_path",
         "compilation.confidence_threshold",
         "compilation.min_local_time_ms",
+        "compilation.build_slots",
+        "compilation.test_slots",
+        "compilation.check_slots",
         "transfer.compression_level",
         "transfer.exclude_patterns",
         "circuit.failure_threshold",
@@ -508,6 +523,24 @@ fn apply_layer(
         if min_local != defaults.compilation.min_local_time_ms {
             config.compilation.min_local_time_ms = min_local;
             set_source(sources, "compilation.min_local_time_ms", source.clone());
+        }
+    }
+    if let Some(build_slots) = layer.compilation.build_slots {
+        if build_slots != defaults.compilation.build_slots {
+            config.compilation.build_slots = build_slots;
+            set_source(sources, "compilation.build_slots", source.clone());
+        }
+    }
+    if let Some(test_slots) = layer.compilation.test_slots {
+        if test_slots != defaults.compilation.test_slots {
+            config.compilation.test_slots = test_slots;
+            set_source(sources, "compilation.test_slots", source.clone());
+        }
+    }
+    if let Some(check_slots) = layer.compilation.check_slots {
+        if check_slots != defaults.compilation.check_slots {
+            config.compilation.check_slots = check_slots;
+            set_source(sources, "compilation.check_slots", source.clone());
         }
     }
 
@@ -687,6 +720,15 @@ fn merge_compilation(
     }
     if overlay.min_local_time_ms != default.min_local_time_ms {
         base.min_local_time_ms = overlay.min_local_time_ms;
+    }
+    if overlay.build_slots != default.build_slots {
+        base.build_slots = overlay.build_slots;
+    }
+    if overlay.test_slots != default.test_slots {
+        base.test_slots = overlay.test_slots;
+    }
+    if overlay.check_slots != default.check_slots {
+        base.check_slots = overlay.check_slots;
     }
 }
 
@@ -877,6 +919,42 @@ fn apply_env_overrides_inner(
             }
         }
     }
+    if let Some(val) = get_env("RCH_BUILD_SLOTS") {
+        if let Ok(slots) = val.parse() {
+            config.compilation.build_slots = slots;
+            if let Some(ref mut sources) = sources {
+                set_source(
+                    sources,
+                    "compilation.build_slots",
+                    ConfigValueSource::EnvVar("RCH_BUILD_SLOTS".to_string()),
+                );
+            }
+        }
+    }
+    if let Some(val) = get_env("RCH_TEST_SLOTS") {
+        if let Ok(slots) = val.parse() {
+            config.compilation.test_slots = slots;
+            if let Some(ref mut sources) = sources {
+                set_source(
+                    sources,
+                    "compilation.test_slots",
+                    ConfigValueSource::EnvVar("RCH_TEST_SLOTS".to_string()),
+                );
+            }
+        }
+    }
+    if let Some(val) = get_env("RCH_CHECK_SLOTS") {
+        if let Ok(slots) = val.parse() {
+            config.compilation.check_slots = slots;
+            if let Some(ref mut sources) = sources {
+                set_source(
+                    sources,
+                    "compilation.check_slots",
+                    ConfigValueSource::EnvVar("RCH_CHECK_SLOTS".to_string()),
+                );
+            }
+        }
+    }
 
     if let Some(val) = get_env("RCH_COMPRESSION") {
         if let Ok(level) = val.parse() {
@@ -1040,6 +1118,10 @@ enabled = true
 confidence_threshold = 0.85
 # Skip interception if estimated local time < this (ms)
 min_local_time_ms = 2000
+# Default slot estimates
+build_slots = 4
+test_slots = 8
+check_slots = 2
 
 [transfer]
 # zstd compression level (1-19)
@@ -1260,6 +1342,30 @@ identity_file = "/tmp/id_ed25519"
     // ========================================================================
     // Merge Config Tests - Issue remote_compilation_helper-f0t.1
     // ========================================================================
+
+    #[test]
+    fn test_merge_compilation_slots_override() {
+        info!("TEST START: test_merge_compilation_slots_override");
+        let mut base = RchConfig::default();
+        base.compilation.build_slots = 6;
+        base.compilation.test_slots = 10;
+        base.compilation.check_slots = 3;
+
+        let mut overlay = RchConfig::default();
+        overlay.compilation.build_slots = 12;
+
+        let merged = merge_config(base.clone(), overlay);
+        info!(
+            "RESULT: build_slots={}, test_slots={}, check_slots={}",
+            merged.compilation.build_slots,
+            merged.compilation.test_slots,
+            merged.compilation.check_slots
+        );
+        assert_eq!(merged.compilation.build_slots, 12);
+        assert_eq!(merged.compilation.test_slots, 10);
+        assert_eq!(merged.compilation.check_slots, 3);
+        info!("TEST PASS: test_merge_compilation_slots_override");
+    }
 
     #[test]
     fn test_merge_preserves_base_fields() {

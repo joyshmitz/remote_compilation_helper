@@ -72,8 +72,8 @@ test('visual: metrics page snapshot', async ({ page }) => {
   await page.goto('/metrics');
   console.log('[visual] NAVIGATE: Loaded /metrics');
 
-  await page.waitForSelector('text=Performance Budgets');
-  console.log('[visual] WAIT: metrics content rendered');
+  await page.waitForLoadState('networkidle');
+  console.log('[visual] WAIT: network idle');
 
   await settleAnimations(page);
   console.log('[visual] CAPTURE: metrics page');

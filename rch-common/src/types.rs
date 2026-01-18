@@ -149,6 +149,191 @@ impl std::fmt::Display for SelectionReason {
     }
 }
 
+// ============================================================================
+// Worker Selection Strategy
+// ============================================================================
+
+/// Worker selection strategy determining how workers are chosen for jobs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionStrategy {
+    /// Original behavior: sort by priority, select first available.
+    /// Use for backwards compatibility or manual control.
+    Priority,
+    /// Select worker with highest SpeedScore.
+    /// Best for performance-critical builds with homogeneous workers.
+    Fastest,
+    /// Balance all factors: SpeedScore, load, health, cache affinity.
+    /// Default recommendation for diverse worker pools.
+    Balanced,
+    /// Prefer workers with warm caches for the project.
+    /// Best for incremental builds on large codebases.
+    CacheAffinity,
+    /// Weighted random selection favoring fast workers but ensuring fairness.
+    /// Prevents hot-spotting when many workers are available.
+    FairFastest,
+}
+
+impl Default for SelectionStrategy {
+    fn default() -> Self {
+        // Default to Priority for backwards compatibility
+        Self::Priority
+    }
+}
+
+impl std::fmt::Display for SelectionStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::Priority => "priority",
+            Self::Fastest => "fastest",
+            Self::Balanced => "balanced",
+            Self::CacheAffinity => "cache_affinity",
+            Self::FairFastest => "fair_fastest",
+        };
+        write!(f, "{}", name)
+    }
+}
+
+impl std::str::FromStr for SelectionStrategy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "priority" => Ok(Self::Priority),
+            "fastest" => Ok(Self::Fastest),
+            "balanced" => Ok(Self::Balanced),
+            "cache_affinity" | "cache-affinity" | "cacheaffinity" => Ok(Self::CacheAffinity),
+            "fair_fastest" | "fair-fastest" | "fairfastest" => Ok(Self::FairFastest),
+            _ => Err(format!(
+                "unknown selection strategy '{}', expected one of: priority, fastest, balanced, cache_affinity, fair_fastest",
+                s
+            )),
+        }
+    }
+}
+
+/// Configuration for the worker selection algorithm.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelectionConfig {
+    /// Selection strategy to use.
+    #[serde(default)]
+    pub strategy: SelectionStrategy,
+    /// Minimum success rate (0.0-1.0) for a worker to be considered.
+    #[serde(default = "default_min_success_rate")]
+    pub min_success_rate: f64,
+    /// Factor weights for the balanced strategy.
+    #[serde(default)]
+    pub weights: SelectionWeightConfig,
+    /// Fairness settings for fair_fastest strategy.
+    #[serde(default)]
+    pub fairness: FairnessConfig,
+}
+
+impl Default for SelectionConfig {
+    fn default() -> Self {
+        Self {
+            strategy: SelectionStrategy::default(),
+            min_success_rate: default_min_success_rate(),
+            weights: SelectionWeightConfig::default(),
+            fairness: FairnessConfig::default(),
+        }
+    }
+}
+
+fn default_min_success_rate() -> f64 {
+    0.8
+}
+
+/// Weight configuration for the balanced selection strategy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelectionWeightConfig {
+    /// Weight for SpeedScore (0.0-1.0).
+    #[serde(default = "default_weight_speedscore")]
+    pub speedscore: f64,
+    /// Weight for available slots (0.0-1.0).
+    #[serde(default = "default_weight_slots")]
+    pub slots: f64,
+    /// Weight for health/success rate (0.0-1.0).
+    #[serde(default = "default_weight_health")]
+    pub health: f64,
+    /// Weight for cache affinity (0.0-1.0).
+    #[serde(default = "default_weight_cache")]
+    pub cache: f64,
+    /// Weight for network latency (0.0-1.0).
+    #[serde(default = "default_weight_network")]
+    pub network: f64,
+    /// Weight for worker priority (0.0-1.0).
+    #[serde(default = "default_weight_priority")]
+    pub priority: f64,
+    /// Penalty multiplier for half-open circuit workers (0.0-1.0).
+    #[serde(default = "default_half_open_penalty")]
+    pub half_open_penalty: f64,
+}
+
+impl Default for SelectionWeightConfig {
+    fn default() -> Self {
+        Self {
+            speedscore: default_weight_speedscore(),
+            slots: default_weight_slots(),
+            health: default_weight_health(),
+            cache: default_weight_cache(),
+            network: default_weight_network(),
+            priority: default_weight_priority(),
+            half_open_penalty: default_half_open_penalty(),
+        }
+    }
+}
+
+fn default_weight_speedscore() -> f64 {
+    0.5
+}
+fn default_weight_slots() -> f64 {
+    0.4
+}
+fn default_weight_health() -> f64 {
+    0.3
+}
+fn default_weight_cache() -> f64 {
+    0.2
+}
+fn default_weight_network() -> f64 {
+    0.1
+}
+fn default_weight_priority() -> f64 {
+    0.1
+}
+fn default_half_open_penalty() -> f64 {
+    0.5
+}
+
+/// Fairness settings for the fair_fastest selection strategy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FairnessConfig {
+    /// Lookback window in seconds for tracking recent selections.
+    #[serde(default = "default_fairness_lookback_secs")]
+    pub lookback_secs: u64,
+    /// Maximum consecutive selections for a single worker before penalty.
+    #[serde(default = "default_max_consecutive_selections")]
+    pub max_consecutive_selections: u32,
+}
+
+impl Default for FairnessConfig {
+    fn default() -> Self {
+        Self {
+            lookback_secs: default_fairness_lookback_secs(),
+            max_consecutive_selections: default_max_consecutive_selections(),
+        }
+    }
+}
+
+fn default_fairness_lookback_secs() -> u64 {
+    300 // 5 minutes
+}
+
+fn default_max_consecutive_selections() -> u32 {
+    3
+}
+
 /// Details about a selected worker for remote compilation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelectedWorker {
@@ -287,6 +472,9 @@ pub struct RchConfig {
     pub output: OutputConfig,
     #[serde(default)]
     pub self_test: SelfTestConfig,
+    /// Worker selection algorithm configuration.
+    #[serde(default)]
+    pub selection: SelectionConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -351,6 +539,58 @@ impl std::str::FromStr for OutputVisibility {
     }
 }
 
+/// Color mode for remote command output.
+///
+/// Controls whether ANSI color codes are preserved when streaming
+/// output from remote compilation commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ColorMode {
+    /// Force color output regardless of terminal detection.
+    /// Sets CARGO_TERM_COLOR=always and similar environment variables.
+    Always,
+    /// Let the remote command detect terminal capabilities (may lose colors).
+    Auto,
+    /// Disable color output entirely.
+    Never,
+}
+
+impl Default for ColorMode {
+    fn default() -> Self {
+        // Default to always forcing colors since remote SSH connections
+        // typically don't have a PTY and would otherwise lose colors
+        Self::Always
+    }
+}
+
+impl std::fmt::Display for ColorMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            ColorMode::Always => "always",
+            ColorMode::Auto => "auto",
+            ColorMode::Never => "never",
+        };
+        write!(f, "{}", value)
+    }
+}
+
+impl std::str::FromStr for ColorMode {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "always" | "force" | "yes" | "true" => Ok(Self::Always),
+            "auto" | "detect" => Ok(Self::Auto),
+            "never" | "none" | "no" | "false" => Ok(Self::Never),
+            _ => Err(()),
+        }
+    }
+}
+
+fn default_color_mode() -> ColorMode {
+    ColorMode::default()
+}
+
 /// Hook output configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputConfig {
@@ -360,6 +600,10 @@ pub struct OutputConfig {
     /// Whether the first-run success message has been shown.
     #[serde(default)]
     pub first_run_complete: bool,
+    /// Color mode for remote command output.
+    /// Controls whether ANSI color codes are preserved in remote output.
+    #[serde(default = "default_color_mode")]
+    pub color_mode: ColorMode,
 }
 
 impl Default for OutputConfig {
@@ -367,6 +611,7 @@ impl Default for OutputConfig {
         Self {
             visibility: OutputVisibility::None,
             first_run_complete: false,
+            color_mode: ColorMode::default(),
         }
     }
 }
@@ -794,6 +1039,17 @@ pub struct CompilationConfig {
     /// Skip interception if estimated local time < this (ms).
     #[serde(default = "default_min_local_time")]
     pub min_local_time_ms: u64,
+    /// Default slot estimate for build commands (cargo build, gcc, etc.).
+    #[serde(default = "default_build_slots")]
+    pub build_slots: u32,
+    /// Default slot estimate for test commands (cargo test, nextest).
+    /// Tests typically use more parallelism than builds.
+    #[serde(default = "default_test_slots")]
+    pub test_slots: u32,
+    /// Default slot estimate for check/lint commands (cargo check, clippy).
+    /// These are typically faster and use fewer resources.
+    #[serde(default = "default_check_slots")]
+    pub check_slots: u32,
 }
 
 impl Default for CompilationConfig {
@@ -801,8 +1057,23 @@ impl Default for CompilationConfig {
         Self {
             confidence_threshold: 0.85,
             min_local_time_ms: 2000,
+            build_slots: default_build_slots(),
+            test_slots: default_test_slots(),
+            check_slots: default_check_slots(),
         }
     }
+}
+
+fn default_build_slots() -> u32 {
+    4
+}
+
+fn default_test_slots() -> u32 {
+    8
+}
+
+fn default_check_slots() -> u32 {
+    2
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

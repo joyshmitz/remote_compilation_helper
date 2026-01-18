@@ -398,7 +398,7 @@ configured remote workers."#)]
     },
 
     /// View and analyze worker SpeedScores
-    #[command(after_help = r#"EXAMPLES:
+    #[command(name = "speedscore", after_help = r#"EXAMPLES:
     rch speedscore css              # Show SpeedScore for worker 'css'
     rch speedscore css --verbose    # Show detailed component breakdown
     rch speedscore css --history    # Show score history

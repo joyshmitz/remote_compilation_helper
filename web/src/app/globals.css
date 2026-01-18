@@ -13,26 +13,26 @@
   --muted: oklch(0.95 0 0);
   --muted-foreground: oklch(0.5 0 0);
 
-  /* Semantic colors */
+  /* Semantic colors - WCAG AA compliant (4.5:1 contrast on white) */
   --primary: oklch(0.205 0 0);
   --primary-foreground: oklch(0.985 0 0);
-  --success: oklch(75% 0.18 145);
-  --success-foreground: oklch(15% 0.05 145);
-  --warning: oklch(80% 0.15 85);
-  --warning-foreground: oklch(20% 0.05 85);
-  --error: oklch(65% 0.2 25);
+  --success: oklch(40% 0.14 145);
+  --success-foreground: oklch(98% 0.01 145);
+  --warning: oklch(45% 0.12 70);
+  --warning-foreground: oklch(98% 0.01 70);
+  --error: oklch(45% 0.18 25);
   --error-foreground: oklch(98% 0.01 25);
 
-  /* Status colors */
-  --healthy: oklch(75% 0.18 145);
-  --degraded: oklch(80% 0.15 85);
-  --unreachable: oklch(65% 0.2 25);
-  --draining: oklch(70% 0.12 220);
+  /* Status colors - WCAG AA compliant */
+  --healthy: oklch(40% 0.14 145);
+  --degraded: oklch(45% 0.12 70);
+  --unreachable: oklch(45% 0.18 25);
+  --draining: oklch(45% 0.10 220);
 
-  /* Circuit breaker colors */
-  --circuit-closed: oklch(75% 0.18 145);
-  --circuit-half-open: oklch(80% 0.15 85);
-  --circuit-open: oklch(65% 0.2 25);
+  /* Circuit breaker colors - WCAG AA compliant */
+  --circuit-closed: oklch(40% 0.14 145);
+  --circuit-half-open: oklch(45% 0.12 70);
+  --circuit-open: oklch(45% 0.18 25);
   --radius: 0.625rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);

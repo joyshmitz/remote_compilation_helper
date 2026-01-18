@@ -283,9 +283,15 @@ pub fn detect_hyperlink_support() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracing::info;
+
+    fn log_test_start(name: &str) {
+        info!("TEST START: {}", name);
+    }
 
     #[test]
     fn test_color_level_ordering() {
+        log_test_start("test_color_level_ordering");
         assert!(ColorLevel::None < ColorLevel::Ansi16);
         assert!(ColorLevel::Ansi16 < ColorLevel::Ansi256);
         assert!(ColorLevel::Ansi256 < ColorLevel::TrueColor);
@@ -293,6 +299,7 @@ mod tests {
 
     #[test]
     fn test_color_level_supports_256() {
+        log_test_start("test_color_level_supports_256");
         assert!(!ColorLevel::None.supports_256());
         assert!(!ColorLevel::Ansi16.supports_256());
         assert!(ColorLevel::Ansi256.supports_256());
@@ -301,6 +308,7 @@ mod tests {
 
     #[test]
     fn test_color_level_supports_true_color() {
+        log_test_start("test_color_level_supports_true_color");
         assert!(!ColorLevel::None.supports_true_color());
         assert!(!ColorLevel::Ansi16.supports_true_color());
         assert!(!ColorLevel::Ansi256.supports_true_color());
@@ -309,23 +317,27 @@ mod tests {
 
     #[test]
     fn test_background_default_is_dark() {
+        log_test_start("test_background_default_is_dark");
         assert_eq!(Background::default(), Background::Dark);
     }
 
     #[test]
     fn test_adaptive_color_resolve_dark() {
+        log_test_start("test_adaptive_color_resolve_dark");
         let adaptive = AdaptiveColor::new(Color::Black, Color::White);
         assert_eq!(adaptive.resolve(Background::Dark), Color::White);
     }
 
     #[test]
     fn test_adaptive_color_resolve_light() {
+        log_test_start("test_adaptive_color_resolve_light");
         let adaptive = AdaptiveColor::new(Color::Black, Color::White);
         assert_eq!(adaptive.resolve(Background::Light), Color::Black);
     }
 
     #[test]
     fn test_palette_colors_exist() {
+        log_test_start("test_palette_colors_exist");
         // Just verify the palette colors are defined and can be resolved
         let bg = Background::Dark;
         let _ = palette::SUBTLE.resolve(bg);
@@ -338,6 +350,7 @@ mod tests {
 
     #[test]
     fn test_detect_background_default() {
+        log_test_start("test_detect_background_default");
         // Without specific env vars set, should default to Dark
         // Note: This test might behave differently in CI environments
         // that have COLORFGBG set
@@ -348,6 +361,7 @@ mod tests {
 
     #[test]
     fn test_detect_color_level_default() {
+        log_test_start("test_detect_color_level_default");
         // Without specific env vars, should return a valid ColorLevel
         let result = detect_color_level();
         assert!(
