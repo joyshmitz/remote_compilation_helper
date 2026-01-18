@@ -1,12 +1,19 @@
 'use client';
 
-import { Server, AlertCircle, CheckCircle, Clock, Zap, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { useState } from 'react';
+import { Server, AlertCircle, CheckCircle, Clock, Zap, TrendingUp, TrendingDown, Minus, Play } from 'lucide-react';
 import { motion } from 'motion/react';
 import type { WorkerStatusInfo, CircuitState, WorkerStatus } from '@/lib/types';
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { BenchmarkProgressModal } from './benchmark-progress-modal';
 
 interface WorkerCardProps {
   worker: WorkerStatusInfo;
+  /** Callback when a benchmark completes successfully */
+  onBenchmarkCompleted?: () => void;
+  /** Whether to show the benchmark trigger button */
+  showBenchmarkTrigger?: boolean;
 }
 
 const statusConfig: Record<WorkerStatus, { label: string; color: string; icon: typeof CheckCircle }> = {
@@ -205,13 +212,21 @@ function SpeedScoreBadge({
   );
 }
 
-export function WorkerCard({ worker }: WorkerCardProps) {
+export function WorkerCard({
+  worker,
+  onBenchmarkCompleted,
+  showBenchmarkTrigger = true,
+}: WorkerCardProps) {
+  const [benchmarkModalOpen, setBenchmarkModalOpen] = useState(false);
   const status = statusConfig[worker.status];
   const circuit = circuitConfig[worker.circuit_state];
   const slotsUsedPercent = (worker.used_slots / worker.total_slots) * 100;
   const StatusIcon = status.icon;
   const speedScore = Number.isFinite(worker.speed_score) ? worker.speed_score : null;
   const previousScore = typeof worker.speed_score_prev === 'number' ? worker.speed_score_prev : null;
+
+  // Benchmark can only be triggered on healthy or degraded workers
+  const canBenchmark = worker.status === 'healthy' || worker.status === 'degraded';
 
   return (
     <motion.div
@@ -271,18 +286,36 @@ export function WorkerCard({ worker }: WorkerCardProps) {
       </div>
 
       {/* Stats Row */}
-      <div className="flex items-center gap-4 text-xs text-muted-foreground">
-        <div className="flex items-center gap-1">
-          <Zap className="w-3.5 h-3.5" />
-          <span>Speed: {worker.speed_score.toFixed(1)}</span>
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-1">
+            <Zap className="w-3.5 h-3.5" />
+            <span>Speed: {worker.speed_score.toFixed(1)}</span>
+          </div>
+          <div
+            className={`flex items-center gap-1 ${circuit.color}`}
+            data-testid="worker-circuit"
+            data-circuit={worker.circuit_state}
+          >
+            <span>Circuit: {circuit.label}</span>
+          </div>
         </div>
-        <div
-          className={`flex items-center gap-1 ${circuit.color}`}
-          data-testid="worker-circuit"
-          data-circuit={worker.circuit_state}
-        >
-          <span>Circuit: {circuit.label}</span>
-        </div>
+
+        {/* Benchmark Trigger Button */}
+        {showBenchmarkTrigger && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setBenchmarkModalOpen(true)}
+            disabled={!canBenchmark}
+            className="gap-1 h-7 px-2 text-xs"
+            title={canBenchmark ? 'Run benchmark' : 'Worker must be healthy or degraded to benchmark'}
+            data-testid="benchmark-trigger-button"
+          >
+            <Play className="h-3 w-3" />
+            <span className="hidden sm:inline">Benchmark</span>
+          </Button>
+        )}
       </div>
 
       {/* Error Message */}
@@ -290,6 +323,17 @@ export function WorkerCard({ worker }: WorkerCardProps) {
         <div className="mt-3 p-2 bg-error/10 rounded text-xs text-error" data-testid="worker-error">
           {worker.last_error}
         </div>
+      )}
+
+      {/* Benchmark Progress Modal */}
+      {showBenchmarkTrigger && (
+        <BenchmarkProgressModal
+          workerId={worker.id}
+          workerName={worker.id}
+          open={benchmarkModalOpen}
+          onOpenChange={setBenchmarkModalOpen}
+          onCompleted={onBenchmarkCompleted}
+        />
       )}
     </motion.div>
   );
