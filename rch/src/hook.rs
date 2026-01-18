@@ -7,7 +7,8 @@ use crate::config::load_config;
 use crate::error::{DaemonError, TransferError};
 use crate::toolchain::detect_toolchain;
 use crate::transfer::{
-    TransferPipeline, compute_project_hash, default_rust_artifact_patterns, project_id_from_path,
+    TransferPipeline, compute_project_hash, default_bun_artifact_patterns,
+    default_c_cpp_artifact_patterns, default_rust_artifact_patterns, project_id_from_path,
 };
 use rch_common::{
     CompilationKind, HookInput, HookOutput, OutputVisibility, RequiredRuntime, SelectedWorker,
@@ -274,6 +275,7 @@ async fn process_hook(input: HookInput) -> HookOutput {
                 command,
                 config.transfer.clone(),
                 toolchain.as_ref(),
+                classification.kind,
                 &reporter,
                 &config.general.socket_path,
             )
@@ -562,6 +564,30 @@ pub(crate) fn required_runtime_for_kind(kind: Option<CompilationKind>) -> Requir
     }
 }
 
+/// Get artifact patterns based on compilation kind.
+fn get_artifact_patterns(kind: Option<CompilationKind>) -> Vec<String> {
+    match kind {
+        Some(CompilationKind::BunTest) | Some(CompilationKind::BunTypecheck) => {
+            default_bun_artifact_patterns()
+        }
+        Some(CompilationKind::Rustc)
+        | Some(CompilationKind::CargoBuild)
+        | Some(CompilationKind::CargoTest)
+        | Some(CompilationKind::CargoCheck)
+        | Some(CompilationKind::CargoClippy)
+        | Some(CompilationKind::CargoDoc) => default_rust_artifact_patterns(),
+        Some(CompilationKind::Gcc)
+        | Some(CompilationKind::Gpp)
+        | Some(CompilationKind::Clang)
+        | Some(CompilationKind::Clangpp)
+        | Some(CompilationKind::Make)
+        | Some(CompilationKind::CmakeBuild)
+        | Some(CompilationKind::Ninja)
+        | Some(CompilationKind::Meson) => default_c_cpp_artifact_patterns(),
+        _ => default_rust_artifact_patterns(),
+    }
+}
+
 /// Execute a compilation command on a remote worker.
 ///
 /// This function:
@@ -575,6 +601,7 @@ async fn execute_remote_compilation(
     command: &str,
     transfer_config: TransferConfig,
     toolchain: Option<&ToolchainInfo>,
+    kind: Option<CompilationKind>,
     reporter: &HookReporter,
     socket_path: &str,
 ) -> anyhow::Result<RemoteExecutionResult> {
@@ -664,7 +691,7 @@ async fn execute_remote_compilation(
     if result.success() {
         info!("Retrieving build artifacts...");
         reporter.verbose("[RCH] artifacts: retrieving...");
-        let artifact_patterns = default_rust_artifact_patterns();
+        let artifact_patterns = get_artifact_patterns(kind);
         match pipeline
             .retrieve_artifacts(&worker_config, &artifact_patterns)
             .await

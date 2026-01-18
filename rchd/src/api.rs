@@ -12,10 +12,12 @@ use crate::workers::WorkerPool;
 use anyhow::{Result, anyhow};
 use rch_common::{
     BuildRecord, BuildStats, CircuitBreakerConfig, CircuitState, ReleaseRequest, RequiredRuntime,
-    SelectedWorker, SelectionReason, SelectionRequest, SelectionResponse, WorkerStatus,
+    SelectedWorker, SelectionReason, SelectionRequest, SelectionResponse, WorkerId, WorkerStatus,
 };
 use rch_telemetry::protocol::{TelemetrySource, WorkerTelemetry};
 use serde::Serialize;
+use std::path::PathBuf;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tracing::{debug, warn};
@@ -31,6 +33,9 @@ enum ApiRequest {
     Health,
     Ready,
     Budget,
+    SelfTestStatus,
+    SelfTestHistory { limit: usize },
+    SelfTestRun(SelfTestRunRequest),
     Shutdown,
 }
 
@@ -161,6 +166,44 @@ pub struct ReadyResponse {
     pub reason: Option<String>,
 }
 
+// ============================================================================
+// Self-Test Response Types (per bead remote_compilation_helper-cs7)
+// ============================================================================
+
+/// Request to run a self-test.
+#[derive(Debug)]
+pub struct SelfTestRunRequest {
+    pub worker_ids: Vec<String>,
+    pub project: Option<String>,
+    pub timeout_secs: Option<u64>,
+    pub release_mode: bool,
+    pub scheduled: bool,
+}
+
+/// Status response for self-test scheduler.
+#[derive(Debug, Serialize)]
+pub struct SelfTestStatusResponse {
+    pub enabled: bool,
+    pub schedule: Option<String>,
+    pub interval: Option<String>,
+    pub last_run: Option<crate::self_test::SelfTestRunRecord>,
+    pub next_run: Option<String>,
+}
+
+/// History response for self-tests.
+#[derive(Debug, Serialize)]
+pub struct SelfTestHistoryResponse {
+    pub runs: Vec<crate::self_test::SelfTestRunRecord>,
+    pub results: Vec<crate::self_test::SelfTestResultRecord>,
+}
+
+/// Run response for self-tests.
+#[derive(Debug, Serialize)]
+pub struct SelfTestRunResponse {
+    pub run: crate::self_test::SelfTestRunRecord,
+    pub results: Vec<crate::self_test::SelfTestResultRecord>,
+}
+
 /// Handle an incoming connection on the Unix socket.
 pub async fn handle_connection(
     stream: UnixStream,
@@ -252,6 +295,59 @@ pub async fn handle_connection(
             let budget_status = handle_budget();
             (serde_json::to_string(&budget_status)?, "application/json")
         }
+        Ok(ApiRequest::SelfTestStatus) => {
+            metrics::inc_requests("self-test-status");
+            let status = ctx.self_test.status();
+            let response = SelfTestStatusResponse {
+                enabled: status.enabled,
+                schedule: status.schedule,
+                interval: status.interval,
+                last_run: status.last_run,
+                next_run: status.next_run,
+            };
+            (serde_json::to_string(&response)?, "application/json")
+        }
+        Ok(ApiRequest::SelfTestHistory { limit }) => {
+            metrics::inc_requests("self-test-history");
+            let runs = ctx.self_test.history().recent_runs(limit);
+            let run_ids: Vec<u64> = runs.iter().map(|run| run.id).collect();
+            let results = ctx.self_test.history().results_for_runs(&run_ids);
+            let response = SelfTestHistoryResponse { runs, results };
+            (serde_json::to_string(&response)?, "application/json")
+        }
+        Ok(ApiRequest::SelfTestRun(request)) => {
+            metrics::inc_requests("self-test-run");
+            let mut options = crate::self_test::SelfTestRunOptions {
+                run_type: if request.scheduled {
+                    crate::self_test::SelfTestRunType::Scheduled
+                } else {
+                    crate::self_test::SelfTestRunType::Manual
+                },
+                ..Default::default()
+            };
+            if !request.worker_ids.is_empty() {
+                options.worker_ids =
+                    Some(request.worker_ids.into_iter().map(WorkerId::new).collect());
+            }
+            if let Some(project) = request.project {
+                options.project_path = Some(PathBuf::from(project));
+            }
+            if let Some(timeout) = request.timeout_secs {
+                options.timeout = Duration::from_secs(timeout);
+            }
+            options.release_mode = request.release_mode;
+
+            let report = if request.scheduled {
+                ctx.self_test.run_scheduled_now().await?
+            } else {
+                ctx.self_test.run_manual(options).await?
+            };
+            let response = SelfTestRunResponse {
+                run: report.run,
+                results: report.results,
+            };
+            (serde_json::to_string(&response)?, "application/json")
+        }
         Ok(ApiRequest::Shutdown) => {
             metrics::inc_requests("shutdown");
             let _ = shutdown_tx.send(()).await;
@@ -312,6 +408,80 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
 
     if path == "/budget" {
         return Ok(ApiRequest::Budget);
+    }
+
+    if path == "/self-test/status" {
+        return Ok(ApiRequest::SelfTestStatus);
+    }
+
+    if path.starts_with("/self-test/history") {
+        let query = path.strip_prefix("/self-test/history").unwrap_or("");
+        let query = query.strip_prefix('?').unwrap_or("");
+        let mut limit = 10usize;
+        for param in query.split('&') {
+            if param.is_empty() {
+                continue;
+            }
+            let mut kv = param.splitn(2, '=');
+            let key = kv.next().unwrap_or("");
+            let value = kv.next().unwrap_or("");
+            if key == "limit" {
+                limit = value.parse().unwrap_or(limit);
+            }
+        }
+        return Ok(ApiRequest::SelfTestHistory { limit });
+    }
+
+    if path.starts_with("/self-test/run") {
+        if method != "POST" {
+            return Err(anyhow!("Only POST method supported for self-test run"));
+        }
+        let query = path.strip_prefix("/self-test/run").unwrap_or("");
+        let query = query.strip_prefix('?').unwrap_or("");
+
+        let mut worker_ids = Vec::new();
+        let mut project = None;
+        let mut timeout_secs = None;
+        let mut release_mode = true;
+        let mut scheduled = false;
+
+        for param in query.split('&') {
+            if param.is_empty() {
+                continue;
+            }
+            let mut kv = param.splitn(2, '=');
+            let key = kv.next().unwrap_or("");
+            let value = kv.next().unwrap_or("");
+            match key {
+                "worker" => worker_ids.push(urlencoding_decode(value)),
+                "project" => project = Some(urlencoding_decode(value)),
+                "timeout" => timeout_secs = value.parse().ok(),
+                "debug" => {
+                    if value == "1" || value.eq_ignore_ascii_case("true") {
+                        release_mode = false;
+                    }
+                }
+                "scheduled" => {
+                    if value == "1" || value.eq_ignore_ascii_case("true") {
+                        scheduled = true;
+                    }
+                }
+                "all" => {
+                    if value == "1" || value.eq_ignore_ascii_case("true") {
+                        worker_ids.clear();
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        return Ok(ApiRequest::SelfTestRun(SelfTestRunRequest {
+            worker_ids,
+            project,
+            timeout_secs,
+            release_mode,
+            scheduled,
+        }));
     }
 
     if path.starts_with("/release-worker") {
@@ -749,15 +919,27 @@ async fn handle_status(ctx: &DaemonContext) -> Result<StatusResponse> {
 mod tests {
     use super::*;
     use crate::history::BuildHistory;
+    use crate::self_test::{SelfTestHistory, SelfTestService};
     use crate::telemetry::TelemetryStore;
+    use rch_common::SelfTestConfig;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     fn make_test_context(pool: WorkerPool) -> DaemonContext {
+        let history = Arc::new(SelfTestHistory::new(
+            crate::self_test::DEFAULT_RUN_CAPACITY,
+            crate::self_test::DEFAULT_RESULT_CAPACITY,
+        ));
+        let self_test = Arc::new(SelfTestService::new(
+            pool.clone(),
+            SelfTestConfig::default(),
+            history,
+        ));
         DaemonContext {
             pool,
             history: Arc::new(BuildHistory::new(100)),
             telemetry: Arc::new(TelemetryStore::new(Duration::from_secs(300))),
+            self_test,
             started_at: Instant::now(),
             socket_path: "/tmp/test.sock".to_string(),
             version: "0.1.0",
@@ -802,6 +984,38 @@ mod tests {
             ApiRequest::Status => {} // Correct
             _ => panic!("expected status request"),
         }
+    }
+
+    #[test]
+    fn test_parse_request_self_test_status() {
+        let req = parse_request("GET /self-test/status").unwrap();
+        match req {
+            ApiRequest::SelfTestStatus => {}
+            _ => panic!("expected self-test status request"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_self_test_history() {
+        let req = parse_request("GET /self-test/history?limit=5").unwrap();
+        match req {
+            ApiRequest::SelfTestHistory { limit } => assert_eq!(limit, 5),
+            _ => panic!("expected self-test history request"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_self_test_run() {
+        let req =
+            parse_request("POST /self-test/run?worker=css&timeout=120&debug=1&scheduled=false")
+                .unwrap();
+        let ApiRequest::SelfTestRun(req) = req else {
+            panic!("expected self-test run request");
+        };
+        assert_eq!(req.worker_ids, vec!["css".to_string()]);
+        assert_eq!(req.timeout_secs, Some(120));
+        assert!(!req.release_mode);
+        assert!(!req.scheduled);
     }
 
     #[test]

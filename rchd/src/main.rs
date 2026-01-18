@@ -12,12 +12,13 @@ mod history;
 mod http_api;
 mod metrics;
 mod selection;
+mod self_test;
 mod telemetry;
 mod workers;
 
 use anyhow::Result;
 use clap::Parser;
-use rch_common::{LogConfig, init_logging};
+use rch_common::{LogConfig, SelfTestConfig, init_logging};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -26,6 +27,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use history::BuildHistory;
+use self_test::{DEFAULT_RESULT_CAPACITY, DEFAULT_RUN_CAPACITY, SelfTestHistory, SelfTestService};
 use telemetry::{TelemetryPoller, TelemetryPollerConfig, TelemetryStore};
 
 #[derive(Parser)]
@@ -70,6 +72,8 @@ pub struct DaemonContext {
     pub history: Arc<BuildHistory>,
     /// Telemetry store.
     pub telemetry: Arc<TelemetryStore>,
+    /// Self-test service.
+    pub self_test: Arc<SelfTestService>,
     /// Daemon start time.
     pub started_at: Instant,
     /// Socket path (for status reporting).
@@ -144,6 +148,48 @@ async fn main() -> Result<()> {
         Arc::new(BuildHistory::new(cli.history_capacity))
     };
 
+    // Initialize self-test config and history
+    let self_test_config = match config::load_self_test_config() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            warn!("Failed to load self-test config: {}", e);
+            SelfTestConfig::default()
+        }
+    };
+
+    let self_test_history = match self_test::default_history_path() {
+        Ok(path) => match SelfTestHistory::load_from_file(
+            &path,
+            DEFAULT_RUN_CAPACITY,
+            DEFAULT_RESULT_CAPACITY,
+        ) {
+            Ok(history) => Arc::new(history),
+            Err(e) => {
+                warn!("Failed to load self-test history from {:?}: {}", path, e);
+                Arc::new(
+                    SelfTestHistory::new(DEFAULT_RUN_CAPACITY, DEFAULT_RESULT_CAPACITY)
+                        .with_persistence(path),
+                )
+            }
+        },
+        Err(e) => {
+            warn!("Failed to determine self-test history path: {}", e);
+            Arc::new(SelfTestHistory::new(
+                DEFAULT_RUN_CAPACITY,
+                DEFAULT_RESULT_CAPACITY,
+            ))
+        }
+    };
+
+    let self_test_service = Arc::new(SelfTestService::new(
+        worker_pool.clone(),
+        self_test_config,
+        self_test_history,
+    ));
+    if let Err(e) = self_test_service.clone().start().await {
+        warn!("Failed to start self-test scheduler: {}", e);
+    }
+
     // Remove existing socket if present
     if cli.socket.exists() {
         std::fs::remove_file(&cli.socket)?;
@@ -160,6 +206,7 @@ async fn main() -> Result<()> {
         pool: worker_pool.clone(),
         history,
         telemetry: telemetry_store.clone(),
+        self_test: self_test_service.clone(),
         started_at: Instant::now(),
         socket_path: cli.socket.to_string_lossy().to_string(),
         version: env!("CARGO_PKG_VERSION"),
@@ -241,7 +288,9 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::self_test::{SelfTestHistory, SelfTestService};
     use crate::telemetry::TelemetryStore;
+    use rch_common::SelfTestConfig;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -254,6 +303,18 @@ mod tests {
             .with_test_writer()
             .with_max_level(tracing::Level::DEBUG)
             .try_init();
+    }
+
+    fn make_test_self_test(pool: workers::WorkerPool) -> Arc<SelfTestService> {
+        let history = Arc::new(SelfTestHistory::new(
+            crate::self_test::DEFAULT_RUN_CAPACITY,
+            crate::self_test::DEFAULT_RESULT_CAPACITY,
+        ));
+        Arc::new(SelfTestService::new(
+            pool,
+            SelfTestConfig::default(),
+            history,
+        ))
     }
 
     // =========================================================================
@@ -272,6 +333,7 @@ mod tests {
             pool: pool.clone(),
             history: history.clone(),
             telemetry: make_test_telemetry(),
+            self_test: make_test_self_test(pool.clone()),
             started_at,
             socket_path: "/tmp/test.sock".to_string(),
             version: "0.1.0-test",
@@ -307,9 +369,10 @@ mod tests {
         let started_at = Instant::now();
 
         let context = DaemonContext {
-            pool,
+            pool: pool.clone(),
             history,
             telemetry: make_test_telemetry(),
+            self_test: make_test_self_test(pool.clone()),
             started_at,
             socket_path: rch_common::default_socket_path(),
             version: env!("CARGO_PKG_VERSION"),
@@ -345,9 +408,10 @@ mod tests {
         history.record(record);
 
         let context = DaemonContext {
-            pool,
+            pool: pool.clone(),
             history,
             telemetry: make_test_telemetry(),
+            self_test: make_test_self_test(pool.clone()),
             started_at: Instant::now(),
             socket_path: rch_common::default_socket_path(),
             version: "0.1.0",
@@ -371,6 +435,7 @@ mod tests {
             pool: pool.clone(),
             history: history.clone(),
             telemetry: make_test_telemetry(),
+            self_test: make_test_self_test(pool.clone()),
             started_at: Instant::now(),
             socket_path: rch_common::default_socket_path(),
             version: "0.1.0",
@@ -410,9 +475,10 @@ mod tests {
         let started_at = Instant::now();
 
         let context = DaemonContext {
-            pool,
+            pool: pool.clone(),
             history,
             telemetry: make_test_telemetry(),
+            self_test: make_test_self_test(pool.clone()),
             started_at,
             socket_path: rch_common::default_socket_path(),
             version: "0.1.0",
@@ -450,9 +516,10 @@ mod tests {
         let history = Arc::new(BuildHistory::new(100));
 
         let context = DaemonContext {
-            pool,
+            pool: pool.clone(),
             history,
             telemetry: make_test_telemetry(),
+            self_test: make_test_self_test(pool.clone()),
             started_at: Instant::now(),
             socket_path: rch_common::default_socket_path(),
             version: "0.1.0",

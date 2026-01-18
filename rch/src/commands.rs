@@ -3,6 +3,9 @@
 //! This module contains the actual business logic for each CLI subcommand.
 
 use crate::error::{ConfigError, SshError};
+use crate::status_types::{
+    SelfTestHistoryResponse, SelfTestRunResponse, SelfTestStatusResponse, extract_json_body,
+};
 use crate::ui::context::OutputContext;
 use crate::ui::theme::StatusIndicator;
 use anyhow::{Context, Result, bail};
@@ -5305,6 +5308,283 @@ async fn send_daemon_command(command: &str) -> Result<String> {
     reader.read_to_string(&mut response).await?;
 
     Ok(response)
+}
+
+// =============================================================================
+// Self-Test Command
+// =============================================================================
+
+#[allow(clippy::too_many_arguments)]
+pub async fn self_test(
+    action: Option<crate::SelfTestAction>,
+    worker: Option<String>,
+    all: bool,
+    project: Option<PathBuf>,
+    timeout: u64,
+    debug: bool,
+    scheduled: bool,
+    ctx: &OutputContext,
+) -> Result<()> {
+    match action {
+        Some(crate::SelfTestAction::Status) => self_test_status(ctx).await,
+        Some(crate::SelfTestAction::History { limit }) => self_test_history(limit, ctx).await,
+        None => self_test_run(worker, all, project, timeout, debug, scheduled, ctx).await,
+    }
+}
+
+async fn self_test_status(ctx: &OutputContext) -> Result<()> {
+    let response = send_daemon_command("GET /self-test/status\n").await?;
+    let json = extract_json_body(&response).ok_or_else(|| anyhow::anyhow!("Invalid response"))?;
+    let status: SelfTestStatusResponse = serde_json::from_str(json)?;
+
+    let _ = ctx.json(&status);
+    if ctx.is_json() {
+        return Ok(());
+    }
+
+    let style = ctx.style();
+    println!("{}", style.format_header("Self-Test Status"));
+    println!(
+        "  {} {} {}",
+        style.key("Scheduled"),
+        style.muted(":"),
+        if status.enabled {
+            style.success("Enabled")
+        } else {
+            style.warning("Disabled")
+        }
+    );
+
+    if let Some(schedule) = status.schedule.as_ref() {
+        println!(
+            "  {} {} {}",
+            style.key("Schedule"),
+            style.muted(":"),
+            style.info(schedule)
+        );
+    }
+    if let Some(interval) = status.interval.as_ref() {
+        println!(
+            "  {} {} {}",
+            style.key("Interval"),
+            style.muted(":"),
+            style.info(interval)
+        );
+    }
+    if let Some(last) = status.last_run.as_ref() {
+        println!(
+            "  {} {} {} ({} passed, {} failed)",
+            style.key("Last run"),
+            style.muted(":"),
+            style.info(&last.completed_at),
+            last.workers_passed,
+            last.workers_failed
+        );
+    }
+    if let Some(next) = status.next_run.as_ref() {
+        println!(
+            "  {} {} {}",
+            style.key("Next run"),
+            style.muted(":"),
+            style.info(next)
+        );
+    }
+
+    Ok(())
+}
+
+async fn self_test_history(limit: usize, ctx: &OutputContext) -> Result<()> {
+    let command = format!("GET /self-test/history?limit={}\n", limit);
+    let response = send_daemon_command(&command).await?;
+    let json = extract_json_body(&response).ok_or_else(|| anyhow::anyhow!("Invalid response"))?;
+    let history: SelfTestHistoryResponse = serde_json::from_str(json)?;
+
+    let _ = ctx.json(&history);
+    if ctx.is_json() {
+        return Ok(());
+    }
+
+    let style = ctx.style();
+    println!("{}", style.format_header("Self-Test History"));
+    if history.runs.is_empty() {
+        println!("  {}", style.muted("No self-test runs recorded."));
+        return Ok(());
+    }
+
+    let rows: Vec<Vec<String>> = history
+        .runs
+        .iter()
+        .map(|run| {
+            vec![
+                run.id.to_string(),
+                run.run_type.clone(),
+                run.completed_at.clone(),
+                format!("{}ms", run.duration_ms),
+                run.workers_passed.to_string(),
+                run.workers_failed.to_string(),
+            ]
+        })
+        .collect();
+
+    ctx.table(
+        &["ID", "Type", "Completed", "Duration", "Passed", "Failed"],
+        &rows,
+    );
+
+    for run in &history.runs {
+        if run.workers_failed == 0 {
+            continue;
+        }
+        println!(
+            "\n  {} {}",
+            style.key("Failures for run"),
+            style.highlight(&run.id.to_string())
+        );
+        for result in history
+            .results
+            .iter()
+            .filter(|r| r.run_id == run.id && !r.passed)
+        {
+            let error = result
+                .error
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+            println!(
+                "    {} {}: {}",
+                StatusIndicator::Error.display(style),
+                style.highlight(&result.worker_id),
+                style.error(&error)
+            );
+        }
+    }
+
+    Ok(())
+}
+
+async fn self_test_run(
+    worker: Option<String>,
+    all: bool,
+    project: Option<PathBuf>,
+    timeout: u64,
+    debug: bool,
+    scheduled: bool,
+    ctx: &OutputContext,
+) -> Result<()> {
+    let mut worker_ids = Vec::new();
+
+    if scheduled {
+        // Scheduled run uses daemon config (ignore worker selection).
+    } else if all {
+        // Empty worker list signals "all" to daemon.
+    } else if let Some(worker) = worker {
+        worker_ids.push(worker);
+    } else {
+        let workers = load_workers_from_config()?;
+        let first = workers
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("No workers configured"))?;
+        worker_ids.push(first.id.to_string());
+    }
+
+    let mut query = Vec::new();
+    for id in &worker_ids {
+        query.push(format!("worker={}", urlencoding_encode(id)));
+    }
+    if all {
+        query.push("all=true".to_string());
+    }
+    if scheduled {
+        query.push("scheduled=true".to_string());
+    }
+    if let Some(path) = project.as_ref() {
+        query.push(format!(
+            "project={}",
+            urlencoding_encode(&path.display().to_string())
+        ));
+    }
+    if timeout > 0 {
+        query.push(format!("timeout={}", timeout));
+    }
+    if debug {
+        query.push("debug=true".to_string());
+    }
+
+    let command = if query.is_empty() {
+        "POST /self-test/run\n".to_string()
+    } else {
+        format!("POST /self-test/run?{}\n", query.join("&"))
+    };
+
+    let response = send_daemon_command(&command).await?;
+    let json = extract_json_body(&response).ok_or_else(|| anyhow::anyhow!("Invalid response"))?;
+    let run: SelfTestRunResponse = serde_json::from_str(json)?;
+
+    let _ = ctx.json(&run);
+    if ctx.is_json() {
+        return Ok(());
+    }
+
+    let style = ctx.style();
+    println!("{}", style.format_header("Self-Test Result"));
+    println!(
+        "  {} {} {}",
+        style.key("Run"),
+        style.muted(":"),
+        style.info(&run.run.completed_at)
+    );
+    println!(
+        "  {} {} {} passed, {} failed",
+        style.key("Workers"),
+        style.muted(":"),
+        style.success(&run.run.workers_passed.to_string()),
+        style.error(&run.run.workers_failed.to_string())
+    );
+
+    for result in &run.results {
+        let status = if result.passed {
+            StatusIndicator::Success.display(style)
+        } else {
+            StatusIndicator::Error.display(style)
+        };
+        let detail = if result.passed {
+            format!(
+                "remote={}ms local={}ms",
+                result.remote_time_ms.unwrap_or(0),
+                result.local_time_ms.unwrap_or(0)
+            )
+        } else {
+            result
+                .error
+                .clone()
+                .unwrap_or_else(|| "unknown error".to_string())
+        };
+        println!(
+            "  {} {}: {}",
+            status,
+            style.highlight(&result.worker_id),
+            detail
+        );
+    }
+
+    Ok(())
+}
+
+fn urlencoding_encode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() * 3);
+    for c in s.chars() {
+        match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => {
+                result.push(c);
+            }
+            _ => {
+                for byte in c.to_string().as_bytes() {
+                    result.push('%');
+                    result.push_str(&format!("{:02X}", byte));
+                }
+            }
+        }
+    }
+    result
 }
 
 // Stub for status_overview
