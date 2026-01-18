@@ -540,6 +540,11 @@ where
 mod tests {
     use super::*;
     use crate::ui::{OutputConfig, OutputContext};
+    use tracing::info;
+
+    fn log_test_start(name: &str) {
+        info!("TEST START: {}", name);
+    }
 
     fn make_plain_context() -> OutputContext {
         OutputContext::new(OutputConfig {
@@ -564,6 +569,7 @@ mod tests {
 
     #[test]
     fn test_spinner_lifecycle() {
+        log_test_start("test_spinner_lifecycle");
         let ctx = make_plain_context();
         let spinner = Spinner::new(&ctx, "Testing...");
         spinner.set_message("Still testing...");
@@ -573,6 +579,7 @@ mod tests {
 
     #[test]
     fn test_spinner_in_quiet_mode() {
+        log_test_start("test_spinner_in_quiet_mode");
         let ctx = make_quiet_context();
         let spinner = Spinner::new(&ctx, "Testing...");
         spinner.finish_success("Done");
@@ -581,6 +588,7 @@ mod tests {
 
     #[test]
     fn test_spinner_in_json_mode() {
+        log_test_start("test_spinner_in_json_mode");
         let ctx = make_json_context();
         let spinner = Spinner::new(&ctx, "Testing...");
         spinner.finish_error("Failed");
@@ -589,6 +597,7 @@ mod tests {
 
     #[test]
     fn test_spinner_error_finish() {
+        log_test_start("test_spinner_error_finish");
         let ctx = make_plain_context();
         let spinner = Spinner::new(&ctx, "Working...");
         spinner.finish_error("Connection failed");
@@ -596,6 +605,7 @@ mod tests {
 
     #[test]
     fn test_spinner_warning_finish() {
+        log_test_start("test_spinner_warning_finish");
         let ctx = make_plain_context();
         let spinner = Spinner::new(&ctx, "Working...");
         spinner.finish_warning("Partial success");
@@ -603,6 +613,7 @@ mod tests {
 
     #[test]
     fn test_spinner_abandon() {
+        log_test_start("test_spinner_abandon");
         let ctx = make_plain_context();
         let spinner = Spinner::new(&ctx, "Working...");
         spinner.abandon();
@@ -610,6 +621,7 @@ mod tests {
 
     #[test]
     fn test_transfer_progress_lifecycle() {
+        log_test_start("test_transfer_progress_lifecycle");
         let ctx = make_plain_context();
         let bar = TransferProgress::new(&ctx, 100, "Syncing");
         bar.set_position(50);
@@ -619,6 +631,7 @@ mod tests {
 
     #[test]
     fn test_transfer_progress_items() {
+        log_test_start("test_transfer_progress_items");
         let ctx = make_plain_context();
         let bar = TransferProgress::new_items(&ctx, 10, "Items");
         bar.set_position(5);
@@ -627,6 +640,7 @@ mod tests {
 
     #[test]
     fn test_transfer_progress_quiet() {
+        log_test_start("test_transfer_progress_quiet");
         let ctx = make_quiet_context();
         let bar = TransferProgress::new(&ctx, 100, "test");
         bar.set_position(50);
@@ -636,6 +650,7 @@ mod tests {
 
     #[test]
     fn test_step_progress_lifecycle() {
+        log_test_start("test_step_progress_lifecycle");
         let ctx = make_plain_context();
         let mut steps = StepProgress::new(&ctx, &["Sync", "Compile", "Retrieve"]);
         steps.start_step(0);
@@ -648,6 +663,7 @@ mod tests {
 
     #[test]
     fn test_step_progress_failure() {
+        log_test_start("test_step_progress_failure");
         let ctx = make_plain_context();
         let mut steps = StepProgress::new(&ctx, &["Sync", "Compile"]);
         steps.start_step(0);
@@ -656,6 +672,7 @@ mod tests {
 
     #[test]
     fn test_step_progress_skip() {
+        log_test_start("test_step_progress_skip");
         let ctx = make_plain_context();
         let mut steps = StepProgress::new(&ctx, &["Sync", "Compile"]);
         steps.skip_step(0);
@@ -663,6 +680,7 @@ mod tests {
 
     #[test]
     fn test_multi_progress_manager() {
+        log_test_start("test_multi_progress_manager");
         let ctx = make_plain_context();
         let manager = MultiProgressManager::new(&ctx);
         let pb1 = manager.add_spinner("worker-1", "Connecting...");
@@ -673,6 +691,7 @@ mod tests {
 
     #[test]
     fn test_multi_progress_suspend() {
+        log_test_start("test_multi_progress_suspend");
         let ctx = make_plain_context();
         let manager = MultiProgressManager::new(&ctx);
         let result = manager.suspend(|| {
@@ -684,6 +703,7 @@ mod tests {
 
     #[test]
     fn test_multi_progress_visibility() {
+        log_test_start("test_multi_progress_visibility");
         let ctx = make_quiet_context();
         let manager = MultiProgressManager::new(&ctx);
         assert!(!manager.is_visible());
@@ -697,6 +717,7 @@ mod tests {
 
     #[test]
     fn test_multi_progress_bar() {
+        log_test_start("test_multi_progress_bar");
         let ctx = make_plain_context();
         let manager = MultiProgressManager::new(&ctx);
         let pb = manager.add_progress_bar(100, "Task");
@@ -706,6 +727,7 @@ mod tests {
 
     #[test]
     fn test_should_show_progress() {
+        log_test_start("test_should_show_progress");
         let ctx_quiet = make_quiet_context();
         assert!(!should_show_progress(&ctx_quiet));
 
@@ -715,6 +737,7 @@ mod tests {
 
     #[test]
     fn test_spinner_chars_selection() {
+        log_test_start("test_spinner_chars_selection");
         let ctx = make_plain_context();
         // Plain mode typically doesn't support unicode
         let chars = spinner_chars(&ctx);
@@ -724,6 +747,7 @@ mod tests {
 
     #[test]
     fn test_progress_chars_selection() {
+        log_test_start("test_progress_chars_selection");
         let ctx = make_plain_context();
         let chars = progress_chars(&ctx);
         assert!(!chars.is_empty());

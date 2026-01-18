@@ -571,6 +571,11 @@ pub fn default_context() -> OutputContext {
 mod tests {
     use super::*;
     use crate::ui::writer::SharedOutputBuffer;
+    use tracing::info;
+
+    fn log_test_start(name: &str) {
+        info!("TEST START: {}", name);
+    }
 
     fn make_test_context(
         config: OutputConfig,
@@ -585,18 +590,21 @@ mod tests {
 
     #[test]
     fn test_output_mode_default() {
+        log_test_start("test_output_mode_default");
         let mode = OutputMode::default();
         assert_eq!(mode, OutputMode::Human);
     }
 
     #[test]
     fn test_verbosity_default() {
+        log_test_start("test_verbosity_default");
         let v = Verbosity::default();
         assert_eq!(v, Verbosity::Normal);
     }
 
     #[test]
     fn test_color_choice_parse() {
+        log_test_start("test_color_choice_parse");
         assert_eq!(ColorChoice::parse("always"), ColorChoice::Always);
         assert_eq!(ColorChoice::parse("never"), ColorChoice::Never);
         assert_eq!(ColorChoice::parse("auto"), ColorChoice::Auto);
@@ -605,6 +613,7 @@ mod tests {
 
     #[test]
     fn test_json_mode_json_output() {
+        log_test_start("test_json_mode_json_output");
         let config = OutputConfig {
             json: true,
             ..Default::default()
@@ -626,6 +635,7 @@ mod tests {
 
     #[test]
     fn test_json_mode_suppresses_human_output() {
+        log_test_start("test_json_mode_suppresses_human_output");
         let config = OutputConfig {
             json: true,
             ..Default::default()
@@ -642,6 +652,7 @@ mod tests {
 
     #[test]
     fn test_quiet_mode_suppresses_info() {
+        log_test_start("test_quiet_mode_suppresses_info");
         let config = OutputConfig {
             quiet: true,
             ..Default::default()
@@ -656,6 +667,7 @@ mod tests {
 
     #[test]
     fn test_error_always_shows() {
+        log_test_start("test_error_always_shows");
         let config = OutputConfig {
             quiet: true,
             ..Default::default()
@@ -670,6 +682,7 @@ mod tests {
 
     #[test]
     fn test_verbose_debug_messages() {
+        log_test_start("test_verbose_debug_messages");
         let config = OutputConfig {
             verbose: true,
             ..Default::default()
@@ -684,6 +697,7 @@ mod tests {
 
     #[test]
     fn test_non_verbose_hides_debug() {
+        log_test_start("test_non_verbose_hides_debug");
         let config = OutputConfig::default();
         let (ctx, _, stderr_buf) = make_test_context(config);
 
@@ -694,6 +708,7 @@ mod tests {
 
     #[test]
     fn test_table_output() {
+        log_test_start("test_table_output");
         let config = OutputConfig::default();
         let (ctx, stdout_buf, _) = make_test_context(config);
 
@@ -711,6 +726,7 @@ mod tests {
 
     #[test]
     fn test_terminal_caps_defaults() {
+        log_test_start("test_terminal_caps_defaults");
         let caps = TerminalCaps::default();
         assert_eq!(caps.width, 80);
         assert_eq!(caps.height, 24);
@@ -723,6 +739,7 @@ mod tests {
 
     #[test]
     fn test_context_background_methods() {
+        log_test_start("test_context_background_methods");
         let config = OutputConfig::default();
         let (ctx, _, _) = make_test_context(config);
 
@@ -740,6 +757,7 @@ mod tests {
 
     #[test]
     fn test_context_color_level() {
+        log_test_start("test_context_color_level");
         let config = OutputConfig::default();
         let (ctx, _, _) = make_test_context(config);
 
@@ -755,6 +773,7 @@ mod tests {
 
     #[test]
     fn test_context_color_level_plain_mode() {
+        log_test_start("test_context_color_level_plain_mode");
         let config = OutputConfig {
             force_mode: Some(OutputMode::Plain),
             ..Default::default()
@@ -767,6 +786,7 @@ mod tests {
 
     #[test]
     fn test_context_resolve_color() {
+        log_test_start("test_context_resolve_color");
         use crate::ui::adaptive::palette;
 
         let config = OutputConfig::default();
@@ -780,6 +800,7 @@ mod tests {
 
     #[test]
     fn test_context_supports_hyperlinks_human_mode() {
+        log_test_start("test_context_supports_hyperlinks_human_mode");
         let config = OutputConfig {
             force_mode: Some(OutputMode::Human),
             ..Default::default()
@@ -792,6 +813,7 @@ mod tests {
 
     #[test]
     fn test_context_supports_hyperlinks_plain_mode() {
+        log_test_start("test_context_supports_hyperlinks_plain_mode");
         let config = OutputConfig {
             force_mode: Some(OutputMode::Plain),
             ..Default::default()

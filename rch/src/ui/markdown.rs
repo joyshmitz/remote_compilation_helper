@@ -386,9 +386,15 @@ pub fn strip_markdown(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracing::info;
+
+    fn log_test_start(name: &str) {
+        info!("TEST START: {}", name);
+    }
 
     #[test]
     fn test_render_heading() {
+        log_test_start("test_render_heading");
         let md = "# Title";
         let output = render_markdown(md, false, true);
         assert!(output.contains("Title"));
@@ -397,6 +403,7 @@ mod tests {
 
     #[test]
     fn test_render_heading_levels() {
+        log_test_start("test_render_heading_levels");
         let md = "# H1\n\n## H2\n\n### H3";
         let output = render_markdown(md, false, true);
         // Check that headings are rendered (may have prefix styles)
@@ -407,6 +414,7 @@ mod tests {
 
     #[test]
     fn test_render_paragraph() {
+        log_test_start("test_render_paragraph");
         let md = "First paragraph.\n\nSecond paragraph.";
         let output = render_markdown(md, false, true);
         assert!(output.contains("First paragraph"));
@@ -415,6 +423,7 @@ mod tests {
 
     #[test]
     fn test_render_bold() {
+        log_test_start("test_render_bold");
         let md = "This is **bold** text.";
         let output = render_markdown(md, false, true);
         assert!(output.contains("bold"));
@@ -422,6 +431,7 @@ mod tests {
 
     #[test]
     fn test_render_italic() {
+        log_test_start("test_render_italic");
         let md = "This is *italic* text.";
         let output = render_markdown(md, false, true);
         assert!(output.contains("italic"));
@@ -429,6 +439,7 @@ mod tests {
 
     #[test]
     fn test_render_inline_code() {
+        log_test_start("test_render_inline_code");
         let md = "Use `cargo build` to compile.";
         let output = render_markdown(md, false, true);
         assert!(output.contains("`cargo build`"));
@@ -436,6 +447,7 @@ mod tests {
 
     #[test]
     fn test_render_code_block() {
+        log_test_start("test_render_code_block");
         let md = "```\nfn main() {}\n```";
         let output = render_markdown(md, false, true);
         assert!(output.contains("fn main()"));
@@ -443,6 +455,7 @@ mod tests {
 
     #[test]
     fn test_render_unordered_list_unicode() {
+        log_test_start("test_render_unordered_list_unicode");
         let md = "- Item 1\n- Item 2\n- Item 3";
         let output = render_markdown(md, false, true);
         assert!(output.contains("\u{2022}")); // Unicode bullet
@@ -452,6 +465,7 @@ mod tests {
 
     #[test]
     fn test_render_unordered_list_ascii() {
+        log_test_start("test_render_unordered_list_ascii");
         let md = "- Item 1\n- Item 2";
         let output = render_markdown(md, false, false);
         // Check that items are rendered (bullet style may vary)
@@ -463,6 +477,7 @@ mod tests {
 
     #[test]
     fn test_render_ordered_list() {
+        log_test_start("test_render_ordered_list");
         let md = "1. First\n2. Second\n3. Third";
         let output = render_markdown(md, false, true);
         // Check that items are rendered with numbers
@@ -476,6 +491,7 @@ mod tests {
 
     #[test]
     fn test_render_rule() {
+        log_test_start("test_render_rule");
         let md = "Before\n\n---\n\nAfter";
         let output = render_markdown(md, false, true);
         assert!(output.contains("\u{2500}")); // Unicode horizontal line
@@ -483,6 +499,7 @@ mod tests {
 
     #[test]
     fn test_render_rule_ascii() {
+        log_test_start("test_render_rule_ascii");
         let md = "Before\n\n---\n\nAfter";
         let output = render_markdown(md, false, false);
         assert!(output.contains("---"));
@@ -490,6 +507,7 @@ mod tests {
 
     #[test]
     fn test_strip_markdown_basic() {
+        log_test_start("test_strip_markdown_basic");
         let md = "# Heading\n\n**Bold** and *italic* text.";
         let output = strip_markdown(md);
         assert!(output.contains("Heading"));
@@ -501,6 +519,7 @@ mod tests {
 
     #[test]
     fn test_strip_markdown_code() {
+        log_test_start("test_strip_markdown_code");
         let md = "Use `code` here.";
         let output = strip_markdown(md);
         assert!(output.contains("code"));
@@ -509,6 +528,7 @@ mod tests {
 
     #[test]
     fn test_strip_markdown_list() {
+        log_test_start("test_strip_markdown_list");
         let md = "- Item 1\n- Item 2";
         let output = strip_markdown(md);
         assert!(output.contains("Item 1"));
@@ -517,12 +537,14 @@ mod tests {
 
     #[test]
     fn test_render_empty() {
+        log_test_start("test_render_empty");
         let output = render_markdown("", false, true);
         assert!(output.is_empty());
     }
 
     #[test]
     fn test_render_with_colors() {
+        log_test_start("test_render_with_colors");
         let md = "# Title\n\n**Bold** text.";
         let output = render_markdown(md, true, true);
         // Should contain ANSI escape codes
@@ -531,6 +553,7 @@ mod tests {
 
     #[test]
     fn test_nested_list() {
+        log_test_start("test_nested_list");
         let md = "- Level 1\n  - Level 2\n    - Level 3";
         let output = render_markdown(md, false, true);
         assert!(output.contains("Level 1"));

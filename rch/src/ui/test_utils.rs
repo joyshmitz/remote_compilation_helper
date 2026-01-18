@@ -288,9 +288,15 @@ impl OutputContextBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracing::info;
+
+    fn log_test_start(name: &str) {
+        info!("TEST START: {}", name);
+    }
 
     #[test]
     fn test_strip_ansi() {
+        log_test_start("test_strip_ansi");
         let with_codes = "\x1b[32mgreen\x1b[0m text";
         let stripped = strip_ansi(with_codes);
         assert_eq!(stripped, "green text");
@@ -298,28 +304,33 @@ mod tests {
 
     #[test]
     fn test_assert_no_ansi_passes() {
+        log_test_start("test_assert_no_ansi_passes");
         assert_no_ansi("plain text");
     }
 
     #[test]
     #[should_panic(expected = "contains ANSI")]
     fn test_assert_no_ansi_fails() {
+        log_test_start("test_assert_no_ansi_fails");
         assert_no_ansi("\x1b[32mcolored\x1b[0m");
     }
 
     #[test]
     fn test_assert_has_ansi_passes() {
+        log_test_start("test_assert_has_ansi_passes");
         assert_has_ansi("\x1b[32mcolored\x1b[0m");
     }
 
     #[test]
     #[should_panic(expected = "should contain ANSI")]
     fn test_assert_has_ansi_fails() {
+        log_test_start("test_assert_has_ansi_fails");
         assert_has_ansi("plain text");
     }
 
     #[test]
     fn test_assert_valid_json() {
+        log_test_start("test_assert_valid_json");
         let json = assert_valid_json(r#"{"key": "value"}"#);
         assert_eq!(json["key"], "value");
     }
@@ -327,11 +338,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "not valid JSON")]
     fn test_assert_valid_json_fails() {
+        log_test_start("test_assert_valid_json_fails");
         assert_valid_json("not json");
     }
 
     #[test]
     fn test_output_capture_json_mode() {
+        log_test_start("test_output_capture_json_mode");
         let capture = OutputCapture::json();
         capture.with_context(|ctx| {
             assert!(ctx.is_json());
@@ -340,6 +353,7 @@ mod tests {
 
     #[test]
     fn test_output_capture_quiet_mode() {
+        log_test_start("test_output_capture_quiet_mode");
         let capture = OutputCapture::quiet();
         capture.with_context(|ctx| {
             assert!(ctx.is_quiet());
@@ -348,6 +362,7 @@ mod tests {
 
     #[test]
     fn test_output_capture_verbose_mode() {
+        log_test_start("test_output_capture_verbose_mode");
         let capture = OutputCapture::verbose();
         capture.with_context(|ctx| {
             assert!(ctx.is_verbose());
@@ -356,6 +371,7 @@ mod tests {
 
     #[test]
     fn test_builder_pattern() {
+        log_test_start("test_builder_pattern");
         let capture = OutputContextBuilder::new()
             .verbose()
             .color(ColorChoice::Never)
@@ -368,6 +384,7 @@ mod tests {
 
     #[test]
     fn test_capture_stdout() {
+        log_test_start("test_capture_stdout");
         let capture = OutputCapture::new();
         capture.with_context(|ctx| {
             ctx.print("test output");
@@ -378,6 +395,7 @@ mod tests {
 
     #[test]
     fn test_capture_stderr() {
+        log_test_start("test_capture_stderr");
         let capture = OutputCapture::new();
         capture.with_context(|ctx| {
             ctx.error("error message");

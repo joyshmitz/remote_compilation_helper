@@ -332,9 +332,15 @@ pub type Theme = Style;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracing::info;
+
+    fn log_test_start(name: &str) {
+        info!("TEST START: {}", name);
+    }
 
     #[test]
     fn test_symbols_unicode() {
+        log_test_start("test_symbols_unicode");
         let sym = Symbols::UNICODE;
         assert_eq!(sym.success, "✓");
         assert_eq!(sym.failure, "✗");
@@ -342,6 +348,7 @@ mod tests {
 
     #[test]
     fn test_symbols_ascii() {
+        log_test_start("test_symbols_ascii");
         let sym = Symbols::ASCII;
         assert_eq!(sym.success, "[OK]");
         assert_eq!(sym.failure, "[FAIL]");
@@ -349,6 +356,7 @@ mod tests {
 
     #[test]
     fn test_symbols_selection() {
+        log_test_start("test_symbols_selection");
         let unicode_sym = Symbols::for_unicode(true);
         assert_eq!(unicode_sym.success, "✓");
 
@@ -358,6 +366,7 @@ mod tests {
 
     #[test]
     fn test_style_with_colors_disabled() {
+        log_test_start("test_style_with_colors_disabled");
         let style = Style::new(false, true, false);
         let styled = style.success("test");
         // When colors are disabled, the string should not contain escape codes
@@ -367,6 +376,7 @@ mod tests {
 
     #[test]
     fn test_format_key_value() {
+        log_test_start("test_format_key_value");
         let style = Style::new(false, true, false);
         let formatted = style.format_key_value("Status", "Healthy", 10);
         assert!(formatted.contains("Status"));
@@ -376,6 +386,7 @@ mod tests {
 
     #[test]
     fn test_format_header() {
+        log_test_start("test_format_header");
         let style = Style::new(false, true, false);
         let header = style.format_header("Workers");
         assert!(header.contains("Workers"));
@@ -384,6 +395,7 @@ mod tests {
 
     #[test]
     fn test_status_indicator_symbols_unicode() {
+        log_test_start("test_status_indicator_symbols_unicode");
         let symbols = Symbols::UNICODE;
         assert_eq!(StatusIndicator::Success.symbol(&symbols), "✓");
         assert_eq!(StatusIndicator::Error.symbol(&symbols), "✗");
@@ -396,6 +408,7 @@ mod tests {
 
     #[test]
     fn test_status_indicator_symbols_ascii() {
+        log_test_start("test_status_indicator_symbols_ascii");
         let symbols = Symbols::ASCII;
         assert_eq!(StatusIndicator::Success.symbol(&symbols), "[OK]");
         assert_eq!(StatusIndicator::Error.symbol(&symbols), "[FAIL]");
@@ -408,6 +421,7 @@ mod tests {
 
     #[test]
     fn test_status_indicator_colors() {
+        log_test_start("test_status_indicator_colors");
         let colors = SemanticColors::default();
         assert_eq!(StatusIndicator::Success.color(&colors), Color::Green);
         assert_eq!(StatusIndicator::Error.color(&colors), Color::Red);
@@ -420,6 +434,7 @@ mod tests {
 
     #[test]
     fn test_status_indicator_display_no_color() {
+        log_test_start("test_status_indicator_display_no_color");
         let style = Style::new(false, true, false);
         let display = StatusIndicator::Success.display(&style);
         let output = display.to_string();
@@ -429,6 +444,7 @@ mod tests {
 
     #[test]
     fn test_status_indicator_with_label() {
+        log_test_start("test_status_indicator_with_label");
         let style = Style::new(false, true, false);
         let output = StatusIndicator::Success.with_label(&style, "Running");
         assert!(output.contains("✓"));
@@ -437,6 +453,7 @@ mod tests {
 
     #[test]
     fn test_hyperlink_formatting() {
+        log_test_start("test_hyperlink_formatting");
         let style = Style::new(false, true, true);
         let link = style.link("Click me", "https://example.com");
         assert_eq!(
@@ -447,6 +464,7 @@ mod tests {
 
     #[test]
     fn test_hyperlink_fallback() {
+        log_test_start("test_hyperlink_fallback");
         let style = Style::new(false, true, false);
         let link = style.link("Click me", "https://example.com");
         assert_eq!(link, "Click me (https://example.com)");
@@ -457,6 +475,7 @@ mod tests {
 
     #[test]
     fn test_disabled_symbol() {
+        log_test_start("test_disabled_symbol");
         let unicode_sym = Symbols::UNICODE;
         assert_eq!(unicode_sym.disabled, "⊘");
 

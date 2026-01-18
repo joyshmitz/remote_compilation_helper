@@ -862,9 +862,15 @@ pub mod presets {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracing::info;
+
+    fn log_test_start(name: &str) {
+        info!("TEST START: {}", name);
+    }
 
     #[test]
     fn test_border_style_chars() {
+        log_test_start("test_border_style_chars");
         let normal = BorderStyle::Normal.chars();
         assert_eq!(normal.top_left, '┌');
         assert_eq!(normal.top_right, '┐');
@@ -880,6 +886,7 @@ mod tests {
 
     #[test]
     fn test_border_style_ascii_fallback() {
+        log_test_start("test_border_style_ascii_fallback");
         let ascii = BorderStyle::Normal.ascii_chars();
         assert_eq!(ascii.top_left, '+');
         assert_eq!(ascii.top, '-');
@@ -888,6 +895,7 @@ mod tests {
 
     #[test]
     fn test_spacing_all() {
+        log_test_start("test_spacing_all");
         let spacing = Spacing::all(2);
         assert_eq!(spacing.top, 2);
         assert_eq!(spacing.right, 2);
@@ -897,6 +905,7 @@ mod tests {
 
     #[test]
     fn test_spacing_horizontal() {
+        log_test_start("test_spacing_horizontal");
         let spacing = Spacing::horizontal(3);
         assert_eq!(spacing.top, 0);
         assert_eq!(spacing.right, 3);
@@ -907,6 +916,7 @@ mod tests {
 
     #[test]
     fn test_spacing_vertical() {
+        log_test_start("test_spacing_vertical");
         let spacing = Spacing::vertical(2);
         assert_eq!(spacing.top, 2);
         assert_eq!(spacing.right, 0);
@@ -917,6 +927,7 @@ mod tests {
 
     #[test]
     fn test_box_style_builder() {
+        log_test_start("test_box_style_builder");
         let style = BoxStyle::new()
             .border(BorderStyle::Rounded)
             .border_color(Color::Cyan)
@@ -935,6 +946,7 @@ mod tests {
 
     #[test]
     fn test_render_simple_box_no_colors() {
+        log_test_start("test_render_simple_box_no_colors");
         let style = BoxStyle::new().border(BorderStyle::Normal).width(10);
 
         let output = style.render("Hello", false, true);
@@ -947,6 +959,7 @@ mod tests {
 
     #[test]
     fn test_render_box_ascii_fallback() {
+        log_test_start("test_render_box_ascii_fallback");
         let style = BoxStyle::new().border(BorderStyle::Rounded).width(10);
 
         let output = style.render("Hi", false, false);
@@ -959,6 +972,7 @@ mod tests {
 
     #[test]
     fn test_render_box_with_padding() {
+        log_test_start("test_render_box_with_padding");
         let style = BoxStyle::new()
             .border(BorderStyle::Normal)
             .padding(Padding::all(1))
@@ -973,6 +987,7 @@ mod tests {
 
     #[test]
     fn test_render_multiline_content() {
+        log_test_start("test_render_multiline_content");
         let style = BoxStyle::new().border(BorderStyle::Normal).width(20);
 
         let output = style.render("Line 1\nLine 2\nLine 3", false, true);
@@ -987,6 +1002,7 @@ mod tests {
 
     #[test]
     fn test_alignment_left() {
+        log_test_start("test_alignment_left");
         let style = BoxStyle::new()
             .border(BorderStyle::Normal)
             .align(Align::Left)
@@ -1000,6 +1016,7 @@ mod tests {
 
     #[test]
     fn test_alignment_center() {
+        log_test_start("test_alignment_center");
         let style = BoxStyle::new()
             .border(BorderStyle::Normal)
             .align(Align::Center)
@@ -1013,6 +1030,7 @@ mod tests {
 
     #[test]
     fn test_alignment_right() {
+        log_test_start("test_alignment_right");
         let style = BoxStyle::new()
             .border(BorderStyle::Normal)
             .align(Align::Right)
@@ -1026,6 +1044,7 @@ mod tests {
 
     #[test]
     fn test_no_border() {
+        log_test_start("test_no_border");
         let style = BoxStyle::new().border(BorderStyle::None).width(10);
 
         let output = style.render("Hello", false, true);
@@ -1037,6 +1056,7 @@ mod tests {
 
     #[test]
     fn test_join_horizontal() {
+        log_test_start("test_join_horizontal");
         let box1 = "A\nB";
         let box2 = "1\n2";
 
@@ -1052,6 +1072,7 @@ mod tests {
 
     #[test]
     fn test_join_horizontal_different_heights() {
+        log_test_start("test_join_horizontal_different_heights");
         let box1 = "A\nB\nC";
         let box2 = "1";
 
@@ -1063,6 +1084,7 @@ mod tests {
 
     #[test]
     fn test_join_vertical() {
+        log_test_start("test_join_vertical");
         let box1 = "Top";
         let box2 = "Bottom";
 
@@ -1075,6 +1097,7 @@ mod tests {
 
     #[test]
     fn test_place_center() {
+        log_test_start("test_place_center");
         let content = "X";
         let placed = place(5, 3, Align::Center, Align::Center, content);
         let lines: Vec<&str> = placed.lines().collect();
@@ -1086,6 +1109,7 @@ mod tests {
 
     #[test]
     fn test_presets() {
+        log_test_start("test_presets");
         let info = presets::info_box();
         assert_eq!(info.border, BorderStyle::Rounded);
         assert_eq!(info.border_color, Some(Color::Cyan));
@@ -1100,6 +1124,7 @@ mod tests {
 
     #[test]
     fn test_margin_applied() {
+        log_test_start("test_margin_applied");
         let style = BoxStyle::new()
             .border(BorderStyle::Normal)
             .margin(Margin::new(1, 0, 1, 2))
@@ -1113,6 +1138,7 @@ mod tests {
 
     #[test]
     fn test_min_width() {
+        log_test_start("test_min_width");
         let style = BoxStyle::new().border(BorderStyle::Normal).min_width(20);
 
         let output = style.render("Hi", false, true);
@@ -1124,6 +1150,7 @@ mod tests {
 
     #[test]
     fn test_border_has_border() {
+        log_test_start("test_border_has_border");
         assert!(!BorderStyle::None.has_border());
         assert!(BorderStyle::Normal.has_border());
         assert!(BorderStyle::Rounded.has_border());
