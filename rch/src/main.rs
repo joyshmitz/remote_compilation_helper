@@ -397,6 +397,43 @@ configured remote workers."#)]
         action: FleetAction,
     },
 
+    /// View and analyze worker SpeedScores
+    #[command(after_help = r#"EXAMPLES:
+    rch speedscore css              # Show SpeedScore for worker 'css'
+    rch speedscore css --verbose    # Show detailed component breakdown
+    rch speedscore css --history    # Show score history
+    rch speedscore css --history --days 7  # Last 7 days of history
+    rch speedscore --all            # Show SpeedScores for all workers
+
+SpeedScore is a composite performance metric (0-100) combining:
+  - CPU performance (30%)
+  - Memory efficiency (15%)
+  - Disk I/O (20%)
+  - Network latency (15%)
+  - Compilation speed (20%)
+
+Ratings:
+  90+ Excellent | 75+ Very Good | 60+ Good | 45+ Average | 30+ Below Average"#)]
+    SpeedScore {
+        /// Worker ID to show SpeedScore for
+        worker: Option<String>,
+        /// Show SpeedScores for all workers
+        #[arg(long)]
+        all: bool,
+        /// Show detailed component breakdown
+        #[arg(short, long)]
+        verbose: bool,
+        /// Show SpeedScore history
+        #[arg(long)]
+        history: bool,
+        /// Number of days for history (default: 30)
+        #[arg(long, default_value = "30")]
+        days: u32,
+        /// Max history entries to show (default: 20)
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
+
     /// Interactive TUI dashboard for real-time monitoring
     #[command(after_help = r#"EXAMPLES:
     rch dashboard                      # Launch TUI dashboard
@@ -495,7 +532,11 @@ enum DaemonAction {
 #[derive(Subcommand)]
 enum WorkersAction {
     /// List configured workers
-    List,
+    List {
+        /// Show SpeedScore for each worker
+        #[arg(long)]
+        speedscore: bool,
+    },
     /// Probe worker connectivity
     Probe {
         /// Worker ID to probe, or --all for all workers
@@ -931,6 +972,14 @@ async fn main() -> Result<()> {
                 .await
             }
             Commands::Fleet { action } => handle_fleet(action, &ctx).await,
+            Commands::SpeedScore {
+                worker,
+                all,
+                verbose,
+                history,
+                days,
+                limit,
+            } => commands::speedscore(worker, all, verbose, history, days, limit, &ctx).await,
             Commands::Dashboard {
                 refresh,
                 no_mouse,
@@ -977,8 +1026,8 @@ async fn handle_daemon(action: DaemonAction, ctx: &OutputContext) -> Result<()> 
 
 async fn handle_workers(action: WorkersAction, ctx: &OutputContext) -> Result<()> {
     match action {
-        WorkersAction::List => {
-            commands::workers_list(ctx)?;
+        WorkersAction::List { speedscore } => {
+            commands::workers_list(speedscore, ctx).await?;
         }
         WorkersAction::Probe { worker, all } => {
             commands::workers_probe(worker, all, ctx).await?;
@@ -1533,8 +1582,10 @@ mod tests {
         let cli = Cli::try_parse_from(["rch", "workers", "list"]).unwrap();
         match cli.command {
             Some(Commands::Workers {
-                action: WorkersAction::List,
-            }) => {}
+                action: WorkersAction::List { speedscore },
+            }) => {
+                assert!(!speedscore);
+            }
             _ => panic!("Expected workers list command"),
         }
     }

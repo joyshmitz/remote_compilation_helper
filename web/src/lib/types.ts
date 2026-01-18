@@ -226,6 +226,37 @@ export interface SpeedScoreView {
 }
 
 /**
+ * Partial SpeedScore for benchmarks that failed mid-way
+ */
+export interface PartialSpeedScore extends Partial<SpeedScoreView> {
+  is_partial: true;
+  failed_phase: 'cpu' | 'memory' | 'disk' | 'network' | 'compilation';
+}
+
+/**
+ * Raw benchmark results with detailed metrics per component
+ */
+export interface BenchmarkResults {
+  cpu?: {
+    gflops: number;
+  };
+  memory?: {
+    bandwidth_gbps: number;
+  };
+  disk?: {
+    sequential_read_mbps: number;
+    random_read_iops: number;
+  };
+  network?: {
+    download_mbps: number;
+    upload_mbps: number;
+  };
+  compilation?: {
+    units_per_sec: number;
+  };
+}
+
+/**
  * SpeedScore response for a single worker
  */
 export interface SpeedScoreResponse {
