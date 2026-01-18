@@ -2134,4 +2134,510 @@ mod tests {
         assert_eq!(is_signal_killed(sigkill), Some(9), "Should detect SIGKILL");
         assert_eq!(signal_name(9), "SIGKILL", "Should name SIGKILL correctly");
     }
+
+    // =========================================================================
+    // Cargo test integration tests (bead remote_compilation_helper-iyv1)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_cargo_test_remote_success() {
+        let _lock = test_lock().lock().await;
+        let socket_path = format!(
+            "/tmp/rch_test_cargo_test_success_{}_{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        // Configure mock for successful test execution (exit 0)
+        let _overrides = TestOverridesGuard::set(
+            &socket_path,
+            MockConfig {
+                default_exit_code: 0,
+                default_stdout: "running 5 tests\ntest test_one ... ok\ntest test_two ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored\n".to_string(),
+                ..MockConfig::default()
+            },
+            MockRsyncConfig::success(),
+        );
+        mock::clear_global_invocations();
+
+        let response = SelectionResponse {
+            worker: Some(SelectedWorker {
+                id: rch_common::WorkerId::new("test-worker"),
+                host: "test.host.local".to_string(),
+                user: "testuser".to_string(),
+                identity_file: "~/.ssh/test_key".to_string(),
+                slots_available: 8,
+                speed_score: 85.0,
+            }),
+            reason: SelectionReason::Success,
+            build_id: None,
+        };
+        spawn_mock_daemon(&socket_path, response).await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
+        let input = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: ToolInput {
+                command: "cargo test".to_string(),
+                description: None,
+            },
+            session_id: None,
+        };
+
+        let output = process_hook(input).await;
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Successful remote test should deny local execution
+        assert!(
+            !output.is_allow(),
+            "Successful cargo test should deny local execution"
+        );
+
+        // Verify the pipeline phases executed correctly
+        let rsync_logs = mock::global_rsync_invocations_snapshot();
+        let ssh_logs = mock::global_ssh_invocations_snapshot();
+
+        assert!(
+            rsync_logs.iter().any(|i| i.phase == Phase::Sync),
+            "Should have synced project"
+        );
+        assert!(
+            ssh_logs.iter().any(|i| i.phase == Phase::Execute),
+            "Should have executed remote command"
+        );
+        // Artifacts should be retrieved on success (but with test-specific patterns)
+        assert!(
+            rsync_logs.iter().any(|i| i.phase == Phase::Artifacts),
+            "Should have retrieved artifacts"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cargo_test_remote_test_failures() {
+        let _lock = test_lock().lock().await;
+        let socket_path = format!(
+            "/tmp/rch_test_cargo_test_failures_{}_{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        // Configure mock for test failures (exit 101)
+        let _overrides = TestOverridesGuard::set(
+            &socket_path,
+            MockConfig {
+                default_exit_code: 101,
+                default_stdout: "running 5 tests\ntest test_one ... ok\ntest test_two ... FAILED\n\ntest result: FAILED. 4 passed; 1 failed; 0 ignored\n".to_string(),
+                default_stderr: "thread 'test_two' panicked at 'assertion failed'\n".to_string(),
+                ..MockConfig::default()
+            },
+            MockRsyncConfig::success(),
+        );
+        mock::clear_global_invocations();
+
+        let response = SelectionResponse {
+            worker: Some(SelectedWorker {
+                id: rch_common::WorkerId::new("test-worker"),
+                host: "test.host.local".to_string(),
+                user: "testuser".to_string(),
+                identity_file: "~/.ssh/test_key".to_string(),
+                slots_available: 8,
+                speed_score: 85.0,
+            }),
+            reason: SelectionReason::Success,
+            build_id: None,
+        };
+        spawn_mock_daemon(&socket_path, response).await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
+        let input = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: ToolInput {
+                command: "cargo test".to_string(),
+                description: None,
+            },
+            session_id: None,
+        };
+
+        let output = process_hook(input).await;
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Test failures (exit 101) should still deny local execution
+        // Re-running locally won't help - the tests already ran and failed
+        assert!(
+            !output.is_allow(),
+            "cargo test with failures (exit 101) should deny local execution"
+        );
+
+        // Verify pipeline executed
+        let ssh_logs = mock::global_ssh_invocations_snapshot();
+        assert!(
+            ssh_logs.iter().any(|i| i.phase == Phase::Execute),
+            "Should have executed remote command"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cargo_test_remote_build_failure() {
+        let _lock = test_lock().lock().await;
+        let socket_path = format!(
+            "/tmp/rch_test_cargo_test_build_fail_{}_{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        // Configure mock for build failure (exit 1)
+        let _overrides = TestOverridesGuard::set(
+            &socket_path,
+            MockConfig {
+                default_exit_code: 1,
+                default_stderr: "error[E0425]: cannot find value `undefined_var` in this scope\n  --> src/lib.rs:10:5\n".to_string(),
+                ..MockConfig::default()
+            },
+            MockRsyncConfig::success(),
+        );
+        mock::clear_global_invocations();
+
+        let response = SelectionResponse {
+            worker: Some(SelectedWorker {
+                id: rch_common::WorkerId::new("test-worker"),
+                host: "test.host.local".to_string(),
+                user: "testuser".to_string(),
+                identity_file: "~/.ssh/test_key".to_string(),
+                slots_available: 8,
+                speed_score: 85.0,
+            }),
+            reason: SelectionReason::Success,
+            build_id: None,
+        };
+        spawn_mock_daemon(&socket_path, response).await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
+        let input = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: ToolInput {
+                command: "cargo test".to_string(),
+                description: None,
+            },
+            session_id: None,
+        };
+
+        let output = process_hook(input).await;
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Build failure (exit 1) should deny local execution
+        // Same compilation error would occur locally
+        assert!(
+            !output.is_allow(),
+            "cargo test build failure (exit 1) should deny local execution"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cargo_test_with_filter() {
+        let _lock = test_lock().lock().await;
+        let socket_path = format!(
+            "/tmp/rch_test_cargo_test_filter_{}_{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        let _overrides = TestOverridesGuard::set(
+            &socket_path,
+            MockConfig {
+                default_exit_code: 0,
+                default_stdout: "running 1 test\ntest specific_test ... ok\n\ntest result: ok. 1 passed\n".to_string(),
+                ..MockConfig::default()
+            },
+            MockRsyncConfig::success(),
+        );
+        mock::clear_global_invocations();
+
+        let response = SelectionResponse {
+            worker: Some(SelectedWorker {
+                id: rch_common::WorkerId::new("test-worker"),
+                host: "test.host.local".to_string(),
+                user: "testuser".to_string(),
+                identity_file: "~/.ssh/test_key".to_string(),
+                slots_available: 8,
+                speed_score: 85.0,
+            }),
+            reason: SelectionReason::Success,
+            build_id: None,
+        };
+        spawn_mock_daemon(&socket_path, response).await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
+        // Test with filter pattern
+        let input = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: ToolInput {
+                command: "cargo test specific_test".to_string(),
+                description: None,
+            },
+            session_id: None,
+        };
+
+        let output = process_hook(input).await;
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Filtered test command should also work
+        assert!(
+            !output.is_allow(),
+            "Filtered cargo test should deny local execution on success"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cargo_test_with_test_threads() {
+        let _lock = test_lock().lock().await;
+        let socket_path = format!(
+            "/tmp/rch_test_cargo_test_threads_{}_{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        let _overrides = TestOverridesGuard::set(
+            &socket_path,
+            MockConfig::default(),
+            MockRsyncConfig::success(),
+        );
+        mock::clear_global_invocations();
+
+        let response = SelectionResponse {
+            worker: Some(SelectedWorker {
+                id: rch_common::WorkerId::new("test-worker"),
+                host: "test.host.local".to_string(),
+                user: "testuser".to_string(),
+                identity_file: "~/.ssh/test_key".to_string(),
+                slots_available: 8,
+                speed_score: 85.0,
+            }),
+            reason: SelectionReason::Success,
+            build_id: None,
+        };
+        spawn_mock_daemon(&socket_path, response).await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
+        // Test with --test-threads flag (should parse correctly for slot estimation)
+        let input = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: ToolInput {
+                command: "cargo test -- --test-threads=4".to_string(),
+                description: None,
+            },
+            session_id: None,
+        };
+
+        let output = process_hook(input).await;
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Should work regardless of thread count
+        assert!(
+            !output.is_allow(),
+            "cargo test with --test-threads should work"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cargo_test_signal_killed() {
+        let _lock = test_lock().lock().await;
+        let socket_path = format!(
+            "/tmp/rch_test_cargo_test_signal_{}_{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        // Configure mock for OOM kill (exit 137 = 128 + 9 = SIGKILL)
+        let _overrides = TestOverridesGuard::set(
+            &socket_path,
+            MockConfig {
+                default_exit_code: 137,
+                default_stderr: "Killed\n".to_string(),
+                ..MockConfig::default()
+            },
+            MockRsyncConfig::success(),
+        );
+        mock::clear_global_invocations();
+
+        let response = SelectionResponse {
+            worker: Some(SelectedWorker {
+                id: rch_common::WorkerId::new("test-worker"),
+                host: "test.host.local".to_string(),
+                user: "testuser".to_string(),
+                identity_file: "~/.ssh/test_key".to_string(),
+                slots_available: 8,
+                speed_score: 85.0,
+            }),
+            reason: SelectionReason::Success,
+            build_id: None,
+        };
+        spawn_mock_daemon(&socket_path, response).await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
+        let input = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: ToolInput {
+                command: "cargo test".to_string(),
+                description: None,
+            },
+            session_id: None,
+        };
+
+        let output = process_hook(input).await;
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Signal killed (likely OOM) should deny local execution
+        assert!(
+            !output.is_allow(),
+            "Signal-killed cargo test should deny local execution"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cargo_test_toolchain_fallback() {
+        let _lock = test_lock().lock().await;
+        let socket_path = format!(
+            "/tmp/rch_test_cargo_test_toolchain_{}_{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        // Configure mock for toolchain failure - should allow local fallback
+        let _overrides = TestOverridesGuard::set(
+            &socket_path,
+            MockConfig {
+                default_exit_code: 1,
+                default_stderr: "error: toolchain 'nightly-2025-01-15' is not installed\n".to_string(),
+                ..MockConfig::default()
+            },
+            MockRsyncConfig::success(),
+        );
+        mock::clear_global_invocations();
+
+        let response = SelectionResponse {
+            worker: Some(SelectedWorker {
+                id: rch_common::WorkerId::new("test-worker"),
+                host: "test.host.local".to_string(),
+                user: "testuser".to_string(),
+                identity_file: "~/.ssh/test_key".to_string(),
+                slots_available: 8,
+                speed_score: 85.0,
+            }),
+            reason: SelectionReason::Success,
+            build_id: None,
+        };
+        spawn_mock_daemon(&socket_path, response).await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
+        let input = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: ToolInput {
+                command: "cargo test".to_string(),
+                description: None,
+            },
+            session_id: None,
+        };
+
+        let output = process_hook(input).await;
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Toolchain failure should allow local fallback
+        // Local machine might have the toolchain
+        assert!(
+            output.is_allow(),
+            "Toolchain failure should allow local fallback"
+        );
+    }
+
+    #[test]
+    fn test_cargo_test_classification() {
+        // Verify cargo test commands are classified correctly
+        let result = classify_command("cargo test");
+        assert!(result.is_compilation, "cargo test should be compilation");
+        assert_eq!(
+            result.kind,
+            Some(CompilationKind::CargoTest),
+            "Should be CargoTest kind"
+        );
+
+        let result = classify_command("cargo test specific_test");
+        assert!(result.is_compilation);
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+
+        let result = classify_command("cargo test -- --test-threads=4");
+        assert!(result.is_compilation);
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+
+        let result = classify_command("cargo test --release");
+        assert!(result.is_compilation);
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+
+        let result = classify_command("cargo test -p rch-common");
+        assert!(result.is_compilation);
+        assert_eq!(result.kind, Some(CompilationKind::CargoTest));
+    }
+
+    #[test]
+    fn test_cargo_nextest_classification() {
+        // Verify cargo nextest commands are classified correctly
+        let result = classify_command("cargo nextest run");
+        assert!(result.is_compilation, "cargo nextest should be compilation");
+        assert_eq!(
+            result.kind,
+            Some(CompilationKind::CargoNextest),
+            "Should be CargoNextest kind"
+        );
+
+        let result = classify_command("cargo nextest run --no-fail-fast");
+        assert!(result.is_compilation);
+        assert_eq!(result.kind, Some(CompilationKind::CargoNextest));
+    }
+
+    #[test]
+    fn test_artifact_patterns_for_test_commands() {
+        // Verify test commands use minimal artifact patterns
+        let test_patterns = get_artifact_patterns(Some(CompilationKind::CargoTest));
+        let build_patterns = get_artifact_patterns(Some(CompilationKind::CargoBuild));
+
+        // Test patterns should be smaller (more targeted)
+        // They should include coverage/results but not full target/
+        assert!(
+            !test_patterns.iter().any(|p| p == "target/"),
+            "Test artifacts should not include full target/"
+        );
+
+        // Build patterns should be more comprehensive
+        assert!(
+            build_patterns.len() >= test_patterns.len(),
+            "Build should have at least as many patterns as test"
+        );
+    }
 }
