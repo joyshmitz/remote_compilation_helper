@@ -2299,4 +2299,75 @@ mod tests {
         assert_eq!(agg.count(), 0);
         assert!(agg.average_speedup().is_none());
     }
+
+    // CompilationConfig timeout tests
+
+    #[test]
+    fn test_compilation_config_default_timeouts() {
+        let config = CompilationConfig::default();
+        // Default build timeout: 5 minutes
+        assert_eq!(config.build_timeout_sec, 300);
+        // Default test timeout: 30 minutes
+        assert_eq!(config.test_timeout_sec, 1800);
+    }
+
+    #[test]
+    fn test_compilation_config_timeout_for_test_kinds() {
+        let config = CompilationConfig::default();
+
+        // Test commands should get test_timeout_sec
+        assert_eq!(
+            config.timeout_for_kind(Some(crate::CompilationKind::CargoTest)),
+            std::time::Duration::from_secs(1800)
+        );
+        assert_eq!(
+            config.timeout_for_kind(Some(crate::CompilationKind::CargoNextest)),
+            std::time::Duration::from_secs(1800)
+        );
+        assert_eq!(
+            config.timeout_for_kind(Some(crate::CompilationKind::BunTest)),
+            std::time::Duration::from_secs(1800)
+        );
+    }
+
+    #[test]
+    fn test_compilation_config_timeout_for_build_kinds() {
+        let config = CompilationConfig::default();
+
+        // Build/check commands should get build_timeout_sec
+        assert_eq!(
+            config.timeout_for_kind(Some(crate::CompilationKind::CargoBuild)),
+            std::time::Duration::from_secs(300)
+        );
+        assert_eq!(
+            config.timeout_for_kind(Some(crate::CompilationKind::CargoCheck)),
+            std::time::Duration::from_secs(300)
+        );
+        assert_eq!(
+            config.timeout_for_kind(Some(crate::CompilationKind::CargoClippy)),
+            std::time::Duration::from_secs(300)
+        );
+        assert_eq!(
+            config.timeout_for_kind(None),
+            std::time::Duration::from_secs(300)
+        );
+    }
+
+    #[test]
+    fn test_compilation_config_custom_timeouts() {
+        let config = CompilationConfig {
+            build_timeout_sec: 600,   // 10 minutes
+            test_timeout_sec: 3600,   // 1 hour
+            ..Default::default()
+        };
+
+        assert_eq!(
+            config.timeout_for_kind(Some(crate::CompilationKind::CargoBuild)),
+            std::time::Duration::from_secs(600)
+        );
+        assert_eq!(
+            config.timeout_for_kind(Some(crate::CompilationKind::CargoTest)),
+            std::time::Duration::from_secs(3600)
+        );
+    }
 }
