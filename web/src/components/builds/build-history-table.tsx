@@ -93,7 +93,7 @@ export function BuildHistoryTable({ activeBuilds, recentBuilds }: BuildHistoryTa
     const completedRows = recentBuilds.map((build) => ({
       rowKey: `completed-${build.id}`,
       kind: 'completed' as const,
-      status: build.exit_code === 0 ? 'success' : 'failed',
+      status: (build.exit_code === 0 ? 'success' : 'failed') as BuildStatus,
       project_id: build.project_id,
       worker_id: build.worker_id,
       command: build.command,

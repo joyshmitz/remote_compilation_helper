@@ -10,7 +10,7 @@ function Progress({
   value = 0,
   ...props
 }: React.ComponentProps<typeof ProgressPrimitive.Root>) {
-  const normalizedValue = Math.min(100, Math.max(0, value));
+  const normalizedValue = Math.min(100, Math.max(0, value ?? 0));
 
   return (
     <ProgressPrimitive.Root
