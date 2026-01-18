@@ -662,6 +662,21 @@ mod tests {
     }
 
     #[test]
+    fn test_normalize_equal_refs_returns_midpoint() {
+        init_test_logging();
+        info!("TEST START: test_normalize_equal_refs_returns_midpoint");
+
+        let score = normalize(42.0, 10.0, 10.0, true);
+        info!("INPUT: value=42, low=10, high=10 (equal refs)");
+        info!("RESULT: score = {}", score);
+
+        assert!((score - 50.0).abs() < 0.001);
+        info!("VERIFY: Equal refs return midpoint 50");
+
+        info!("TEST PASS: test_normalize_equal_refs_returns_midpoint");
+    }
+
+    #[test]
     fn test_speedscore_weights_default() {
         init_test_logging();
         info!("TEST START: test_speedscore_weights_default");
@@ -710,6 +725,35 @@ mod tests {
         info!("VERIFY: Normalized weights sum to 1.0");
 
         info!("TEST PASS: test_speedscore_weights_normalize");
+    }
+
+    #[test]
+    fn test_speedscore_weights_zero_sum_fallback() {
+        init_test_logging();
+        info!("TEST START: test_speedscore_weights_zero_sum_fallback");
+
+        let weights = SpeedScoreWeights {
+            cpu: 0.0,
+            memory: 0.0,
+            disk: 0.0,
+            network: 0.0,
+            compilation: 0.0,
+        };
+
+        let normalized = weights.normalize();
+        info!(
+            "RESULT: normalized cpu={}, memory={}, disk={}, network={}, compilation={}",
+            normalized.cpu,
+            normalized.memory,
+            normalized.disk,
+            normalized.network,
+            normalized.compilation
+        );
+
+        assert_eq!(normalized, SpeedScoreWeights::default());
+        info!("VERIFY: Zero-sum weights fall back to default");
+
+        info!("TEST PASS: test_speedscore_weights_zero_sum_fallback");
     }
 
     #[test]
@@ -775,6 +819,33 @@ mod tests {
         info!("VERIFY: Partial results produce valid score");
 
         info!("TEST PASS: test_speedscore_calculation_partial");
+    }
+
+    #[test]
+    fn test_speedscore_single_component_matches_cpu_score() {
+        init_test_logging();
+        info!("TEST START: test_speedscore_single_component_matches_cpu_score");
+
+        let cpu_result = CpuBenchmarkResult {
+            score: 1200.0,
+            ops_per_second: 2_000_000.0,
+            ..Default::default()
+        };
+
+        let results = BenchmarkResults::new().with_cpu(cpu_result);
+        let score = SpeedScore::calculate(&results);
+
+        let expected_cpu = normalize_cpu(results.cpu.as_ref().unwrap());
+        info!("INPUT: CPU-only results");
+        info!(
+            "RESULT: total={:.4}, cpu_score={:.4}, expected_cpu={:.4}",
+            score.total, score.cpu_score, expected_cpu
+        );
+
+        assert!((score.total - expected_cpu).abs() < 0.001);
+        info!("VERIFY: Total equals CPU score when only CPU present");
+
+        info!("TEST PASS: test_speedscore_single_component_matches_cpu_score");
     }
 
     #[test]
@@ -955,6 +1026,57 @@ mod tests {
         info!("VERIFY: Low values still produce valid scores");
 
         info!("TEST PASS: test_speedscore_bounds");
+    }
+
+    #[test]
+    fn test_effective_weights_for_missing_components() {
+        init_test_logging();
+        info!("TEST START: test_effective_weights_for_missing_components");
+
+        let results = BenchmarkResults::new()
+            .with_cpu(placeholder_cpu())
+            .with_memory(placeholder_memory());
+
+        let weights = SpeedScoreWeights::default();
+        let (total, effective) =
+            calculate_weighted_total(60.0, 40.0, 10.0, 10.0, 10.0, &weights, &results);
+
+        let active_sum = weights.cpu + weights.memory;
+        let expected_cpu = weights.cpu / active_sum;
+        let expected_memory = weights.memory / active_sum;
+
+        info!("RESULT: total={:.2}, effective={:?}", total, effective);
+
+        assert!((effective.cpu - expected_cpu).abs() < 0.001);
+        assert!((effective.memory - expected_memory).abs() < 0.001);
+        assert_eq!(effective.disk, 0.0);
+        assert_eq!(effective.network, 0.0);
+        assert_eq!(effective.compilation, 0.0);
+
+        info!("VERIFY: Effective weights normalized to present components");
+        info!("TEST PASS: test_effective_weights_for_missing_components");
+    }
+
+    #[test]
+    fn test_compilation_normalize_uses_score_when_release_missing() {
+        init_test_logging();
+        info!("TEST START: test_compilation_normalize_uses_score_when_release_missing");
+
+        let compilation = CompilationBenchmarkResult {
+            score: 1500.0,
+            release_build_ms: 0,
+            ..Default::default()
+        };
+
+        let expected = normalize(compilation.score, 0.0, 2000.0, true);
+        let actual = normalize_compilation(&compilation);
+
+        info!("RESULT: expected={:.4}, actual={:.4}", expected, actual);
+
+        assert!((expected - actual).abs() < 0.001);
+        info!("VERIFY: Fallback to score when release_build_ms == 0");
+
+        info!("TEST PASS: test_compilation_normalize_uses_score_when_release_missing");
     }
 
     fn total_weight_sum(weights: SpeedScoreWeights) -> f64 {
