@@ -21,6 +21,7 @@ rch-common = { workspace = true }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
+proptest = "1.4"
 
 [lints.rust]
 unsafe_code = "deny"

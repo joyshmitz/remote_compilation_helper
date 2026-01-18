@@ -54,7 +54,7 @@ export default function WorkersPage() {
     toast('Retrying connection...');
     try {
       await mutate();
-    } catch (err) {
+    } catch {
       toast.error('Retry failed');
     } finally {
       setIsRetrying(false);
@@ -65,7 +65,7 @@ export default function WorkersPage() {
     try {
       await mutate();
       toast.success('Workers refreshed');
-    } catch (err) {
+    } catch {
       toast.error('Failed to refresh workers');
     }
   };

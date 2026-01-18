@@ -101,7 +101,7 @@ export default function DashboardPage() {
     try {
       await mutate();
       toast.success('Dashboard refreshed');
-    } catch (err) {
+    } catch {
       toast.error('Failed to refresh dashboard');
     } finally {
       setIsRefreshing(false);
