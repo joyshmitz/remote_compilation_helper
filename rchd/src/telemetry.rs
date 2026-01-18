@@ -3,12 +3,18 @@
 #![allow(dead_code)] // Parts will be used by follow-up beads
 
 use crate::workers::{WorkerPool, WorkerState};
+use anyhow::Context;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use directories::ProjectDirs;
 use rch_common::{SshClient, SshOptions, WorkerStatus};
 use rch_telemetry::protocol::{ReceivedTelemetry, TelemetrySource, WorkerTelemetry};
+use rch_telemetry::speedscore::SpeedScore;
+use rch_telemetry::storage::{SpeedScoreHistoryPage, TelemetryStorage};
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use tokio::task;
 use tokio::time::interval;
 use tracing::{debug, warn};
 
@@ -16,16 +22,18 @@ use tracing::{debug, warn};
 pub struct TelemetryStore {
     retention: ChronoDuration,
     recent: RwLock<HashMap<String, VecDeque<ReceivedTelemetry>>>,
+    storage: Option<Arc<TelemetryStorage>>,
 }
 
 impl TelemetryStore {
     /// Create a new telemetry store.
-    pub fn new(retention: Duration) -> Self {
+    pub fn new(retention: Duration, storage: Option<Arc<TelemetryStorage>>) -> Self {
         let retention =
             ChronoDuration::from_std(retention).unwrap_or_else(|_| ChronoDuration::seconds(300));
         Self {
             retention,
             recent: RwLock::new(HashMap::new()),
+            storage,
         }
     }
 
@@ -39,6 +47,22 @@ impl TelemetryStore {
         entries.push_back(received);
 
         self.evict_old(entries);
+
+        if let Some(storage) = self.storage.as_ref() {
+            let storage = Arc::clone(storage);
+            let telemetry = entries.back().map(|e| e.telemetry.clone());
+            if let Some(telemetry) = telemetry {
+                task::spawn(async move {
+                    let result =
+                        task::spawn_blocking(move || storage.insert_telemetry(&telemetry)).await;
+                    match result {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => warn!("Failed to persist telemetry: {}", e),
+                        Err(e) => warn!("Telemetry persistence task failed: {}", e),
+                    }
+                });
+            }
+        }
     }
 
     /// Get the most recent telemetry for a worker.
@@ -63,6 +87,31 @@ impl TelemetryStore {
         self.latest(worker_id).map(|entry| entry.received_at)
     }
 
+    /// Fetch latest SpeedScore for a worker from persistent storage.
+    pub fn latest_speedscore(&self, worker_id: &str) -> anyhow::Result<Option<SpeedScore>> {
+        let Some(storage) = self.storage.as_ref() else {
+            return Ok(None);
+        };
+        storage.latest_speedscore(worker_id)
+    }
+
+    /// Fetch SpeedScore history for a worker from persistent storage.
+    pub fn speedscore_history(
+        &self,
+        worker_id: &str,
+        since: DateTime<Utc>,
+        limit: usize,
+        offset: usize,
+    ) -> anyhow::Result<SpeedScoreHistoryPage> {
+        let Some(storage) = self.storage.as_ref() else {
+            return Ok(SpeedScoreHistoryPage {
+                total: 0,
+                entries: Vec::new(),
+            });
+        };
+        storage.speedscore_history(worker_id, since, limit, offset)
+    }
+
     fn evict_old(&self, entries: &mut VecDeque<ReceivedTelemetry>) {
         let cutoff = Utc::now() - self.retention;
         while entries
@@ -73,6 +122,39 @@ impl TelemetryStore {
             entries.pop_front();
         }
     }
+}
+
+/// Default path for the telemetry database.
+pub fn default_telemetry_db_path() -> anyhow::Result<PathBuf> {
+    let dirs = ProjectDirs::from("com", "rch", "rch")
+        .context("Failed to resolve telemetry data directory")?;
+    let base = dirs.data_local_dir().join("telemetry");
+    std::fs::create_dir_all(&base)
+        .with_context(|| format!("Failed to create telemetry directory {:?}", base))?;
+    Ok(base.join("telemetry.db"))
+}
+
+/// Start background maintenance for the telemetry database.
+pub fn start_storage_maintenance(storage: Arc<TelemetryStorage>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = interval(Duration::from_secs(3600));
+        loop {
+            ticker.tick().await;
+            let storage = Arc::clone(&storage);
+            let result = task::spawn_blocking(move || storage.maintenance()).await;
+            match result {
+                Ok(Ok(stats)) => debug!(
+                    aggregated_hours = stats.aggregated_hours,
+                    deleted_raw = stats.deleted_raw,
+                    deleted_hourly = stats.deleted_hourly,
+                    vacuumed = stats.vacuumed,
+                    "Telemetry storage maintenance completed"
+                ),
+                Ok(Err(e)) => warn!("Telemetry maintenance failed: {}", e),
+                Err(e) => warn!("Telemetry maintenance task failed: {}", e),
+            }
+        }
+    })
 }
 
 /// Telemetry polling configuration.
@@ -233,4 +315,93 @@ async fn poll_worker(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rch_telemetry::collect::cpu::{CpuTelemetry, LoadAverage};
+    use rch_telemetry::collect::memory::MemoryTelemetry;
+
+    fn make_telemetry(worker_id: &str, cpu_pct: f64, mem_pct: f64) -> WorkerTelemetry {
+        let cpu = CpuTelemetry {
+            timestamp: Utc::now(),
+            overall_percent: cpu_pct,
+            per_core_percent: vec![cpu_pct],
+            num_cores: 1,
+            load_average: LoadAverage {
+                one_min: 0.5,
+                five_min: 0.3,
+                fifteen_min: 0.2,
+                running_processes: 1,
+                total_processes: 100,
+            },
+            psi: None,
+        };
+
+        let memory = MemoryTelemetry {
+            timestamp: Utc::now(),
+            total_gb: 32.0,
+            available_gb: 16.0,
+            used_percent: mem_pct,
+            pressure_score: mem_pct,
+            swap_used_gb: 0.0,
+            dirty_mb: 0.0,
+            psi: None,
+        };
+
+        WorkerTelemetry::new(worker_id.to_string(), cpu, memory, None, None, 1)
+    }
+
+    #[test]
+    fn test_ingest_and_latest() {
+        let store = TelemetryStore::new(Duration::from_secs(300), None);
+
+        store.ingest(make_telemetry("w1", 10.0, 20.0), TelemetrySource::SshPoll);
+        store.ingest(make_telemetry("w1", 55.0, 65.0), TelemetrySource::SshPoll);
+
+        let latest = store.latest("w1").expect("expected latest telemetry");
+        assert!((latest.telemetry.cpu.overall_percent - 55.0).abs() < f64::EPSILON);
+        assert!((latest.telemetry.memory.used_percent - 65.0).abs() < f64::EPSILON);
+        assert!(store.last_received_at("w1").is_some());
+    }
+
+    #[test]
+    fn test_latest_all_returns_one_per_worker() {
+        let store = TelemetryStore::new(Duration::from_secs(300), None);
+
+        store.ingest(make_telemetry("w1", 12.0, 22.0), TelemetrySource::Piggyback);
+        store.ingest(make_telemetry("w2", 34.0, 44.0), TelemetrySource::SshPoll);
+        store.ingest(make_telemetry("w2", 45.0, 55.0), TelemetrySource::SshPoll);
+
+        let latest = store.latest_all();
+        assert_eq!(latest.len(), 2);
+
+        let mut ids: Vec<_> = latest
+            .iter()
+            .map(|t| t.telemetry.worker_id.as_str())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["w1", "w2"]);
+    }
+
+    #[test]
+    fn test_eviction_removes_old_entries() {
+        let store = TelemetryStore::new(Duration::from_secs(1), None);
+
+        store.ingest(make_telemetry("w1", 10.0, 20.0), TelemetrySource::SshPoll);
+
+        {
+            let mut recent = store.recent.write().unwrap();
+            let entries = recent.get_mut("w1").expect("missing worker entry");
+            entries[0].received_at = Utc::now() - ChronoDuration::seconds(120);
+        }
+
+        store.ingest(make_telemetry("w1", 30.0, 40.0), TelemetrySource::SshPoll);
+
+        let recent = store.recent.read().unwrap();
+        let entries = recent.get("w1").expect("missing worker entry");
+        assert_eq!(entries.len(), 1);
+        assert!((entries[0].telemetry.cpu.overall_percent - 30.0).abs() < f64::EPSILON);
+    }
 }

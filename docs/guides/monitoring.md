@@ -213,15 +213,46 @@ fi
 
 ### Grafana Dashboard
 
-Import the provided Grafana dashboard or create your own:
+Import the provided Grafana dashboard from `docs/observability/grafana-dashboard.json`:
 
-Key panels:
-1. **Build throughput** - Builds per minute by worker
-2. **Build duration** - P50, P95, P99 latency
-3. **Worker health** - Status heatmap
-4. **Slot utilization** - Used vs available slots
-5. **Transfer rates** - MB/s to workers
-6. **Circuit breaker events** - Timeline of state changes
+```bash
+# Import via Grafana UI:
+# 1. Go to Dashboards > Import
+# 2. Upload the JSON file or paste its contents
+# 3. Select your Prometheus data source
+```
+
+Key panels included:
+1. **Overview** - Healthy workers, active builds, queue depth, slot utilization
+2. **Build Metrics** - Throughput by result, duration percentiles
+3. **Worker Metrics** - Slots per worker, health check latency, status
+4. **Decision Latency (SLA Critical)** - P95/P99 for non-compilation (<1ms) and compilation (<5ms)
+5. **Circuit Breaker** - State per worker, trip/recovery events
+6. **Transfer Metrics** - Upload/download throughput and duration
+7. **Classification Tiers** - Distribution and latency by tier
+8. **API Metrics** - Request rate by endpoint, active connections
+
+### Prometheus AlertManager Rules
+
+Deploy the alert rules from `docs/observability/prometheus-alerts.yaml`:
+
+```bash
+# Add to your Prometheus alerting rules configuration:
+cp docs/observability/prometheus-alerts.yaml /etc/prometheus/rules/rch-alerts.yaml
+
+# Or include via prometheus.yml:
+# rule_files:
+#   - "rules/rch-alerts.yaml"
+```
+
+Alert groups:
+- **rch-worker-health** - Worker offline, stale, degraded alerts
+- **rch-circuit-breaker** - Circuit breaker open, high trip rate
+- **rch-build-health** - Failure rate, queue depth alerts
+- **rch-decision-latency-sla** - CRITICAL alerts for latency SLA breaches
+- **rch-transfer** - Slow transfer warnings
+- **rch-daemon** - Daemon down, high connection count
+- **rch-slot-utilization** - Capacity planning alerts
 
 ### Terminal Dashboard
 

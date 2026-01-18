@@ -1,0 +1,253 @@
+# RCH Prometheus AlertManager Rules
+#
+# Deploy to your Prometheus server as part of the alerting rules configuration.
+# These rules are designed to catch issues before they impact developer productivity.
+#
+# Severity levels:
+#   - critical: Immediate paging, likely impacting all users
+#   - warning: Should be investigated within hours
+#   - info: For awareness, may self-resolve
+#
+# Decision latency budgets (from AGENTS.md):
+#   - Non-compilation commands: < 1ms (P95)
+#   - Compilation commands: < 5ms (P95)
+
+groups:
+  - name: rch-worker-health
+    interval: 30s
+    rules:
+      # CRITICAL: All workers offline means compilation offloading is completely unavailable
+      - alert: RchAllWorkersDown
+        expr: sum(rch_worker_status{status="current"} == 1) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "All RCH workers are offline"
+          description: "No healthy workers available for remote compilation. All builds will fall back to local execution."
+          runbook_url: "https://docs.rch.dev/runbooks/all-workers-down"
+
+      # WARNING: Individual worker offline
+      - alert: RchWorkerDown
+        expr: rch_worker_status{status="current"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RCH worker {{ $labels.worker }} is offline"
+          description: "Worker {{ $labels.worker }} has been unreachable for more than 5 minutes."
+          runbook_url: "https://docs.rch.dev/runbooks/worker-recovery"
+
+      # WARNING: Worker not seen recently (stale health check)
+      - alert: RchWorkerStale
+        expr: time() - rch_worker_last_seen_timestamp > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RCH worker {{ $labels.worker }} health check stale"
+          description: "Worker {{ $labels.worker }} hasn't reported healthy in over 5 minutes."
+
+      # INFO: Worker degraded but still functional
+      - alert: RchWorkerDegraded
+        expr: rch_worker_status{status="current"} == 2
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "RCH worker {{ $labels.worker }} is degraded"
+          description: "Worker {{ $labels.worker }} is experiencing issues but still accepting builds."
+
+  - name: rch-circuit-breaker
+    interval: 30s
+    rules:
+      # WARNING: Circuit breaker open means worker is being avoided
+      - alert: RchCircuitBreakerOpen
+        expr: rch_circuit_state == 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Circuit breaker open for worker {{ $labels.worker }}"
+          description: "Worker {{ $labels.worker }} circuit breaker is open due to repeated failures. Traffic is being routed away."
+          runbook_url: "https://docs.rch.dev/runbooks/circuit-breaker"
+
+      # WARNING: High circuit trip rate indicates systemic issues
+      - alert: RchHighCircuitTripRate
+        expr: sum(increase(rch_circuit_trips_total[1h])) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High circuit breaker trip rate"
+          description: "More than 10 circuit breaker trips in the last hour. Check worker stability."
+
+  - name: rch-build-health
+    interval: 30s
+    rules:
+      # WARNING: High build failure rate
+      - alert: RchHighBuildFailureRate
+        expr: |
+          sum(rate(rch_builds_total{result="failure"}[5m])) /
+          sum(rate(rch_builds_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High RCH build failure rate ({{ $value | humanizePercentage }})"
+          description: "More than 10% of builds are failing. Investigate worker health and network connectivity."
+
+      # CRITICAL: Very high failure rate
+      - alert: RchCriticalBuildFailureRate
+        expr: |
+          sum(rate(rch_builds_total{result="failure"}[5m])) /
+          sum(rate(rch_builds_total[5m])) > 0.25
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical RCH build failure rate ({{ $value | humanizePercentage }})"
+          description: "More than 25% of builds are failing. Immediate investigation required."
+
+      # WARNING: Build queue backing up
+      - alert: RchHighQueueDepth
+        expr: rch_build_queue_depth > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RCH build queue depth is {{ $value }}"
+          description: "Builds are queuing up. Consider adding workers or investigating slow builds."
+
+      # CRITICAL: Severe queue backlog
+      - alert: RchCriticalQueueDepth
+        expr: rch_build_queue_depth > 50
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical RCH build queue depth ({{ $value }} pending)"
+          description: "Build queue is severely backed up. Developer productivity is impacted."
+
+  - name: rch-decision-latency-sla
+    interval: 15s
+    rules:
+      # CRITICAL: Non-compilation decision latency SLA breach (must be < 1ms P95)
+      - alert: RchNonCompilationLatencySlaBreak
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(rch_decision_latency_seconds_bucket{decision_type="non_compilation"}[5m])) by (le)
+          ) > 0.001
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Non-compilation decision latency SLA breach (P95: {{ $value | humanizeDuration }})"
+          description: |
+            Non-compilation commands are taking longer than 1ms at P95.
+            This violates the AGENTS.md latency SLA and may cause noticeable shell lag.
+          runbook_url: "https://docs.rch.dev/runbooks/decision-latency"
+
+      # CRITICAL: Compilation decision latency SLA breach (must be < 5ms P95)
+      - alert: RchCompilationLatencySlaBreak
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(rch_decision_latency_seconds_bucket{decision_type="compilation"}[5m])) by (le)
+          ) > 0.005
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Compilation decision latency SLA breach (P95: {{ $value | humanizeDuration }})"
+          description: |
+            Compilation decision latency exceeds 5ms at P95.
+            This violates the AGENTS.md latency SLA.
+          runbook_url: "https://docs.rch.dev/runbooks/decision-latency"
+
+      # WARNING: Budget violations detected
+      - alert: RchDecisionBudgetViolations
+        expr: increase(rch_decision_budget_violations_total[1h]) > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High rate of decision budget violations ({{ $value }} in last hour)"
+          description: "Many decisions are exceeding their latency budget. Performance may be degrading."
+
+  - name: rch-transfer
+    interval: 30s
+    rules:
+      # WARNING: Slow transfers indicate network issues
+      - alert: RchSlowTransfers
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(rch_transfer_duration_seconds_bucket[5m])) by (direction, le)
+          ) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow RCH transfers ({{ $labels.direction }} P95: {{ $value | humanizeDuration }})"
+          description: "File transfers are taking longer than expected. Check network connectivity to workers."
+
+      # WARNING: Very low compression ratio may indicate issues
+      - alert: RchPoorCompression
+        expr: |
+          histogram_quantile(0.50,
+            sum(rate(rch_transfer_compression_ratio_bucket[1h])) by (le)
+          ) > 0.9
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "Poor compression ratio for transfers"
+          description: "Compression is not providing significant benefit. This may be expected for already-compressed artifacts."
+
+  - name: rch-daemon
+    interval: 30s
+    rules:
+      # CRITICAL: Daemon process down (detected by absent metric)
+      - alert: RchDaemonDown
+        expr: absent(rch_daemon_uptime_seconds) == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RCH daemon is not running"
+          description: "The rchd daemon is not exposing metrics. It may have crashed or failed to start."
+          runbook_url: "https://docs.rch.dev/runbooks/daemon-recovery"
+
+      # WARNING: High connection count may indicate client issues
+      - alert: RchHighConnectionCount
+        expr: rch_daemon_connections_active > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High RCH daemon connection count ({{ $value }})"
+          description: "Unusually high number of active connections. Check for connection leaks or runaway clients."
+
+  - name: rch-slot-utilization
+    interval: 30s
+    rules:
+      # WARNING: High slot utilization means builds may queue
+      - alert: RchHighSlotUtilization
+        expr: |
+          1 - (sum(rch_worker_slots_available) / sum(rch_worker_slots_total)) > 0.9
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High RCH slot utilization ({{ $value | humanizePercentage }})"
+          description: "Over 90% of build slots are in use. Consider adding workers to maintain capacity headroom."
+
+      # INFO: Very low utilization may indicate over-provisioning
+      - alert: RchLowSlotUtilization
+        expr: |
+          1 - (sum(rch_worker_slots_available) / sum(rch_worker_slots_total)) < 0.1
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "Low RCH slot utilization ({{ $value | humanizePercentage }})"
+          description: "Slot utilization is below 10%. You may be able to reduce worker count to save costs."
