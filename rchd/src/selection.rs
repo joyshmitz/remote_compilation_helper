@@ -8,6 +8,7 @@ use rch_common::{
     CircuitBreakerConfig, CircuitState, RequiredRuntime, SelectionReason, SelectionRequest,
 };
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::debug;
 
@@ -20,6 +21,8 @@ pub struct SelectionWeights {
     pub speed: f64,
     /// Weight for project locality (0.0-1.0).
     pub locality: f64,
+    /// Weight for worker priority (0.0-1.0).
+    pub priority: f64,
     /// Penalty for half-open circuit workers (multiplier 0.0-1.0).
     pub half_open_penalty: f64,
 }
@@ -30,6 +33,7 @@ impl Default for SelectionWeights {
             slots: 0.4,
             speed: 0.5,
             locality: 0.1,
+            priority: 0.1,
             half_open_penalty: 0.5, // Half-open workers score at 50% of their normal value
         }
     }
@@ -119,8 +123,16 @@ pub async fn select_worker_with_config(
         };
     }
 
+    let preferred_set: HashSet<&str> = request
+        .preferred_workers
+        .iter()
+        .map(|id| id.as_str())
+        .collect();
+    let has_preferred = !preferred_set.is_empty();
+
     // Filter workers by circuit state and slot availability
-    let mut candidates: Vec<(Arc<WorkerState>, CircuitState, f64)> = Vec::new();
+    let mut eligible: Vec<(Arc<WorkerState>, CircuitState)> = Vec::new();
+    let mut preferred: Vec<(Arc<WorkerState>, CircuitState)> = Vec::new();
     let mut all_circuits_open = true;
     let mut any_has_slots = false;
     let mut any_has_runtime = false;
@@ -180,20 +192,21 @@ pub async fn select_worker_with_config(
         any_has_slots = true;
 
         // Compute score with circuit state penalty
-        let base_score = compute_score(&worker, request, weights);
-        let final_score = if circuit_state == CircuitState::HalfOpen {
-            base_score * weights.half_open_penalty
-        } else {
-            base_score
-        };
+        if has_preferred && preferred_set.contains(worker.config.id.as_str()) {
+            preferred.push((worker.clone(), circuit_state));
+        }
 
-        debug!(
-            "Worker {} candidate: circuit={:?}, base_score={:.3}, final_score={:.3}",
-            worker.config.id, circuit_state, base_score, final_score
-        );
-
-        candidates.push((worker, circuit_state, final_score));
+        eligible.push((worker, circuit_state));
     }
+
+    let mut candidates = if has_preferred && !preferred.is_empty() {
+        preferred
+    } else {
+        if has_preferred {
+            debug!("Preferred workers not eligible; falling back to all eligible workers");
+        }
+        eligible
+    };
 
     if candidates.is_empty() {
         // Check if no workers have required runtime (before other checks)
@@ -227,10 +240,31 @@ pub async fn select_worker_with_config(
         };
     }
 
-    // Select worker with highest score
-    candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(Ordering::Equal));
+    let (min_priority, max_priority) = priority_range(&candidates);
+    let mut scored: Vec<(Arc<WorkerState>, CircuitState, f64)> =
+        Vec::with_capacity(candidates.len());
 
-    let (selected_worker, circuit_state, score) = candidates.into_iter().next().unwrap();
+    for (worker, circuit_state) in candidates.drain(..) {
+        let priority_score = normalize_priority(worker.config.priority, min_priority, max_priority);
+        let base_score = compute_score(&worker, request, weights, priority_score);
+        let final_score = if circuit_state == CircuitState::HalfOpen {
+            base_score * weights.half_open_penalty
+        } else {
+            base_score
+        };
+
+        debug!(
+            "Worker {} candidate: circuit={:?}, base_score={:.3}, final_score={:.3}, priority_score={:.2}",
+            worker.config.id, circuit_state, base_score, final_score, priority_score
+        );
+
+        scored.push((worker, circuit_state, final_score));
+    }
+
+    // Select worker with highest score
+    scored.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(Ordering::Equal));
+
+    let (selected_worker, circuit_state, score) = scored.into_iter().next().unwrap();
 
     // If selecting a half-open worker, start the probe
     if circuit_state == CircuitState::HalfOpen {
@@ -257,6 +291,7 @@ fn compute_score(
     worker: &WorkerState,
     request: &SelectionRequest,
     weights: &SelectionWeights,
+    priority_score: f64,
 ) -> f64 {
     // Slot availability score (0.0-1.0)
     let slot_score = worker.available_slots() as f64 / worker.config.total_slots as f64;
@@ -271,17 +306,45 @@ fn compute_score(
         0.5
     };
 
-    // Compute weighted score
-    let score = weights.slots * slot_score
+    // Base weighted score (0.0-1.0)
+    let base_score = weights.slots * slot_score
         + weights.speed * speed_score
         + weights.locality * locality_score;
 
+    // Priority acts as a mild multiplier on the base score.
+    let priority_factor = 1.0 + (weights.priority * priority_score);
+    let score = base_score * priority_factor;
+
     debug!(
-        "Worker {} score: {:.3} (slots: {:.2}, speed: {:.2}, locality: {:.2})",
-        worker.config.id, score, slot_score, speed_score, locality_score
+        "Worker {} score: {:.3} (slots: {:.2}, speed: {:.2}, locality: {:.2}, priority: {:.2})",
+        worker.config.id, score, slot_score, speed_score, locality_score, priority_score
     );
 
     score
+}
+
+fn priority_range(candidates: &[(Arc<WorkerState>, CircuitState)]) -> (u32, u32) {
+    let mut min_priority = u32::MAX;
+    let mut max_priority = 0u32;
+
+    for (worker, _) in candidates {
+        min_priority = min_priority.min(worker.config.priority);
+        max_priority = max_priority.max(worker.config.priority);
+    }
+
+    if min_priority == u32::MAX {
+        (0, 0)
+    } else {
+        (min_priority, max_priority)
+    }
+}
+
+fn normalize_priority(priority: u32, min_priority: u32, max_priority: u32) -> f64 {
+    if max_priority == min_priority {
+        1.0
+    } else {
+        (priority.saturating_sub(min_priority)) as f64 / (max_priority - min_priority) as f64
+    }
 }
 
 #[cfg(test)]
@@ -311,6 +374,7 @@ mod tests {
         let worker = make_worker("test", 16, 80.0);
         let request = SelectionRequest {
             project: "myproject".to_string(),
+            command: None,
             estimated_cores: 4,
             preferred_workers: vec![],
             toolchain: None,
@@ -319,9 +383,9 @@ mod tests {
         };
         let weights = SelectionWeights::default();
 
-        let score = compute_score(&worker, &request, &weights);
+        let score = compute_score(&worker, &request, &weights, 0.5);
         assert!(score > 0.0);
-        assert!(score <= 1.0);
+        assert!(score <= 1.5);
     }
 
     #[tokio::test]
@@ -338,6 +402,7 @@ mod tests {
 
         let request = SelectionRequest {
             project: "myproject".to_string(),
+            command: None,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -365,6 +430,7 @@ mod tests {
 
         let request = SelectionRequest {
             project: "myproject".to_string(),
+            command: None,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -390,6 +456,7 @@ mod tests {
 
         let request = SelectionRequest {
             project: "myproject".to_string(),
+            command: None,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -419,6 +486,7 @@ mod tests {
 
         let request = SelectionRequest {
             project: "myproject".to_string(),
+            command: None,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -446,6 +514,7 @@ mod tests {
 
         let request = SelectionRequest {
             project: "myproject".to_string(),
+            command: None,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -488,6 +557,7 @@ mod tests {
 
         let request = SelectionRequest {
             project: "myproject".to_string(),
+            command: None,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -519,6 +589,7 @@ mod tests {
 
         let request = SelectionRequest {
             project: "myproject".to_string(),
+            command: None,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -536,12 +607,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_select_worker_prefers_preferred_list() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_worker("preferred", 8, 30.0).config)
+            .await;
+        pool.add_worker(make_worker("other", 8, 90.0).config).await;
+
+        let request = SelectionRequest {
+            project: "myproject".to_string(),
+            command: None,
+            estimated_cores: 2,
+            preferred_workers: vec![WorkerId::new("preferred")],
+            toolchain: None,
+            required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
+        };
+        let weights = SelectionWeights::default();
+        let config = CircuitBreakerConfig::default();
+
+        let result = select_worker_with_config(&pool, &request, &weights, &config).await;
+        let selected = result.worker.expect("Expected a worker to be selected");
+        assert_eq!(selected.config.id.as_str(), "preferred");
+    }
+
+    #[tokio::test]
+    async fn test_select_worker_falls_back_when_preferred_unavailable() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_worker("available", 8, 60.0).config)
+            .await;
+
+        let request = SelectionRequest {
+            project: "myproject".to_string(),
+            command: None,
+            estimated_cores: 2,
+            preferred_workers: vec![WorkerId::new("missing")],
+            toolchain: None,
+            required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
+        };
+        let weights = SelectionWeights::default();
+        let config = CircuitBreakerConfig::default();
+
+        let result = select_worker_with_config(&pool, &request, &weights, &config).await;
+        let selected = result.worker.expect("Expected fallback to eligible worker");
+        assert_eq!(selected.config.id.as_str(), "available");
+    }
+
+    #[tokio::test]
+    async fn test_select_worker_prefers_higher_priority() {
+        let pool = WorkerPool::new();
+        let mut high = make_worker("high", 8, 70.0);
+        high.config.priority = 200;
+        let mut low = make_worker("low", 8, 70.0);
+        low.config.priority = 50;
+
+        pool.add_worker(high.config).await;
+        pool.add_worker(low.config).await;
+
+        let request = SelectionRequest {
+            project: "myproject".to_string(),
+            command: None,
+            estimated_cores: 2,
+            preferred_workers: vec![],
+            toolchain: None,
+            required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
+        };
+        let weights = SelectionWeights::default();
+        let config = CircuitBreakerConfig::default();
+
+        let result = select_worker_with_config(&pool, &request, &weights, &config).await;
+        let selected = result.worker.expect("Expected a worker to be selected");
+        assert_eq!(selected.config.id.as_str(), "high");
+    }
+
+    #[tokio::test]
     async fn test_half_open_penalty_applied() {
         // Test that the half-open penalty is correctly applied
         let weights = SelectionWeights {
             slots: 0.0,
             speed: 1.0,
             locality: 0.0,
+            priority: 0.0,
             half_open_penalty: 0.5,
         };
 
@@ -560,6 +707,7 @@ mod tests {
 
         let request = SelectionRequest {
             project: "myproject".to_string(),
+            command: None,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
