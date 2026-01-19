@@ -23,6 +23,7 @@ pub mod ssh;
 pub mod test_change;
 pub mod toolchain;
 pub mod types;
+pub mod ui;
 
 pub use binary_hash::{
     BinaryHashResult, binaries_equivalent, binary_contains_marker, compute_binary_hash,
@@ -58,3 +59,6 @@ pub use discovery::{
     DiscoveredHost, DiscoverySource, discover_all, parse_shell_aliases,
     parse_shell_aliases_content, parse_ssh_config, parse_ssh_config_content,
 };
+
+// UI module re-exports
+pub use ui::OutputContext;
