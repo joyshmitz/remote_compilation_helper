@@ -6,6 +6,7 @@
 //! # Key Components
 //!
 //! - [`OutputContext`]: Detects and represents the current output context
+//! - [`Icons`]: Unicode icons with automatic ASCII fallbacks
 //!
 //! # Design Philosophy
 //!
@@ -16,7 +17,18 @@
 //! 1. Agents can parse stdout reliably
 //! 2. Piping `rch status | jq` works correctly
 //! 3. Compilation output passthrough is unaffected
+//!
+//! # Example
+//!
+//! ```ignore
+//! use rch_common::ui::{Icons, OutputContext};
+//!
+//! let ctx = OutputContext::detect();
+//! eprintln!("{} Build successful", Icons::check(ctx));
+//! ```
 
 pub mod context;
+pub mod icons;
 
 pub use context::OutputContext;
+pub use icons::Icons;

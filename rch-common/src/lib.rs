@@ -61,4 +61,4 @@ pub use discovery::{
 };
 
 // UI module re-exports
-pub use ui::OutputContext;
+pub use ui::{Icons, OutputContext};
