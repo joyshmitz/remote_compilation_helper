@@ -9,11 +9,12 @@
 #   2. Worker:      Install just rch-wkr on current machine
 #
 # Usage:
-#   bash install.sh                      # Interactive local install
-#   bash install.sh --local              # Non-interactive local install
-#   bash install.sh --worker             # Worker-only install
+#   bash install.sh                      # Install + setup systemd/launchd service
+#   bash install.sh --local              # Same as above (default mode)
+#   bash install.sh --worker             # Worker-only install (no daemon)
 #   bash install.sh --from-source        # Build from source
 #   bash install.sh --easy-mode          # Configure PATH + detect agents + run doctor
+#   bash install.sh --no-service         # Install without system service
 #   bash install.sh --offline <tarball>  # Install from local tarball
 #   bash install.sh --uninstall          # Remove RCH
 #
@@ -768,7 +769,9 @@ setup_systemd_service() {
         return
     fi
 
-    if [[ "${INSTALL_SERVICE:-}" != "true" ]]; then
+    # Skip only if explicitly disabled
+    if [[ "${NO_SERVICE:-}" == "true" ]]; then
+        info "Skipping systemd service setup (--no-service)"
         return
     fi
 
@@ -779,15 +782,15 @@ setup_systemd_service() {
 
     cat > "$service_file" << EOF
 [Unit]
-Description=Remote Compilation Helper Daemon
+Description=RCH Remote Compilation Helper Daemon
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=$INSTALL_DIR/$DAEMON_BIN --workers-config $CONFIG_DIR/workers.toml
-Restart=on-failure
+ExecStart=$INSTALL_DIR/$DAEMON_BIN --foreground
+Restart=always
 RestartSec=5
-Environment=RCH_LOG_LEVEL=info
+Environment=RUST_LOG=info
 
 [Install]
 WantedBy=default.target
@@ -797,7 +800,33 @@ EOF
     systemctl --user enable rchd.service
 
     success "Systemd service installed: rchd.service"
-    info "Start with: systemctl --user start rchd"
+
+    # Enable lingering for reboot persistence (requires sudo)
+    local current_user
+    current_user=$(whoami)
+    if command_exists loginctl; then
+        if loginctl show-user "$current_user" 2>/dev/null | grep -q "Linger=yes"; then
+            info "Lingering already enabled for $current_user"
+        else
+            info "Enabling lingering for $current_user (for reboot persistence)..."
+            if sudo -n loginctl enable-linger "$current_user" 2>/dev/null; then
+                success "Lingering enabled - service will start on boot"
+            else
+                warn "Could not enable lingering automatically"
+                warn "Run: sudo loginctl enable-linger $current_user"
+            fi
+        fi
+    fi
+
+    # Start the service
+    info "Starting rchd service..."
+    if systemctl --user start rchd.service; then
+        success "rchd service started"
+    else
+        warn "Could not start rchd service automatically"
+        info "Start manually with: systemctl --user start rchd"
+    fi
+
     info "Check status: systemctl --user status rchd"
 }
 
@@ -810,7 +839,9 @@ setup_launchd_service() {
         return
     fi
 
-    if [[ "${INSTALL_SERVICE:-}" != "true" ]]; then
+    # Skip only if explicitly disabled
+    if [[ "${NO_SERVICE:-}" == "true" ]]; then
+        info "Skipping launchd service setup (--no-service)"
         return
     fi
 
@@ -818,6 +849,13 @@ setup_launchd_service() {
 
     local plist_file="$HOME/Library/LaunchAgents/com.rch.daemon.plist"
     mkdir -p "$(dirname "$plist_file")"
+    mkdir -p "$HOME/.config/rch/logs"
+
+    # Unload existing service if present
+    if launchctl list 2>/dev/null | grep -q "com.rch.daemon"; then
+        info "Unloading existing service..."
+        launchctl unload "$plist_file" 2>/dev/null || true
+    fi
 
     cat > "$plist_file" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -829,8 +867,7 @@ setup_launchd_service() {
     <key>ProgramArguments</key>
     <array>
         <string>$INSTALL_DIR/$DAEMON_BIN</string>
-        <string>--workers-config</string>
-        <string>$CONFIG_DIR/workers.toml</string>
+        <string>--foreground</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -838,7 +875,7 @@ setup_launchd_service() {
     <true/>
     <key>EnvironmentVariables</key>
     <dict>
-        <key>RCH_LOG_LEVEL</key>
+        <key>RUST_LOG</key>
         <string>info</string>
     </dict>
     <key>StandardOutPath</key>
@@ -849,10 +886,19 @@ setup_launchd_service() {
 </plist>
 EOF
 
-    mkdir -p "$HOME/.config/rch/logs"
-
     success "Launchd service installed: $plist_file"
-    info "Load with: launchctl load $plist_file"
+
+    # Load and start the service
+    info "Loading launchd service..."
+    if launchctl load "$plist_file" 2>/dev/null; then
+        success "rchd service loaded and started"
+        info "Service will start automatically on login"
+    else
+        warn "Could not load launchd service automatically"
+        info "Load manually with: launchctl load $plist_file"
+    fi
+
+    info "Check status: launchctl list | grep rch"
 }
 
 # ============================================================================
@@ -1116,11 +1162,24 @@ print_summary() {
         echo "  Hook:   $INSTALL_DIR/$HOOK_BIN"
         echo "  Daemon: $INSTALL_DIR/$DAEMON_BIN"
         echo ""
+        if [[ "${NO_SERVICE:-}" != "true" ]]; then
+            if command_exists systemctl; then
+                echo "Service: rchd.service (systemd user service)"
+                echo "  Status:   systemctl --user status rchd"
+                echo "  Logs:     journalctl --user -u rchd -f"
+                echo "  Restart:  systemctl --user restart rchd"
+            elif [[ "$(uname -s)" == "Darwin" ]]; then
+                echo "Service: com.rch.daemon (launchd)"
+                echo "  Status:   launchctl list | grep rch"
+                echo "  Logs:     tail -f ~/.config/rch/logs/daemon.log"
+                echo "  Restart:  launchctl stop com.rch.daemon && launchctl start com.rch.daemon"
+            fi
+            echo ""
+        fi
         echo -e "${BOLD}Next steps:${NC}"
         echo "1. Edit workers config: $CONFIG_DIR/workers.toml"
-        echo "2. Start the daemon:    systemctl --user start rchd"
-        echo "                   or:  $DAEMON_BIN --workers-config $CONFIG_DIR/workers.toml"
-        echo "3. Test the hook:       rch hook test"
+        echo "2. Test the hook:       rch doctor"
+        echo "3. Probe workers:       rch workers probe --all"
     fi
     echo ""
 }
@@ -1142,7 +1201,7 @@ Options:
   --offline <tarball>  Install from local tarball (airgap mode)
   --easy-mode          Configure PATH + detect agents + run doctor
   --verify-only        Verify existing installation
-  --install-service    Install systemd/launchd service for daemon
+  --no-service         Skip systemd/launchd service setup (service is installed by default)
   --uninstall          Remove RCH installation
   --no-gum             Disable Gum UI (use ANSI fallback)
   --yes                Skip confirmation prompts
@@ -1158,12 +1217,19 @@ Environment:
   HTTPS_PROXY          HTTPS proxy URL
   NO_PROXY             Hosts to bypass proxy
 
+Service Setup:
+  On Linux:  systemd user service is installed and started automatically.
+             Lingering is enabled for reboot persistence (requires sudo).
+  On macOS:  launchd service is installed and loaded automatically.
+             Service starts on login.
+
 Examples:
   ./install.sh                         # Install locally (auto-detects source)
   ./install.sh --from-source           # Force build from source
   ./install.sh --worker                # Install on a worker machine
   ./install.sh --easy-mode             # Full setup with PATH and detection
   ./install.sh --offline rch.tar.gz    # Install from local tarball
+  ./install.sh --no-service            # Install without system service
   ./install.sh --uninstall             # Remove installation
 
 EOF
@@ -1180,7 +1246,7 @@ main() {
     UNINSTALL="false"
     VERIFY_ONLY="false"
     EASY_MODE="false"
-    INSTALL_SERVICE="false"
+    NO_SERVICE="false"
     YES="false"
     OFFLINE_TARBALL=""
 
@@ -1215,7 +1281,11 @@ main() {
                 shift
                 ;;
             --install-service)
-                INSTALL_SERVICE="true"
+                # Kept for backward compatibility - service is now installed by default
+                shift
+                ;;
+            --no-service)
+                NO_SERVICE="true"
                 shift
                 ;;
             --uninstall)
