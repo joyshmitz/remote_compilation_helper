@@ -9,6 +9,11 @@ import type {
   BuildRecord,
   Issue,
   BuildStats,
+  SpeedScoreView,
+  SpeedScoreResponse,
+  SpeedScoreHistoryResponse,
+  SpeedScoreListResponse,
+  BenchmarkResults,
 } from '../../src/lib/types';
 
 export const mockDaemonStatus: DaemonStatusInfo = {
@@ -160,3 +165,125 @@ export const mockMetricsText = [
   '# TYPE rch_workers_total gauge',
   'rch_workers_total 3',
 ].join('\n');
+
+// SpeedScore mock data
+export const mockSpeedScores: Record<string, SpeedScoreView> = {
+  'worker-1': {
+    total: 92.4,
+    cpu_score: 95,
+    memory_score: 88,
+    disk_score: 91,
+    network_score: 93,
+    compilation_score: 94,
+    measured_at: '2026-01-18T10:00:00Z',
+    version: 1,
+  },
+  'worker-2': {
+    total: 61.2,
+    cpu_score: 65,
+    memory_score: 58,
+    disk_score: 55,
+    network_score: 62,
+    compilation_score: 66,
+    measured_at: '2026-01-17T15:30:00Z',
+    version: 1,
+  },
+  'worker-3': {
+    total: 0,
+    cpu_score: 0,
+    memory_score: 0,
+    disk_score: 0,
+    network_score: 0,
+    compilation_score: 0,
+    measured_at: '2026-01-15T08:00:00Z',
+    version: 1,
+  },
+};
+
+export const mockBenchmarkResults: Record<string, BenchmarkResults> = {
+  'worker-1': {
+    cpu: { gflops: 450.5 },
+    memory: { bandwidth_gbps: 48.2 },
+    disk: { sequential_read_mbps: 3200, random_read_iops: 180000 },
+    network: { download_mbps: 920, upload_mbps: 480 },
+    compilation: { units_per_sec: 52.3 },
+  },
+  'worker-2': {
+    cpu: { gflops: 280.1 },
+    memory: { bandwidth_gbps: 32.5 },
+    disk: { sequential_read_mbps: 1800, random_read_iops: 85000 },
+    network: { download_mbps: 650, upload_mbps: 320 },
+    compilation: { units_per_sec: 28.7 },
+  },
+};
+
+export const mockSpeedScoreHistory: Record<string, SpeedScoreView[]> = {
+  'worker-1': [
+    mockSpeedScores['worker-1'],
+    {
+      total: 90.1,
+      cpu_score: 92,
+      memory_score: 86,
+      disk_score: 89,
+      network_score: 91,
+      compilation_score: 92,
+      measured_at: '2026-01-17T10:00:00Z',
+      version: 1,
+    },
+    {
+      total: 88.5,
+      cpu_score: 90,
+      memory_score: 85,
+      disk_score: 87,
+      network_score: 89,
+      compilation_score: 91,
+      measured_at: '2026-01-16T10:00:00Z',
+      version: 1,
+    },
+  ],
+  'worker-2': [
+    mockSpeedScores['worker-2'],
+    {
+      total: 59.8,
+      cpu_score: 63,
+      memory_score: 56,
+      disk_score: 54,
+      network_score: 60,
+      compilation_score: 64,
+      measured_at: '2026-01-16T15:30:00Z',
+      version: 1,
+    },
+  ],
+};
+
+export function mockSpeedScoreResponse(workerId: string): SpeedScoreResponse {
+  return {
+    worker_id: workerId,
+    speedscore: mockSpeedScores[workerId] ?? null,
+  };
+}
+
+export function mockSpeedScoreHistoryResponse(
+  workerId: string,
+  days = 7,
+  limit = 10
+): SpeedScoreHistoryResponse {
+  const history = mockSpeedScoreHistory[workerId] ?? [];
+  return {
+    worker_id: workerId,
+    history: history.slice(0, limit),
+    pagination: {
+      total: history.length,
+      offset: 0,
+      limit,
+    },
+  };
+}
+
+export const mockSpeedScoreListResponse: SpeedScoreListResponse = {
+  workers: mockWorkers.map((w) => ({
+    worker_id: w.id,
+    speedscore: mockSpeedScores[w.id] ?? null,
+    status: w.status,
+  })),
+};

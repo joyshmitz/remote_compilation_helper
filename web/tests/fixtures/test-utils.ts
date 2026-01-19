@@ -4,6 +4,9 @@ import type {
   HealthResponse,
   ReadyResponse,
   BudgetStatusResponse,
+  SpeedScoreResponse,
+  SpeedScoreHistoryResponse,
+  SpeedScoreListResponse,
 } from '../../src/lib/types';
 import {
   mockStatusResponse,
@@ -11,6 +14,9 @@ import {
   mockReadyResponse,
   mockBudgetResponse,
   mockMetricsText,
+  mockSpeedScoreResponse,
+  mockSpeedScoreHistoryResponse,
+  mockSpeedScoreListResponse,
 } from './api-mocks';
 
 type ApiMockOverrides = {
@@ -19,6 +25,9 @@ type ApiMockOverrides = {
   ready?: ReadyResponse;
   budget?: BudgetStatusResponse;
   metrics?: string;
+  speedscores?: SpeedScoreListResponse;
+  speedscoreForWorker?: (workerId: string) => SpeedScoreResponse;
+  speedscoreHistoryForWorker?: (workerId: string, days?: number, limit?: number) => SpeedScoreHistoryResponse;
 };
 
 export async function mockApiResponses(
@@ -54,5 +63,36 @@ export async function mockApiResponses(
   await page.route('**/metrics', async (route) => {
     console.log('[mock] Intercepting /metrics');
     await route.fulfill({ body: metrics, contentType: 'text/plain' });
+  });
+
+  // SpeedScore API routes
+  const speedscores = overrides.speedscores ?? mockSpeedScoreListResponse;
+  const getSpeedScore = overrides.speedscoreForWorker ?? mockSpeedScoreResponse;
+  const getSpeedScoreHistory = overrides.speedscoreHistoryForWorker ?? mockSpeedScoreHistoryResponse;
+
+  await page.route('**/api/workers/speedscores', async (route) => {
+    console.log('[mock] Intercepting /api/workers/speedscores');
+    await route.fulfill({ json: speedscores });
+  });
+
+  await page.route(/\/api\/workers\/([^/]+)\/speedscore\/history/, async (route) => {
+    const url = new URL(route.request().url());
+    const workerId = url.pathname.split('/')[3];
+    const days = parseInt(url.searchParams.get('days') ?? '7', 10);
+    const limit = parseInt(url.searchParams.get('limit') ?? '10', 10);
+    console.log(`[mock] Intercepting /api/workers/${workerId}/speedscore/history`);
+    await route.fulfill({ json: getSpeedScoreHistory(workerId, days, limit) });
+  });
+
+  await page.route(/\/api\/workers\/([^/]+)\/speedscore$/, async (route) => {
+    const url = new URL(route.request().url());
+    const workerId = url.pathname.split('/')[3];
+    console.log(`[mock] Intercepting /api/workers/${workerId}/speedscore`);
+    const response = getSpeedScore(workerId);
+    if (!response.speedscore) {
+      await route.fulfill({ status: 404, json: { error: 'Worker not found or no benchmark data' } });
+    } else {
+      await route.fulfill({ json: response });
+    }
   });
 }
