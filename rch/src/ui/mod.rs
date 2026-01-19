@@ -50,6 +50,7 @@
 //! - Detects color level (16/256/true color)
 
 pub mod adaptive;
+pub mod benchmark;
 pub mod console;
 pub mod context;
 pub mod markdown;
@@ -89,6 +90,9 @@ pub use status::{StatusTable, render_daemon_offline};
 
 // Rich worker table display
 pub use workers::WorkerTable;
+
+// Rich benchmark table display
+pub use benchmark::BenchmarkTable;
 
 // Test utilities are public for integration tests
 pub use test_utils::{
