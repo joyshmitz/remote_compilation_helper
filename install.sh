@@ -787,7 +787,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=$INSTALL_DIR/$DAEMON_BIN --foreground
+ExecStart=$INSTALL_DIR/$DAEMON_BIN --foreground --workers-config $CONFIG_DIR/workers.toml
 Restart=always
 RestartSec=5
 Environment=RUST_LOG=info
@@ -849,7 +849,7 @@ setup_launchd_service() {
 
     local plist_file="$HOME/Library/LaunchAgents/com.rch.daemon.plist"
     mkdir -p "$(dirname "$plist_file")"
-    mkdir -p "$HOME/.config/rch/logs"
+    mkdir -p "$CONFIG_DIR/logs"
 
     # Unload existing service if present
     if launchctl list 2>/dev/null | grep -q "com.rch.daemon"; then
@@ -868,6 +868,8 @@ setup_launchd_service() {
     <array>
         <string>$INSTALL_DIR/$DAEMON_BIN</string>
         <string>--foreground</string>
+        <string>--workers-config</string>
+        <string>$CONFIG_DIR/workers.toml</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -879,9 +881,9 @@ setup_launchd_service() {
         <string>info</string>
     </dict>
     <key>StandardOutPath</key>
-    <string>$HOME/.config/rch/logs/daemon.log</string>
+    <string>$CONFIG_DIR/logs/daemon.log</string>
     <key>StandardErrorPath</key>
-    <string>$HOME/.config/rch/logs/daemon.err</string>
+    <string>$CONFIG_DIR/logs/daemon.err</string>
 </dict>
 </plist>
 EOF
@@ -1171,7 +1173,7 @@ print_summary() {
             elif [[ "$(uname -s)" == "Darwin" ]]; then
                 echo "Service: com.rch.daemon (launchd)"
                 echo "  Status:   launchctl list | grep rch"
-                echo "  Logs:     tail -f ~/.config/rch/logs/daemon.log"
+                echo "  Logs:     tail -f $CONFIG_DIR/logs/daemon.log"
                 echo "  Restart:  launchctl stop com.rch.daemon && launchctl start com.rch.daemon"
             fi
             echo ""
