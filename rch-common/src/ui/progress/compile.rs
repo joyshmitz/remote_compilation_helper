@@ -236,7 +236,11 @@ impl CompilationProgress {
         };
 
         let warnings_str = if self.warnings > 0 {
-            format!(", {} warning{}", self.warnings, if self.warnings == 1 { "" } else { "s" })
+            format!(
+                ", {} warning{}",
+                self.warnings,
+                if self.warnings == 1 { "" } else { "s" }
+            )
         } else {
             String::new()
         };
@@ -282,23 +286,25 @@ impl CompilationProgress {
     }
 
     fn parse_line(&mut self, line: &str) {
-        // Check for warning lines
-        if line.contains("warning:") && !line.starts_with("warning:") {
-            // Inline warning in crate output, don't count
-        } else if line.starts_with("warning:") || line.contains(": warning") {
-            self.warnings += 1;
-            return;
-        }
-
-        // Check for summary warning count
+        // Check for summary warning count FIRST (before individual warning check)
         if let Some(rest) = line.strip_prefix("warning: ") {
             if let Some(count_str) = rest.strip_suffix(" warnings emitted") {
                 if let Ok(count) = count_str.parse::<u32>() {
                     self.warnings = count;
+                    return;
                 }
             } else if rest.ends_with(" warning emitted") {
                 self.warnings = 1;
+                return;
             }
+            // Not a summary line, fall through to individual warning check
+        }
+
+        // Check for individual warning lines
+        if line.contains("warning:") && !line.starts_with("warning:") {
+            // Inline warning in crate output (e.g., "src/lib.rs:10: warning: ..."), don't count
+        } else if line.starts_with("warning:") || line.contains(": warning") {
+            self.warnings += 1;
             return;
         }
 
@@ -405,12 +411,24 @@ impl CompilationProgress {
             } else {
                 0.0
             };
-            let bar = render_bar(self.ctx, self.crates_compiled as u64, Some(total as u64), Some(percent), DEFAULT_BAR_WIDTH);
+            let bar = render_bar(
+                self.ctx,
+                self.crates_compiled as u64,
+                Some(total as u64),
+                Some(percent),
+                DEFAULT_BAR_WIDTH,
+            );
             let pct = (percent * 100.0).round() as u32;
             (bar, format!("{pct}%"))
         } else {
             // Unknown total - show indeterminate progress
-            let bar = render_bar(self.ctx, self.crates_compiled as u64, None, None, DEFAULT_BAR_WIDTH);
+            let bar = render_bar(
+                self.ctx,
+                self.crates_compiled as u64,
+                None,
+                None,
+                DEFAULT_BAR_WIDTH,
+            );
             (bar, "??%".to_string())
         };
 
