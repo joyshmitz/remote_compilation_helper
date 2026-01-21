@@ -35,6 +35,7 @@
 //! ```
 
 pub mod config;
+pub mod ssh_command_tests;
 pub mod ssh_tests;
 
 // Re-export common types for convenience

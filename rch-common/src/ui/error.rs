@@ -33,9 +33,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "rich-ui")]
-use rich_rust::prelude::*;
-#[cfg(feature = "rich-ui")]
 use rich_rust::r#box::HEAVY;
+#[cfg(feature = "rich-ui")]
+use rich_rust::prelude::*;
 
 use super::{Icons, OutputContext, RchTheme};
 
