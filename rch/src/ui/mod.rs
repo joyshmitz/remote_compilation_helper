@@ -58,9 +58,9 @@ pub mod markdown;
 pub mod progress;
 pub mod status;
 pub mod styled;
-pub mod workers;
 pub mod test_utils;
 pub mod theme;
+pub mod workers;
 pub mod writer;
 
 // Re-export main types for convenience

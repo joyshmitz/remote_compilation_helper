@@ -397,7 +397,10 @@ impl Icons {
     #[must_use]
     pub fn spinner_frames(ctx: OutputContext) -> &'static [&'static str] {
         if ctx.supports_unicode() {
-            &["\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280F}"]
+            &[
+                "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}", "\u{2834}", "\u{2826}",
+                "\u{2827}", "\u{2807}", "\u{280F}",
+            ]
             // ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ (braille spinner)
         } else {
             &["|", "/", "-", "\\"]

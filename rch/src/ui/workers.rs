@@ -105,7 +105,10 @@ impl<'a> WorkerTable<'a> {
     #[cfg(feature = "rich-ui")]
     fn render_empty_rich(&self, console: &RchConsole) {
         let info = Icons::info(self.context);
-        let content = format!("{} No workers configured\n\nAdd workers with: rch workers add <host>", info);
+        let content = format!(
+            "{} No workers configured\n\nAdd workers with: rch workers add <host>",
+            info
+        );
         let panel = Panel::from_text(&content)
             .title("Workers")
             .border_style(RchTheme::muted())
@@ -145,14 +148,21 @@ impl<'a> WorkerTable<'a> {
     /// Render summary footer.
     #[cfg(feature = "rich-ui")]
     fn render_summary_rich(&self, console: &RchConsole) {
-        let online = self.workers.iter().filter(|w| w.status == "healthy" || w.status == "online").count();
+        let online = self
+            .workers
+            .iter()
+            .filter(|w| w.status == "healthy" || w.status == "online")
+            .count();
         let total = self.workers.len();
         let total_slots: u32 = self.workers.iter().map(|w| w.total_slots).sum();
         let used_slots: u32 = self.workers.iter().map(|w| w.used_slots).sum();
 
         let summary = format!(
             "Total: {} workers ({} online) | Slots: {}/{} available",
-            total, online, total_slots - used_slots, total_slots
+            total,
+            online,
+            total_slots - used_slots,
+            total_slots
         );
         console.print_plain(&summary);
     }
@@ -204,14 +214,21 @@ impl<'a> WorkerTable<'a> {
 
         // Summary
         console.print_plain("");
-        let online = self.workers.iter().filter(|w| w.status == "healthy" || w.status == "online").count();
+        let online = self
+            .workers
+            .iter()
+            .filter(|w| w.status == "healthy" || w.status == "online")
+            .count();
         let total = self.workers.len();
         let total_slots: u32 = self.workers.iter().map(|w| w.total_slots).sum();
         let used_slots: u32 = self.workers.iter().map(|w| w.used_slots).sum();
 
         console.print_plain(&format!(
             "Total: {} workers ({} online) | Slots: {}/{} available",
-            total, online, total_slots - used_slots, total_slots
+            total,
+            online,
+            total_slots - used_slots,
+            total_slots
         ));
     }
 

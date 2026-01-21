@@ -57,10 +57,7 @@ impl<'a> BenchmarkTable<'a> {
 
     /// Get the fastest duration for relative comparisons.
     fn fastest_duration(&self) -> Option<u64> {
-        self.results
-            .iter()
-            .filter_map(|r| r.duration_ms)
-            .min()
+        self.results.iter().filter_map(|r| r.duration_ms).min()
     }
 
     /// Render rich output using rich_rust.
@@ -191,9 +188,7 @@ impl<'a> BenchmarkTable<'a> {
         // Add recommendation if any failures
         if failed > 0 {
             let warning = Icons::warning(self.context);
-            summary_lines.push(format!(
-                "{warning} Check connectivity for failed workers"
-            ));
+            summary_lines.push(format!("{warning} Check connectivity for failed workers"));
         }
 
         let content = summary_lines.join("\n");

@@ -309,8 +309,7 @@ impl ErrorPanel {
         let icon = self.severity.icon(ctx);
         let title_text = format!("{icon} {}: {}", self.code, self.title);
 
-        let border_color =
-            Color::parse(self.severity.color()).unwrap_or_else(|_| Color::default());
+        let border_color = Color::parse(self.severity.color()).unwrap_or_else(|_| Color::default());
         let border_style = Style::new().bold().color(border_color);
 
         let panel = Panel::from_text(&content)
@@ -542,7 +541,10 @@ mod tests {
             .suggestion("Verify SSH key");
 
         assert_eq!(error.severity, ErrorSeverity::Error);
-        assert_eq!(error.message.as_deref(), Some("Could not connect to worker"));
+        assert_eq!(
+            error.message.as_deref(),
+            Some("Could not connect to worker")
+        );
         assert_eq!(error.context.len(), 2);
         assert_eq!(error.suggestions.len(), 2);
     }
@@ -669,8 +671,8 @@ mod tests {
 
     #[test]
     fn test_stack_trace() {
-        let error = ErrorPanel::error("RCH-E001", "Test")
-            .stack_trace("at main.rs:42\nat lib.rs:100");
+        let error =
+            ErrorPanel::error("RCH-E001", "Test").stack_trace("at main.rs:42\nat lib.rs:100");
 
         assert!(error.stack_trace.is_some());
         assert!(error.stack_trace.as_ref().unwrap().contains("main.rs:42"));
@@ -703,8 +705,7 @@ mod tests {
 
     #[test]
     fn test_error_panel_is_error_trait() {
-        let error: Box<dyn std::error::Error> =
-            Box::new(ErrorPanel::error("RCH-E001", "Test"));
+        let error: Box<dyn std::error::Error> = Box::new(ErrorPanel::error("RCH-E001", "Test"));
         // Should be usable as a std::error::Error
         let _ = format!("{error}");
     }

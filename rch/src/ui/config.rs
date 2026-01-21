@@ -63,50 +63,128 @@ impl<'a> ConfigDisplay<'a> {
         let mut lines = Vec::new();
 
         // General section
-        lines.push(format!(
-            "{} [general]",
-            Icons::tree_branch(self.context)
-        ));
-        self.push_config_line(&mut lines, "  ", "enabled", &self.config.general.enabled.to_string(), "general.enabled");
-        self.push_config_line(&mut lines, "  ", "log_level", &format!("\"{}\"", self.config.general.log_level), "general.log_level");
-        self.push_config_line(&mut lines, "  ", "socket_path", &format!("\"{}\"", self.config.general.socket_path), "general.socket_path");
+        lines.push(format!("{} [general]", Icons::tree_branch(self.context)));
+        self.push_config_line(
+            &mut lines,
+            "  ",
+            "enabled",
+            &self.config.general.enabled.to_string(),
+            "general.enabled",
+        );
+        self.push_config_line(
+            &mut lines,
+            "  ",
+            "log_level",
+            &format!("\"{}\"", self.config.general.log_level),
+            "general.log_level",
+        );
+        self.push_config_line(
+            &mut lines,
+            "  ",
+            "socket_path",
+            &format!("\"{}\"", self.config.general.socket_path),
+            "general.socket_path",
+        );
 
         // Compilation section
         lines.push(format!(
             "{} [compilation]",
             Icons::tree_branch(self.context)
         ));
-        self.push_config_line(&mut lines, "  ", "confidence_threshold", &self.config.compilation.confidence_threshold.to_string(), "compilation.confidence_threshold");
-        self.push_config_line(&mut lines, "  ", "min_local_time_ms", &self.config.compilation.min_local_time_ms.to_string(), "compilation.min_local_time_ms");
+        self.push_config_line(
+            &mut lines,
+            "  ",
+            "confidence_threshold",
+            &self.config.compilation.confidence_threshold.to_string(),
+            "compilation.confidence_threshold",
+        );
+        self.push_config_line(
+            &mut lines,
+            "  ",
+            "min_local_time_ms",
+            &self.config.compilation.min_local_time_ms.to_string(),
+            "compilation.min_local_time_ms",
+        );
 
         // Transfer section
-        lines.push(format!(
-            "{} [transfer]",
-            Icons::tree_branch(self.context)
-        ));
-        self.push_config_line(&mut lines, "  ", "compression_level", &self.config.transfer.compression_level.to_string(), "transfer.compression_level");
+        lines.push(format!("{} [transfer]", Icons::tree_branch(self.context)));
+        self.push_config_line(
+            &mut lines,
+            "  ",
+            "compression_level",
+            &self.config.transfer.compression_level.to_string(),
+            "transfer.compression_level",
+        );
         let patterns = format!("{:?}", self.config.transfer.exclude_patterns);
-        self.push_config_line(&mut lines, "  ", "exclude_patterns", &patterns, "transfer.exclude_patterns");
+        self.push_config_line(
+            &mut lines,
+            "  ",
+            "exclude_patterns",
+            &patterns,
+            "transfer.exclude_patterns",
+        );
 
         // Circuit section
-        lines.push(format!(
-            "{} [circuit]",
-            Icons::tree_branch(self.context)
-        ));
-        self.push_config_line(&mut lines, "  ", "failure_threshold", &self.config.circuit.failure_threshold.to_string(), "circuit.failure_threshold");
-        self.push_config_line(&mut lines, "  ", "success_threshold", &self.config.circuit.success_threshold.to_string(), "circuit.success_threshold");
-        self.push_config_line(&mut lines, "  ", "error_rate_threshold", &self.config.circuit.error_rate_threshold.to_string(), "circuit.error_rate_threshold");
-        self.push_config_line(&mut lines, "  ", "window_secs", &self.config.circuit.window_secs.to_string(), "circuit.window_secs");
-        self.push_config_line(&mut lines, "  ", "open_cooldown_secs", &self.config.circuit.open_cooldown_secs.to_string(), "circuit.open_cooldown_secs");
-        self.push_config_line(&mut lines, "  ", "half_open_max_probes", &self.config.circuit.half_open_max_probes.to_string(), "circuit.half_open_max_probes");
+        lines.push(format!("{} [circuit]", Icons::tree_branch(self.context)));
+        self.push_config_line(
+            &mut lines,
+            "  ",
+            "failure_threshold",
+            &self.config.circuit.failure_threshold.to_string(),
+            "circuit.failure_threshold",
+        );
+        self.push_config_line(
+            &mut lines,
+            "  ",
+            "success_threshold",
+            &self.config.circuit.success_threshold.to_string(),
+            "circuit.success_threshold",
+        );
+        self.push_config_line(
+            &mut lines,
+            "  ",
+            "error_rate_threshold",
+            &self.config.circuit.error_rate_threshold.to_string(),
+            "circuit.error_rate_threshold",
+        );
+        self.push_config_line(
+            &mut lines,
+            "  ",
+            "window_secs",
+            &self.config.circuit.window_secs.to_string(),
+            "circuit.window_secs",
+        );
+        self.push_config_line(
+            &mut lines,
+            "  ",
+            "open_cooldown_secs",
+            &self.config.circuit.open_cooldown_secs.to_string(),
+            "circuit.open_cooldown_secs",
+        );
+        self.push_config_line(
+            &mut lines,
+            "  ",
+            "half_open_max_probes",
+            &self.config.circuit.half_open_max_probes.to_string(),
+            "circuit.half_open_max_probes",
+        );
 
         // Output section
-        lines.push(format!(
-            "{} [output]",
-            Icons::tree_end(self.context)
-        ));
-        self.push_config_line(&mut lines, "  ", "visibility", &format!("{:?}", self.config.output.visibility), "output.visibility");
-        self.push_config_line(&mut lines, "  ", "first_run_complete", &self.config.output.first_run_complete.to_string(), "output.first_run_complete");
+        lines.push(format!("{} [output]", Icons::tree_end(self.context)));
+        self.push_config_line(
+            &mut lines,
+            "  ",
+            "visibility",
+            &format!("{:?}", self.config.output.visibility),
+            "output.visibility",
+        );
+        self.push_config_line(
+            &mut lines,
+            "  ",
+            "first_run_complete",
+            &self.config.output.first_run_complete.to_string(),
+            "output.first_run_complete",
+        );
 
         let content = lines.join("\n");
         let panel = Panel::from_text(&content)
@@ -124,7 +202,14 @@ impl<'a> ConfigDisplay<'a> {
     }
 
     /// Push a config line with optional source annotation.
-    fn push_config_line(&self, lines: &mut Vec<String>, indent: &str, key: &str, value: &str, full_key: &str) {
+    fn push_config_line(
+        &self,
+        lines: &mut Vec<String>,
+        indent: &str,
+        key: &str,
+        value: &str,
+        full_key: &str,
+    ) {
         let source_suffix = if self.show_sources {
             self.get_source_label(full_key)
                 .map(|s| format!("  [{}]", s))
@@ -174,38 +259,113 @@ impl<'a> ConfigDisplay<'a> {
 
         // General section
         console.print_plain("[general]");
-        self.print_plain_value(console, "enabled", &self.config.general.enabled.to_string(), "general.enabled");
-        self.print_plain_value(console, "log_level", &format!("\"{}\"", self.config.general.log_level), "general.log_level");
-        self.print_plain_value(console, "socket_path", &format!("\"{}\"", self.config.general.socket_path), "general.socket_path");
+        self.print_plain_value(
+            console,
+            "enabled",
+            &self.config.general.enabled.to_string(),
+            "general.enabled",
+        );
+        self.print_plain_value(
+            console,
+            "log_level",
+            &format!("\"{}\"", self.config.general.log_level),
+            "general.log_level",
+        );
+        self.print_plain_value(
+            console,
+            "socket_path",
+            &format!("\"{}\"", self.config.general.socket_path),
+            "general.socket_path",
+        );
 
         // Compilation section
         console.print_plain("");
         console.print_plain("[compilation]");
-        self.print_plain_value(console, "confidence_threshold", &self.config.compilation.confidence_threshold.to_string(), "compilation.confidence_threshold");
-        self.print_plain_value(console, "min_local_time_ms", &self.config.compilation.min_local_time_ms.to_string(), "compilation.min_local_time_ms");
+        self.print_plain_value(
+            console,
+            "confidence_threshold",
+            &self.config.compilation.confidence_threshold.to_string(),
+            "compilation.confidence_threshold",
+        );
+        self.print_plain_value(
+            console,
+            "min_local_time_ms",
+            &self.config.compilation.min_local_time_ms.to_string(),
+            "compilation.min_local_time_ms",
+        );
 
         // Transfer section
         console.print_plain("");
         console.print_plain("[transfer]");
-        self.print_plain_value(console, "compression_level", &self.config.transfer.compression_level.to_string(), "transfer.compression_level");
+        self.print_plain_value(
+            console,
+            "compression_level",
+            &self.config.transfer.compression_level.to_string(),
+            "transfer.compression_level",
+        );
         let patterns = format!("{:?}", self.config.transfer.exclude_patterns);
-        self.print_plain_value(console, "exclude_patterns", &patterns, "transfer.exclude_patterns");
+        self.print_plain_value(
+            console,
+            "exclude_patterns",
+            &patterns,
+            "transfer.exclude_patterns",
+        );
 
         // Circuit section
         console.print_plain("");
         console.print_plain("[circuit]");
-        self.print_plain_value(console, "failure_threshold", &self.config.circuit.failure_threshold.to_string(), "circuit.failure_threshold");
-        self.print_plain_value(console, "success_threshold", &self.config.circuit.success_threshold.to_string(), "circuit.success_threshold");
-        self.print_plain_value(console, "error_rate_threshold", &self.config.circuit.error_rate_threshold.to_string(), "circuit.error_rate_threshold");
-        self.print_plain_value(console, "window_secs", &self.config.circuit.window_secs.to_string(), "circuit.window_secs");
-        self.print_plain_value(console, "open_cooldown_secs", &self.config.circuit.open_cooldown_secs.to_string(), "circuit.open_cooldown_secs");
-        self.print_plain_value(console, "half_open_max_probes", &self.config.circuit.half_open_max_probes.to_string(), "circuit.half_open_max_probes");
+        self.print_plain_value(
+            console,
+            "failure_threshold",
+            &self.config.circuit.failure_threshold.to_string(),
+            "circuit.failure_threshold",
+        );
+        self.print_plain_value(
+            console,
+            "success_threshold",
+            &self.config.circuit.success_threshold.to_string(),
+            "circuit.success_threshold",
+        );
+        self.print_plain_value(
+            console,
+            "error_rate_threshold",
+            &self.config.circuit.error_rate_threshold.to_string(),
+            "circuit.error_rate_threshold",
+        );
+        self.print_plain_value(
+            console,
+            "window_secs",
+            &self.config.circuit.window_secs.to_string(),
+            "circuit.window_secs",
+        );
+        self.print_plain_value(
+            console,
+            "open_cooldown_secs",
+            &self.config.circuit.open_cooldown_secs.to_string(),
+            "circuit.open_cooldown_secs",
+        );
+        self.print_plain_value(
+            console,
+            "half_open_max_probes",
+            &self.config.circuit.half_open_max_probes.to_string(),
+            "circuit.half_open_max_probes",
+        );
 
         // Output section
         console.print_plain("");
         console.print_plain("[output]");
-        self.print_plain_value(console, "visibility", &format!("{:?}", self.config.output.visibility), "output.visibility");
-        self.print_plain_value(console, "first_run_complete", &self.config.output.first_run_complete.to_string(), "output.first_run_complete");
+        self.print_plain_value(
+            console,
+            "visibility",
+            &format!("{:?}", self.config.output.visibility),
+            "output.visibility",
+        );
+        self.print_plain_value(
+            console,
+            "first_run_complete",
+            &self.config.output.first_run_complete.to_string(),
+            "output.first_run_complete",
+        );
 
         // Sources
         if self.show_sources && !self.config.sources.is_empty() {
@@ -237,8 +397,8 @@ impl<'a> ConfigDisplay<'a> {
 mod tests {
     use super::*;
     use crate::commands::{
-        ConfigCircuitSection, ConfigCompilationSection, ConfigGeneralSection,
-        ConfigOutputSection, ConfigTransferSection, ConfigValueSourceInfo,
+        ConfigCircuitSection, ConfigCompilationSection, ConfigGeneralSection, ConfigOutputSection,
+        ConfigTransferSection, ConfigValueSourceInfo,
     };
     use rch_common::OutputVisibility;
 

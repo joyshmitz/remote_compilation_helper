@@ -173,7 +173,10 @@ impl<'a> StatusTable<'a> {
                 "warning" => warning,
                 _ => Icons::info(self.context),
             };
-            lines.push(format!("{} [{}] {}", severity_prefix, issue.severity, issue.summary));
+            lines.push(format!(
+                "{} [{}] {}",
+                severity_prefix, issue.severity, issue.summary
+            ));
 
             if let Some(ref fix) = issue.remediation {
                 lines.push(format!("  Fix: {fix}"));
@@ -200,10 +203,7 @@ impl<'a> StatusTable<'a> {
         console.print_plain("");
 
         // Connection info
-        console.print_plain(&format!(
-            "{} Daemon: Running (PID {})",
-            check, daemon.pid
-        ));
+        console.print_plain(&format!("{} Daemon: Running (PID {})", check, daemon.pid));
         console.print_plain(&format!(
             "  Uptime: {} | Version: {}",
             format_duration(daemon.uptime_secs),
@@ -239,10 +239,7 @@ impl<'a> StatusTable<'a> {
             console.print_plain("--- Active Jobs ---");
             for job in &self.status.active_builds {
                 let cmd = truncate_command(&job.command, 40);
-                console.print_plain(&format!(
-                    "  #{} {} on {}",
-                    job.id, cmd, job.worker_id
-                ));
+                console.print_plain(&format!("  #{} {} on {}", job.id, cmd, job.worker_id));
             }
         }
 
@@ -256,7 +253,10 @@ impl<'a> StatusTable<'a> {
                     "warning" => Icons::warning(self.context),
                     _ => Icons::info(self.context),
                 };
-                console.print_plain(&format!("  {} [{}] {}", prefix, issue.severity, issue.summary));
+                console.print_plain(&format!(
+                    "  {} [{}] {}",
+                    prefix, issue.severity, issue.summary
+                ));
                 if let Some(ref fix) = issue.remediation {
                     console.print_plain(&format!("    Fix: {fix}"));
                 }
