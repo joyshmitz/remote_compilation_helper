@@ -35,6 +35,7 @@
 //! ```
 
 pub mod config;
+pub mod ssh_tests;
 
 // Re-export common types for convenience
 pub use config::{ConfigError, ConfigResult, TestWorkersConfig, TestWorkerEntry, TestSettings};
