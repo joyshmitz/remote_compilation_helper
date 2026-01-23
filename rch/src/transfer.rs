@@ -108,16 +108,6 @@ impl TransferPipeline {
             });
         }
 
-        // Ensure remote directory exists before rsync
-        let mut client = SshClient::new(worker.clone(), self.ssh_options.clone());
-        client.connect().await?;
-        let mkdir_cmd = format!("mkdir -p {}", escaped_remote_path);
-        let mkdir_result = client.execute(&mkdir_cmd).await?;
-        client.disconnect().await?;
-        if !mkdir_result.success() {
-            bail!("Failed to create remote directory: {}", mkdir_result.stderr);
-        }
-
         info!(
             "Syncing {} -> {} on {}",
             self.project_root.display(),
@@ -127,6 +117,8 @@ impl TransferPipeline {
 
         // Build rsync command with excludes
         let mut cmd = Command::new("rsync");
+        // Force C locale for consistent output parsing
+        cmd.env("LC_ALL", "C");
 
         let identity_file = shellexpand::tilde(&worker.identity_file);
         let escaped_identity = escape(Cow::from(identity_file.as_ref()));
@@ -138,6 +130,11 @@ impl TransferPipeline {
                 "ssh -i {} -o StrictHostKeyChecking=no -o BatchMode=yes",
                 escaped_identity
             ));
+
+        // Create remote directory implicitly using rsync-path wrapper
+        // This saves a separate SSH handshake for 'mkdir -p'
+        cmd.arg("--rsync-path")
+            .arg(format!("mkdir -p {} && rsync", escaped_remote_path));
 
         // Add exclude patterns
         for pattern in &self.transfer_config.exclude_patterns {
@@ -315,6 +312,8 @@ impl TransferPipeline {
         info!("Retrieving artifacts from {} on {}", remote_path, worker.id);
 
         let mut cmd = Command::new("rsync");
+        // Force C locale for consistent output parsing
+        cmd.env("LC_ALL", "C");
 
         let identity_file = shellexpand::tilde(&worker.identity_file);
         let escaped_identity = escape(Cow::from(identity_file.as_ref()));

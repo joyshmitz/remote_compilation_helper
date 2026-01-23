@@ -13,8 +13,9 @@ use crate::workers::WorkerPool;
 use anyhow::{Result, anyhow};
 use chrono::{Duration as ChronoDuration, Utc};
 use rch_common::{
-    BuildRecord, BuildStats, CircuitBreakerConfig, CircuitState, ReleaseRequest, RequiredRuntime,
-    SelectedWorker, SelectionReason, SelectionRequest, SelectionResponse, WorkerId, WorkerStatus,
+    ApiError, BuildRecord, BuildStats, CircuitBreakerConfig, CircuitState, ErrorCode,
+    ReleaseRequest, RequiredRuntime, SelectedWorker, SelectionReason, SelectionRequest,
+    SelectionResponse, WorkerId, WorkerStatus,
 };
 use rch_telemetry::protocol::{TelemetrySource, TestRunRecord, TestRunStats, WorkerTelemetry};
 use rch_telemetry::speedscore::SpeedScore;
@@ -71,9 +72,11 @@ enum ApiRequest {
 // Status Response Types (per bead remote_compilation_helper-3sy)
 // ============================================================================
 
-/// Full status response for GET /status.
+/// Full status response for GET /status endpoint.
+///
+/// Named `DaemonFullStatus` to distinguish from CLI's `SystemOverview` type.
 #[derive(Debug, Serialize)]
-pub struct StatusResponse {
+pub struct DaemonFullStatus {
     /// Daemon metadata.
     pub daemon: DaemonStatusInfo,
     /// Worker states.
@@ -298,22 +301,15 @@ pub struct BenchmarkTriggerResponse {
     pub request_id: String,
 }
 
-/// Error response with optional rate limit info.
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub worker_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub retry_after_secs: Option<u64>,
-}
-
+/// Local API response enum for daemon endpoints.
+///
+/// Uses untagged serialization so success cases serialize directly as data,
+/// while errors serialize using the unified ApiError format from rch-common.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum ApiResponse<T: Serialize> {
     Ok(T),
-    Error(ErrorResponse),
+    Error(ApiError),
 }
 
 /// Handle an incoming connection on the Unix socket.
@@ -1094,18 +1090,23 @@ fn speedscore_view(score: SpeedScore) -> SpeedScoreView {
     }
 }
 
+/// Create an error response using unified ApiError format.
+///
+/// Adds worker_id to context and retry_after_secs when provided.
 fn error_response(
-    code: &str,
+    code: ErrorCode,
     message: impl Into<String>,
     worker_id: Option<&WorkerId>,
     retry_after: Option<ChronoDuration>,
-) -> ErrorResponse {
-    ErrorResponse {
-        error: code.to_string(),
-        message: message.into(),
-        worker_id: worker_id.map(|id| id.to_string()),
-        retry_after_secs: retry_after.map(|d| d.num_seconds().max(1) as u64),
+) -> ApiError {
+    let mut error = ApiError::new(code, message);
+    if let Some(id) = worker_id {
+        error = error.with_context("worker_id", id.as_str());
     }
+    if let Some(duration) = retry_after {
+        error = error.with_retry_after(duration.num_seconds().max(1) as u64);
+    }
+    error
 }
 
 async fn handle_speedscore(
@@ -1114,7 +1115,7 @@ async fn handle_speedscore(
 ) -> ApiResponse<SpeedScoreResponse> {
     if ctx.pool.get(worker_id).await.is_none() {
         return ApiResponse::Error(error_response(
-            "worker_not_found",
+            ErrorCode::ConfigInvalidWorker,
             format!("Worker '{}' does not exist", worker_id),
             Some(worker_id),
             None,
@@ -1135,7 +1136,7 @@ async fn handle_speedscore(
         Err(err) => {
             warn!("Failed to load SpeedScore for {}: {}", worker_id, err);
             ApiResponse::Error(error_response(
-                "internal_error",
+                ErrorCode::InternalStateError,
                 "Failed to retrieve SpeedScore",
                 Some(worker_id),
                 None,
@@ -1153,7 +1154,7 @@ async fn handle_speedscore_history(
 ) -> ApiResponse<SpeedScoreHistoryResponse> {
     if ctx.pool.get(worker_id).await.is_none() {
         return ApiResponse::Error(error_response(
-            "worker_not_found",
+            ErrorCode::ConfigInvalidWorker,
             format!("Worker '{}' does not exist", worker_id),
             Some(worker_id),
             None,
@@ -1187,7 +1188,7 @@ async fn handle_speedscore_history(
                 worker_id, err
             );
             ApiResponse::Error(error_response(
-                "internal_error",
+                ErrorCode::InternalStateError,
                 "Failed to retrieve SpeedScore history",
                 Some(worker_id),
                 None,
@@ -1227,7 +1228,7 @@ async fn handle_benchmark_trigger(
 ) -> ApiResponse<BenchmarkTriggerResponse> {
     if ctx.pool.get(worker_id).await.is_none() {
         return ApiResponse::Error(error_response(
-            "worker_not_found",
+            ErrorCode::ConfigInvalidWorker,
             format!("Worker '{}' does not exist", worker_id),
             Some(worker_id),
             None,
@@ -1255,7 +1256,7 @@ async fn handle_benchmark_trigger(
             })
         }
         Err(rate) => ApiResponse::Error(error_response(
-            "rate_limited",
+            ErrorCode::WorkerAtCapacity,
             "Benchmark trigger rate limited",
             Some(worker_id),
             Some(rate.retry_after),
@@ -1469,7 +1470,7 @@ fn handle_budget() -> BudgetStatusResponse {
 }
 
 /// Handle a status request.
-async fn handle_status(ctx: &DaemonContext) -> Result<StatusResponse> {
+async fn handle_status(ctx: &DaemonContext) -> Result<DaemonFullStatus> {
     let workers = ctx.pool.all_workers().await;
 
     let mut workers_healthy = 0;
@@ -1573,7 +1574,7 @@ async fn handle_status(ctx: &DaemonContext) -> Result<StatusResponse> {
     let stats = ctx.history.stats();
     let test_stats = ctx.telemetry.test_run_stats();
 
-    Ok(StatusResponse {
+    Ok(DaemonFullStatus {
         daemon: DaemonStatusInfo {
             pid: ctx.pid,
             uptime_secs,

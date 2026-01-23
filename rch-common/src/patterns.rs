@@ -466,9 +466,8 @@ pub fn normalize_command(cmd: &str) -> Cow<'_, str> {
 
 /// Check command structure for patterns that shouldn't be intercepted.
 fn check_structure(cmd: &str) -> Option<&'static str> {
-    // Check for backgrounding (ends with & but not &&)
-    let trimmed = cmd.trim_end();
-    if trimmed.ends_with('&') && !trimmed.ends_with("&&") {
+    // Check for backgrounding (ends with & or contains & not part of &&)
+    if contains_unquoted_standalone_ampersand(cmd) {
         return Some("backgrounded command");
     }
 
@@ -516,17 +515,26 @@ fn contains_compilation_keyword(cmd: &str) -> bool {
 fn contains_unquoted(cmd: &str, ch: char) -> bool {
     let mut in_single = false;
     let mut in_double = false;
-    let mut prev = '\0';
+    let mut escaped = false;
 
     for c in cmd.chars() {
-        if c == '\'' && !in_double && prev != '\\' {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+
+        if c == '\'' && !in_double {
             in_single = !in_single;
-        } else if c == '"' && !in_single && prev != '\\' {
+        } else if c == '"' && !in_single {
             in_double = !in_double;
         } else if c == ch && !in_single && !in_double {
             return true;
         }
-        prev = c;
     }
     false
 }
@@ -535,15 +543,26 @@ fn contains_unquoted(cmd: &str, ch: char) -> bool {
 fn contains_unquoted_str(cmd: &str, s: &str) -> bool {
     let mut in_single = false;
     let mut in_double = false;
-    let mut prev = '\0';
+    let mut escaped = false;
     let chars: Vec<char> = cmd.chars().collect();
     let pattern: Vec<char> = s.chars().collect();
 
     for i in 0..chars.len() {
         let c = chars[i];
-        if c == '\'' && !in_double && prev != '\\' {
+
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+
+        if c == '\'' && !in_double {
             in_single = !in_single;
-        } else if c == '"' && !in_single && prev != '\\' {
+        } else if c == '"' && !in_single {
             in_double = !in_double;
         } else if !in_single && !in_double {
             // Check for pattern match at this position
@@ -560,7 +579,55 @@ fn contains_unquoted_str(cmd: &str, s: &str) -> bool {
                 }
             }
         }
-        prev = c;
+    }
+    false
+}
+
+/// Check for standalone ampersand (&) outside of quotes and not part of &&
+fn contains_unquoted_standalone_ampersand(cmd: &str) -> bool {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let chars: Vec<char> = cmd.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let c = chars[i];
+        if escaped {
+            escaped = false;
+            i += 1;
+            continue;
+        }
+
+        if c == '\\' {
+            escaped = true;
+            i += 1;
+            continue;
+        }
+
+        if c == '\'' && !in_double {
+            in_single = !in_single;
+            i += 1;
+            continue;
+        }
+        if c == '"' && !in_single {
+            in_double = !in_double;
+            i += 1;
+            continue;
+        }
+
+        if c == '&' && !in_single && !in_double {
+            // Check for &&
+            if i + 1 < chars.len() && chars[i + 1] == '&' {
+                // Found &&. Skip both.
+                i += 2;
+                continue;
+            } else {
+                // Standalone &
+                return true;
+            }
+        }
+        i += 1;
     }
     false
 }

@@ -6,6 +6,7 @@
 // in tests and profile defaults (env::set_var/remove_var are unsafe in Rust 2024)
 #![deny(unsafe_code)]
 
+pub mod api;
 pub mod binary_hash;
 pub mod config;
 pub mod discovery;
@@ -66,3 +67,6 @@ pub use ui::{Icons, OutputContext, RchTheme};
 
 // Errors module re-exports
 pub use errors::{ErrorCategory, ErrorCode, ErrorEntry};
+
+// API module re-exports (unified API types for CLI and daemon)
+pub use api::{ApiError, ApiResponse, ErrorContext, LegacyErrorCode, API_VERSION};

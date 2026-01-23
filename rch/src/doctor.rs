@@ -2,7 +2,8 @@
 //!
 //! Runs comprehensive diagnostics and optionally auto-fixes common issues.
 
-use crate::commands::{JsonResponse, config_dir, load_workers_from_config};
+use crate::commands::{config_dir, load_workers_from_config};
+use rch_common::ApiResponse;
 use crate::ui::context::OutputContext;
 use crate::ui::theme::StatusIndicator;
 use anyhow::Result;
@@ -128,7 +129,7 @@ pub async fn run_doctor(ctx: &OutputContext, options: DoctorOptions) -> Result<(
 
     // Output results
     if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok("doctor", DoctorResponse {
+        let _ = ctx.json(&ApiResponse::ok("doctor", DoctorResponse {
             checks,
             summary,
             fixes_applied,

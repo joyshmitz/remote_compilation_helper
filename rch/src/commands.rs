@@ -13,9 +13,10 @@ use crate::ui::theme::StatusIndicator;
 use anyhow::{Context, Result, bail};
 use directories::ProjectDirs;
 use rch_common::{
-    Classification, ClassificationDetails, ClassificationTier, ConfigValueSource, DiscoveredHost,
-    RchConfig, RequiredRuntime, SelectedWorker, SelectionReason, SshClient, SshOptions,
-    WorkerConfig, WorkerId, classify_command_detailed, discover_all,
+    ApiError, ApiResponse, Classification, ClassificationDetails, ClassificationTier,
+    ConfigValueSource, DiscoveredHost, ErrorCode, RchConfig, RequiredRuntime, SelectedWorker,
+    SelectionReason, SshClient, SshOptions, WorkerConfig, WorkerId, classify_command_detailed,
+    discover_all,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -85,143 +86,6 @@ fn print_file_validation(
         );
     }
 }
-
-// =============================================================================
-// JSON Response Types
-// =============================================================================
-
-/// JSON envelope version for API compatibility detection.
-pub const JSON_ENVELOPE_VERSION: &str = "1";
-
-/// Standard error codes for JSON responses.
-#[allow(dead_code)]
-pub mod error_codes {
-    pub const WORKER_UNREACHABLE: &str = "WORKER_UNREACHABLE";
-    pub const WORKER_NOT_FOUND: &str = "WORKER_NOT_FOUND";
-    pub const CONFIG_INVALID: &str = "CONFIG_INVALID";
-    pub const CONFIG_NOT_FOUND: &str = "CONFIG_NOT_FOUND";
-    pub const DAEMON_NOT_RUNNING: &str = "DAEMON_NOT_RUNNING";
-    pub const DAEMON_CONNECTION_FAILED: &str = "DAEMON_CONNECTION_FAILED";
-    pub const SSH_CONNECTION_FAILED: &str = "SSH_CONNECTION_FAILED";
-    pub const BENCHMARK_FAILED: &str = "BENCHMARK_FAILED";
-    pub const HOOK_INSTALL_FAILED: &str = "HOOK_INSTALL_FAILED";
-    pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
-}
-
-/// Structured error information for JSON responses.
-#[derive(Debug, Clone, Serialize)]
-pub struct JsonError {
-    /// Machine-readable error code (e.g., "WORKER_UNREACHABLE").
-    pub code: String,
-    /// Human-readable error message.
-    pub message: String,
-    /// Optional structured details about the error.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<serde_json::Value>,
-    /// Optional suggestions for resolving the error.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub suggestions: Option<Vec<String>>,
-}
-
-#[allow(dead_code)]
-impl JsonError {
-    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            code: code.into(),
-            message: message.into(),
-            details: None,
-            suggestions: None,
-        }
-    }
-
-    pub fn with_details(mut self, details: serde_json::Value) -> Self {
-        self.details = Some(details);
-        self
-    }
-
-    pub fn with_suggestions(mut self, suggestions: Vec<String>) -> Self {
-        self.suggestions = Some(suggestions);
-        self
-    }
-
-    /// Create a JsonError from a miette Diagnostic.
-    pub fn from_diagnostic(diag: &dyn miette::Diagnostic) -> Self {
-        let code = diag
-            .code()
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| error_codes::INTERNAL_ERROR.to_string());
-        let message = diag.to_string();
-        let suggestions = diag.help().map(|h| vec![h.to_string()]);
-        Self {
-            code,
-            message,
-            details: None,
-            suggestions,
-        }
-    }
-}
-
-/// Standard JSON envelope for all command responses.
-#[derive(Debug, Clone, Serialize)]
-pub struct JsonResponse<T: Serialize> {
-    /// Envelope version for API compatibility.
-    pub version: &'static str,
-    /// Command that produced this response (e.g., "workers list").
-    pub command: String,
-    /// Whether the command succeeded.
-    pub success: bool,
-    /// Response data on success.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<T>,
-    /// Structured error on failure.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<JsonError>,
-}
-
-impl<T: Serialize> JsonResponse<T> {
-    /// Create a successful response.
-    pub fn ok(command: impl Into<String>, data: T) -> Self {
-        Self {
-            version: JSON_ENVELOPE_VERSION,
-            command: command.into(),
-            success: true,
-            data: Some(data),
-            error: None,
-        }
-    }
-
-    /// Create a successful response with explicit command name (alias for ok).
-    pub fn ok_cmd(command: impl Into<String>, data: T) -> Self {
-        Self::ok(command, data)
-    }
-
-    /// Create an error response.
-    pub fn err(command: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            version: JSON_ENVELOPE_VERSION,
-            command: command.into(),
-            success: false,
-            data: None,
-            error: Some(JsonError::new(error_codes::INTERNAL_ERROR, message)),
-        }
-    }
-
-    /// Create an error response with explicit command name and error code.
-    pub fn err_cmd(
-        command: impl Into<String>,
-        code: impl Into<String>,
-        message: impl Into<String>,
-    ) -> Self {
-        Self {
-            version: JSON_ENVELOPE_VERSION,
-            command: command.into(),
-            success: false,
-            data: None,
-            error: Some(JsonError::new(code, message)),
-        }
-    }
-}
-
 /// Worker information for JSON output.
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkerInfo {
@@ -277,9 +141,11 @@ pub struct DaemonStatusResponse {
     pub uptime_seconds: Option<u64>,
 }
 
-/// System status response.
+/// System overview response.
+///
+/// Named `SystemOverview` to distinguish from daemon's `DaemonFullStatus` type.
 #[derive(Debug, Clone, Serialize)]
-pub struct StatusResponse {
+pub struct SystemOverview {
     pub daemon_running: bool,
     pub hook_installed: bool,
     pub workers_count: usize,
@@ -587,7 +453,7 @@ pub async fn workers_list(show_speedscore: bool, ctx: &OutputContext) -> Result<
             count: workers.len(),
             workers: worker_infos,
         };
-        let _ = ctx.json(&JsonResponse::ok("workers list", response));
+        let _ = ctx.json(&ApiResponse::ok("workers list", response));
         return Ok(());
     }
 
@@ -673,7 +539,7 @@ pub async fn workers_probe(
 
     if workers.is_empty() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<Vec<WorkerProbeResult>>::ok(
+            let _ = ctx.json(&ApiResponse::<Vec<WorkerProbeResult>>::ok(
                 "workers probe",
                 vec![],
             ));
@@ -687,10 +553,12 @@ pub async fn workers_probe(
         workers.iter().filter(|w| w.id.as_str() == id).collect()
     } else {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+            let _ = ctx.json(&ApiResponse::<()>::err(
                 "workers probe",
-                error_codes::CONFIG_INVALID,
-                "Specify a worker ID or use --all",
+                ApiError::new(
+                    ErrorCode::ConfigValidationError,
+                    "Specify a worker ID or use --all",
+                ),
             ));
         } else {
             println!(
@@ -705,10 +573,12 @@ pub async fn workers_probe(
     if targets.is_empty() {
         if let Some(id) = worker_id {
             if ctx.is_json() {
-                let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+                let _ = ctx.json(&ApiResponse::<()>::err(
                     "workers probe",
-                    error_codes::WORKER_NOT_FOUND,
-                    format!("Worker '{}' not found", id),
+                    ApiError::new(
+                        ErrorCode::ConfigInvalidWorker,
+                        format!("Worker '{}' not found", id),
+                    ),
                 ));
             } else {
                 println!(
@@ -826,7 +696,7 @@ pub async fn workers_probe(
     }
 
     if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok("workers probe", results));
+        let _ = ctx.json(&ApiResponse::ok("workers probe", results));
     }
 
     Ok(())
@@ -949,7 +819,7 @@ pub async fn workers_benchmark(ctx: &OutputContext) -> Result<()> {
 
     if workers.is_empty() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<Vec<WorkerBenchmarkResult>>::ok(
+            let _ = ctx.json(&ApiResponse::<Vec<WorkerBenchmarkResult>>::ok(
                 "workers benchmark",
                 vec![],
             ));
@@ -1084,7 +954,7 @@ pub async fn workers_benchmark(ctx: &OutputContext) -> Result<()> {
     }
 
     if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok("workers benchmark", results));
+        let _ = ctx.json(&ApiResponse::ok("workers benchmark", results));
     } else {
         println!(
             "\n{} For accurate speed scores, use longer benchmark runs.",
@@ -1111,10 +981,9 @@ pub async fn workers_drain(worker_id: &str, ctx: &OutputContext) -> Result<()> {
     // Check if daemon is running
     if !Path::new(DEFAULT_SOCKET_PATH).exists() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+            let _ = ctx.json(&ApiResponse::<()>::err(
                 "workers drain",
-                error_codes::DAEMON_NOT_RUNNING,
-                "Daemon is not running",
+                ApiError::new(ErrorCode::InternalDaemonNotRunning, "Daemon is not running"),
             ));
         } else {
             println!(
@@ -1135,7 +1004,7 @@ pub async fn workers_drain(worker_id: &str, ctx: &OutputContext) -> Result<()> {
         Ok(response) => {
             if response.contains("error") || response.contains("Error") {
                 if ctx.is_json() {
-                    let _ = ctx.json(&JsonResponse::ok("workers drain", WorkerActionResponse {
+                    let _ = ctx.json(&ApiResponse::ok("workers drain", WorkerActionResponse {
                         worker_id: worker_id.to_string(),
                         action: "drain".to_string(),
                         success: false,
@@ -1149,7 +1018,7 @@ pub async fn workers_drain(worker_id: &str, ctx: &OutputContext) -> Result<()> {
                     );
                 }
             } else if ctx.is_json() {
-                let _ = ctx.json(&JsonResponse::ok("workers drain", WorkerActionResponse {
+                let _ = ctx.json(&ApiResponse::ok("workers drain", WorkerActionResponse {
                     worker_id: worker_id.to_string(),
                     action: "drain".to_string(),
                     success: true,
@@ -1169,10 +1038,9 @@ pub async fn workers_drain(worker_id: &str, ctx: &OutputContext) -> Result<()> {
         }
         Err(e) => {
             if ctx.is_json() {
-                let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+                let _ = ctx.json(&ApiResponse::<()>::err(
                     "workers drain",
-                    error_codes::INTERNAL_ERROR,
-                    e.to_string(),
+                    ApiError::new(ErrorCode::InternalStateError, e.to_string()),
                 ));
             } else {
                 println!(
@@ -1197,10 +1065,9 @@ pub async fn workers_enable(worker_id: &str, ctx: &OutputContext) -> Result<()> 
 
     if !Path::new(DEFAULT_SOCKET_PATH).exists() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+            let _ = ctx.json(&ApiResponse::<()>::err(
                 "workers enable",
-                error_codes::DAEMON_NOT_RUNNING,
-                "Daemon is not running",
+                ApiError::new(ErrorCode::InternalDaemonNotRunning, "Daemon is not running"),
             ));
         } else {
             println!(
@@ -1216,7 +1083,7 @@ pub async fn workers_enable(worker_id: &str, ctx: &OutputContext) -> Result<()> 
         Ok(response) => {
             if response.contains("error") || response.contains("Error") {
                 if ctx.is_json() {
-                    let _ = ctx.json(&JsonResponse::ok("workers enable", WorkerActionResponse {
+                    let _ = ctx.json(&ApiResponse::ok("workers enable", WorkerActionResponse {
                         worker_id: worker_id.to_string(),
                         action: "enable".to_string(),
                         success: false,
@@ -1230,7 +1097,7 @@ pub async fn workers_enable(worker_id: &str, ctx: &OutputContext) -> Result<()> 
                     );
                 }
             } else if ctx.is_json() {
-                let _ = ctx.json(&JsonResponse::ok("workers enable", WorkerActionResponse {
+                let _ = ctx.json(&ApiResponse::ok("workers enable", WorkerActionResponse {
                     worker_id: worker_id.to_string(),
                     action: "enable".to_string(),
                     success: true,
@@ -1246,10 +1113,9 @@ pub async fn workers_enable(worker_id: &str, ctx: &OutputContext) -> Result<()> 
         }
         Err(e) => {
             if ctx.is_json() {
-                let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+                let _ = ctx.json(&ApiResponse::<()>::err(
                     "workers enable",
-                    error_codes::INTERNAL_ERROR,
-                    e.to_string(),
+                    ApiError::new(ErrorCode::InternalStateError, e.to_string()),
                 ));
             } else {
                 println!(
@@ -1280,10 +1146,12 @@ pub async fn workers_deploy_binary(
 
     if worker_id.is_none() && !all {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+            let _ = ctx.json(&ApiResponse::<()>::err(
                 "workers deploy-binary",
-                error_codes::CONFIG_INVALID,
-                "Specify either a worker ID or --all",
+                ApiError::new(
+                    ErrorCode::ConfigValidationError,
+                    "Specify either a worker ID or --all",
+                ),
             ));
         } else {
             println!(
@@ -1300,10 +1168,12 @@ pub async fn workers_deploy_binary(
     let workers = load_workers_from_config()?;
     if workers.is_empty() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+            let _ = ctx.json(&ApiResponse::<()>::err(
                 "workers deploy-binary",
-                error_codes::CONFIG_NOT_FOUND,
-                "No workers configured. Run 'rch workers discover --add' first.",
+                ApiError::new(
+                    ErrorCode::ConfigNotFound,
+                    "No workers configured. Run 'rch workers discover --add' first.",
+                ),
             ));
         } else {
             println!(
@@ -1329,10 +1199,12 @@ pub async fn workers_deploy_binary(
 
     if target_workers.is_empty() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+            let _ = ctx.json(&ApiResponse::<()>::err(
                 "workers deploy-binary",
-                error_codes::WORKER_NOT_FOUND,
-                format!("Worker '{}' not found", worker_id.unwrap_or_default()),
+                ApiError::new(
+                    ErrorCode::ConfigInvalidWorker,
+                    format!("Worker '{}' not found", worker_id.unwrap_or_default()),
+                ),
             ));
         } else {
             println!(
@@ -1376,7 +1248,7 @@ pub async fn workers_deploy_binary(
 
     // JSON output
     if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok(
+        let _ = ctx.json(&ApiResponse::ok(
             "workers deploy-binary",
             serde_json::json!({
                 "local_binary": local_binary.display().to_string(),
@@ -1696,10 +1568,12 @@ pub async fn workers_sync_toolchain(
 
     if worker_id.is_none() && !all {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+            let _ = ctx.json(&ApiResponse::<()>::err(
                 "workers sync-toolchain",
-                error_codes::CONFIG_INVALID,
-                "Specify either a worker ID or --all",
+                ApiError::new(
+                    ErrorCode::ConfigValidationError,
+                    "Specify either a worker ID or --all",
+                ),
             ));
         } else {
             println!(
@@ -1719,10 +1593,9 @@ pub async fn workers_sync_toolchain(
     let workers = load_workers_from_config()?;
     if workers.is_empty() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+            let _ = ctx.json(&ApiResponse::<()>::err(
                 "workers sync-toolchain",
-                error_codes::CONFIG_NOT_FOUND,
-                "No workers configured",
+                ApiError::new(ErrorCode::ConfigNotFound, "No workers configured"),
             ));
         } else {
             println!(
@@ -1744,10 +1617,12 @@ pub async fn workers_sync_toolchain(
 
     if target_workers.is_empty() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+            let _ = ctx.json(&ApiResponse::<()>::err(
                 "workers sync-toolchain",
-                error_codes::WORKER_NOT_FOUND,
-                format!("Worker '{}' not found", worker_id.unwrap_or_default()),
+                ApiError::new(
+                    ErrorCode::ConfigInvalidWorker,
+                    format!("Worker '{}' not found", worker_id.unwrap_or_default()),
+                ),
             ));
         } else {
             println!(
@@ -1787,7 +1662,7 @@ pub async fn workers_sync_toolchain(
 
     // JSON output
     if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok(
+        let _ = ctx.json(&ApiResponse::ok(
             "workers sync-toolchain",
             serde_json::json!({
                 "toolchain": toolchain,
@@ -1833,10 +1708,12 @@ pub async fn workers_setup(
 
     if worker_id.is_none() && !all {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+            let _ = ctx.json(&ApiResponse::<()>::err(
                 "workers setup",
-                error_codes::CONFIG_INVALID,
-                "Specify either a worker ID or --all",
+                ApiError::new(
+                    ErrorCode::ConfigValidationError,
+                    "Specify either a worker ID or --all",
+                ),
             ));
         } else {
             println!(
@@ -1853,10 +1730,9 @@ pub async fn workers_setup(
     let workers = load_workers_from_config()?;
     if workers.is_empty() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+            let _ = ctx.json(&ApiResponse::<()>::err(
                 "workers setup",
-                error_codes::CONFIG_NOT_FOUND,
-                "No workers configured",
+                ApiError::new(ErrorCode::ConfigNotFound, "No workers configured"),
             ));
         } else {
             println!(
@@ -1879,10 +1755,12 @@ pub async fn workers_setup(
 
     if target_workers.is_empty() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+            let _ = ctx.json(&ApiResponse::<()>::err(
                 "workers setup",
-                error_codes::WORKER_NOT_FOUND,
-                format!("Worker '{}' not found", worker_id.unwrap_or_default()),
+                ApiError::new(
+                    ErrorCode::ConfigInvalidWorker,
+                    format!("Worker '{}' not found", worker_id.unwrap_or_default()),
+                ),
             ));
         } else {
             println!(
@@ -1946,7 +1824,7 @@ pub async fn workers_setup(
 
     // JSON output
     if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok(
+        let _ = ctx.json(&ApiResponse::ok(
             "workers setup",
             serde_json::json!({
                 "toolchain": toolchain,
@@ -2704,7 +2582,7 @@ pub async fn workers_discover(
 
     if hosts.is_empty() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::ok(
+            let _ = ctx.json(&ApiResponse::ok(
                 "workers discover",
                 serde_json::json!({
                     "discovered": [],
@@ -2741,7 +2619,7 @@ pub async fn workers_discover(
             })
             .collect();
 
-        let _ = ctx.json(&JsonResponse::ok(
+        let _ = ctx.json(&ApiResponse::ok(
             "workers discover",
             serde_json::json!({
                 "discovered": hosts_json,
@@ -3002,7 +2880,7 @@ pub fn daemon_status(ctx: &OutputContext) -> Result<()> {
     };
 
     if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok("daemon status", DaemonStatusResponse {
+        let _ = ctx.json(&ApiResponse::ok("daemon status", DaemonStatusResponse {
             running,
             socket_path: DEFAULT_SOCKET_PATH.to_string(),
             uptime_seconds,
@@ -3080,7 +2958,7 @@ pub async fn daemon_start(ctx: &OutputContext) -> Result<()> {
 
     if socket_path.exists() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::ok("daemon start", DaemonActionResponse {
+            let _ = ctx.json(&ApiResponse::ok("daemon start", DaemonActionResponse {
                 action: "start".to_string(),
                 success: false,
                 socket_path: DEFAULT_SOCKET_PATH.to_string(),
@@ -3130,7 +3008,7 @@ pub async fn daemon_start(ctx: &OutputContext) -> Result<()> {
 
             if socket_path.exists() {
                 if ctx.is_json() {
-                    let _ = ctx.json(&JsonResponse::ok("daemon start", DaemonActionResponse {
+                    let _ = ctx.json(&ApiResponse::ok("daemon start", DaemonActionResponse {
                         action: "start".to_string(),
                         success: true,
                         socket_path: DEFAULT_SOCKET_PATH.to_string(),
@@ -3149,7 +3027,7 @@ pub async fn daemon_start(ctx: &OutputContext) -> Result<()> {
                     );
                 }
             } else if ctx.is_json() {
-                let _ = ctx.json(&JsonResponse::ok("daemon start", DaemonActionResponse {
+                let _ = ctx.json(&ApiResponse::ok("daemon start", DaemonActionResponse {
                     action: "start".to_string(),
                     success: false,
                     socket_path: DEFAULT_SOCKET_PATH.to_string(),
@@ -3169,7 +3047,10 @@ pub async fn daemon_start(ctx: &OutputContext) -> Result<()> {
         }
         Err(e) => {
             if ctx.is_json() {
-                let _ = ctx.json(&JsonResponse::<()>::err("daemon start", e.to_string()));
+                let _ = ctx.json(&ApiResponse::<()>::err(
+                    "daemon start",
+                    ApiError::internal(e.to_string()),
+                ));
             } else {
                 println!(
                     "{} Failed to start daemon: {}",
@@ -3195,7 +3076,7 @@ pub async fn daemon_stop(ctx: &OutputContext) -> Result<()> {
 
     if !socket_path.exists() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::ok("daemon stop", DaemonActionResponse {
+            let _ = ctx.json(&ApiResponse::ok("daemon stop", DaemonActionResponse {
                 action: "stop".to_string(),
                 success: true,
                 socket_path: DEFAULT_SOCKET_PATH.to_string(),
@@ -3223,7 +3104,7 @@ pub async fn daemon_stop(ctx: &OutputContext) -> Result<()> {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 if !socket_path.exists() {
                     if ctx.is_json() {
-                        let _ = ctx.json(&JsonResponse::ok("daemon stop", DaemonActionResponse {
+                        let _ = ctx.json(&ApiResponse::ok("daemon stop", DaemonActionResponse {
                             action: "stop".to_string(),
                             success: true,
                             socket_path: DEFAULT_SOCKET_PATH.to_string(),
@@ -3239,7 +3120,7 @@ pub async fn daemon_stop(ctx: &OutputContext) -> Result<()> {
                 }
             }
             if ctx.is_json() {
-                let _ = ctx.json(&JsonResponse::ok("daemon stop", DaemonActionResponse {
+                let _ = ctx.json(&ApiResponse::ok("daemon stop", DaemonActionResponse {
                     action: "stop".to_string(),
                     success: false,
                     socket_path: DEFAULT_SOCKET_PATH.to_string(),
@@ -3254,9 +3135,9 @@ pub async fn daemon_stop(ctx: &OutputContext) -> Result<()> {
         }
         Err(_) => {
             if ctx.is_json() {
-                let _ = ctx.json(&JsonResponse::<()>::err(
+                let _ = ctx.json(&ApiResponse::<()>::err(
                     "daemon stop",
-                    "Could not send shutdown command",
+                    ApiError::internal("Could not send shutdown command"),
                 ));
             } else {
                 println!(
@@ -3274,7 +3155,7 @@ pub async fn daemon_stop(ctx: &OutputContext) -> Result<()> {
                     // Remove stale socket
                     let _ = std::fs::remove_file(socket_path);
                     if ctx.is_json() {
-                        let _ = ctx.json(&JsonResponse::ok("daemon stop", DaemonActionResponse {
+                        let _ = ctx.json(&ApiResponse::ok("daemon stop", DaemonActionResponse {
                             action: "stop".to_string(),
                             success: true,
                             socket_path: DEFAULT_SOCKET_PATH.to_string(),
@@ -3289,9 +3170,9 @@ pub async fn daemon_stop(ctx: &OutputContext) -> Result<()> {
                 }
                 _ => {
                     if ctx.is_json() {
-                        let _ = ctx.json(&JsonResponse::<()>::err(
+                        let _ = ctx.json(&ApiResponse::<()>::err(
                             "daemon stop",
-                            "Could not stop daemon",
+                            ApiError::internal("Could not stop daemon"),
                         ));
                     } else {
                         println!(
@@ -3359,7 +3240,7 @@ pub fn daemon_logs(lines: usize, ctx: &OutputContext) -> Result<()> {
             let log_lines: Vec<String> = all_lines[start..].iter().map(|s| s.to_string()).collect();
 
             if ctx.is_json() {
-                let _ = ctx.json(&JsonResponse::ok("daemon logs", DaemonLogsResponse {
+                let _ = ctx.json(&ApiResponse::ok("daemon logs", DaemonLogsResponse {
                     log_file: Some(path.display().to_string()),
                     lines: log_lines,
                     found: true,
@@ -3382,7 +3263,7 @@ pub fn daemon_logs(lines: usize, ctx: &OutputContext) -> Result<()> {
     }
 
     if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok("daemon logs", DaemonLogsResponse {
+        let _ = ctx.json(&ApiResponse::ok("daemon logs", DaemonLogsResponse {
             log_file: None,
             lines: vec![],
             found: false,
@@ -3489,7 +3370,7 @@ pub fn config_show(show_sources: bool, ctx: &OutputContext) -> Result<()> {
             sources,
             value_sources,
         };
-        let _ = ctx.json(&JsonResponse::ok("config show", response));
+        let _ = ctx.json(&ApiResponse::ok("config show", response));
         return Ok(());
     }
 
@@ -3955,7 +3836,7 @@ pub fn config_init(ctx: &OutputContext, wizard: bool, use_defaults: bool) -> Res
 
     // JSON output
     if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok_cmd("config init", ConfigInitResponse {
+        let _ = ctx.json(&ApiResponse::ok("config init", ConfigInitResponse {
             created,
             already_existed,
         }));
@@ -4095,7 +3976,7 @@ enabled = true
     }
 
     if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok_cmd("config init", ConfigInitResponse {
+        let _ = ctx.json(&ApiResponse::ok("config init", ConfigInitResponse {
             created,
             already_existed,
         }));
@@ -4425,7 +4306,7 @@ pub fn config_validate(ctx: &OutputContext) -> Result<()> {
                     warnings: vec![],
                     valid: false,
                 };
-                let _ = ctx.json(&JsonResponse::ok_cmd("config validate", response));
+                let _ = ctx.json(&ApiResponse::ok("config validate", response));
                 std::process::exit(1);
             }
             println!(
@@ -4483,7 +4364,7 @@ pub fn config_validate(ctx: &OutputContext) -> Result<()> {
             warnings: warning_items,
             valid,
         };
-        let _ = ctx.json(&JsonResponse::ok_cmd("config validate", response));
+        let _ = ctx.json(&ApiResponse::ok("config validate", response));
         if !valid {
             std::process::exit(1);
         }
@@ -4606,7 +4487,7 @@ fn config_set_at(config_path: &Path, key: &str, value: &str, ctx: &OutputContext
         .with_context(|| format!("Failed to write {:?}", config_path))?;
 
     if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok_cmd("config set", ConfigSetResponse {
+        let _ = ctx.json(&ApiResponse::ok("config set", ConfigSetResponse {
             key: key.to_string(),
             value: value.to_string(),
             config_path: config_path.display().to_string(),
@@ -4671,7 +4552,7 @@ pub fn config_export(format: &str, ctx: &OutputContext) -> Result<()> {
         }
         "json" => {
             // JSON format (ignore ctx.is_json() since user explicitly requested JSON)
-            let _ = ctx.json(&JsonResponse::ok_cmd(
+            let _ = ctx.json(&ApiResponse::ok(
                 "config export",
                 serde_json::json!({
                     "general": {
@@ -4997,7 +4878,7 @@ pub async fn diagnose(command: &str, ctx: &OutputContext) -> Result<()> {
             required_runtime: required_runtime.clone(),
             worker_selection,
         };
-        let _ = ctx.json(&JsonResponse::ok("diagnose", response));
+        let _ = ctx.json(&ApiResponse::ok("diagnose", response));
         return Ok(());
     }
 
@@ -5225,7 +5106,7 @@ pub fn hook_install(ctx: &OutputContext) -> Result<()> {
     std::fs::write(&settings_path, new_content)?;
 
     if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok("hook install", HookActionResponse {
+        let _ = ctx.json(&ApiResponse::ok("hook install", HookActionResponse {
             action: "install".to_string(),
             success: true,
             settings_path: settings_path.display().to_string(),
@@ -5262,10 +5143,12 @@ pub fn hook_uninstall(ctx: &OutputContext) -> Result<()> {
 
     if !settings_path.exists() {
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::<()>::err_cmd(
+            let _ = ctx.json(&ApiResponse::<()>::err(
                 "hook uninstall",
-                error_codes::CONFIG_NOT_FOUND,
-                "Claude Code settings file not found",
+                ApiError::new(
+                    ErrorCode::ConfigNotFound,
+                    "Claude Code settings file not found",
+                ),
             ));
         } else {
             println!(
@@ -5295,7 +5178,7 @@ pub fn hook_uninstall(ctx: &OutputContext) -> Result<()> {
         std::fs::write(&settings_path, new_content)?;
 
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::ok("hook uninstall", HookActionResponse {
+            let _ = ctx.json(&ApiResponse::ok("hook uninstall", HookActionResponse {
                 action: "uninstall".to_string(),
                 success: true,
                 settings_path: settings_path.display().to_string(),
@@ -5309,7 +5192,7 @@ pub fn hook_uninstall(ctx: &OutputContext) -> Result<()> {
             );
         }
     } else if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok("hook uninstall", HookActionResponse {
+        let _ = ctx.json(&ApiResponse::ok("hook uninstall", HookActionResponse {
             action: "uninstall".to_string(),
             success: false,
             settings_path: settings_path.display().to_string(),
@@ -5798,7 +5681,7 @@ pub async fn speedscore(
                         all_history.push(h);
                     }
                 }
-                let _ = ctx.json(&JsonResponse::ok("speedscore history", all_history));
+                let _ = ctx.json(&ApiResponse::ok("speedscore history", all_history));
                 return Ok(());
             }
 
@@ -5864,7 +5747,7 @@ pub async fn speedscore(
         let history_resp = query_speedscore_history(worker_id, days, limit).await?;
 
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::ok("speedscore history", history_resp));
+            let _ = ctx.json(&ApiResponse::ok("speedscore history", history_resp));
             return Ok(());
         }
 
@@ -5933,7 +5816,7 @@ pub async fn speedscore(
         let scores = query_speedscore_list().await?;
 
         if ctx.is_json() {
-            let _ = ctx.json(&JsonResponse::ok("speedscore list", scores));
+            let _ = ctx.json(&ApiResponse::ok("speedscore list", scores));
             return Ok(());
         }
 
@@ -5995,7 +5878,7 @@ pub async fn speedscore(
     let score_resp = query_speedscore(worker_id).await?;
 
     if ctx.is_json() {
-        let _ = ctx.json(&JsonResponse::ok("speedscore", score_resp));
+        let _ = ctx.json(&ApiResponse::ok("speedscore", score_resp));
         return Ok(());
     }
 
@@ -6243,115 +6126,47 @@ mod tests {
     use serde_json::json;
 
     // -------------------------------------------------------------------------
-    // JsonError Tests
+    // ApiResponse Tests
     // -------------------------------------------------------------------------
 
     #[test]
-    fn json_error_new_creates_error_with_code_and_message() {
-        let error = JsonError::new("TEST_CODE", "Test message");
-        assert_eq!(error.code, "TEST_CODE");
-        assert_eq!(error.message, "Test message");
-        assert!(error.details.is_none());
-        assert!(error.suggestions.is_none());
-    }
-
-    #[test]
-    fn json_error_with_details_adds_details() {
-        let details = json!({"key": "value", "count": 42});
-        let error = JsonError::new("CODE", "msg").with_details(details.clone());
-        assert!(error.details.is_some());
-        assert_eq!(error.details.unwrap(), details);
-    }
-
-    #[test]
-    fn json_error_with_suggestions_adds_suggestions() {
-        let suggestions = vec!["Try this".to_string(), "Or that".to_string()];
-        let error = JsonError::new("CODE", "msg").with_suggestions(suggestions.clone());
-        assert!(error.suggestions.is_some());
-        assert_eq!(error.suggestions.unwrap(), suggestions);
-    }
-
-    #[test]
-    fn json_error_chained_builders_work() {
-        let error = JsonError::new("CODE", "msg")
-            .with_details(json!({"info": "test"}))
-            .with_suggestions(vec!["suggestion".to_string()]);
-        assert_eq!(error.code, "CODE");
-        assert!(error.details.is_some());
-        assert!(error.suggestions.is_some());
-    }
-
-    #[test]
-    fn json_error_serializes_correctly() {
-        let error = JsonError::new("TEST_ERROR", "Something went wrong");
-        let json = serde_json::to_value(&error).unwrap();
-        assert_eq!(json["code"], "TEST_ERROR");
-        assert_eq!(json["message"], "Something went wrong");
-        // details and suggestions should be omitted when None
-        assert!(json.get("details").is_none());
-        assert!(json.get("suggestions").is_none());
-    }
-
-    #[test]
-    fn json_error_with_details_serializes_details() {
-        let error = JsonError::new("CODE", "msg").with_details(json!({"count": 5}));
-        let json = serde_json::to_value(&error).unwrap();
-        assert_eq!(json["details"]["count"], 5);
-    }
-
-    // -------------------------------------------------------------------------
-    // JsonResponse Tests
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn json_response_ok_creates_success_response() {
-        let response: JsonResponse<String> = JsonResponse::ok("test cmd", "test data".to_string());
+    fn api_response_ok_creates_success_response() {
+        let response = ApiResponse::ok("test cmd", "test data".to_string());
         assert!(response.success);
-        assert_eq!(response.command, "test cmd");
-        assert_eq!(response.version, JSON_ENVELOPE_VERSION);
+        assert_eq!(response.command, Some("test cmd".to_string()));
+        assert_eq!(response.api_version, "1.0");
         assert!(response.data.is_some());
         assert_eq!(response.data.unwrap(), "test data");
         assert!(response.error.is_none());
     }
 
     #[test]
-    fn json_response_ok_cmd_is_alias_for_ok() {
-        let response1: JsonResponse<i32> = JsonResponse::ok("cmd", 42);
-        let response2: JsonResponse<i32> = JsonResponse::ok_cmd("cmd", 42);
-        assert_eq!(response1.command, response2.command);
-        assert_eq!(response1.success, response2.success);
-        assert_eq!(response1.data, response2.data);
-    }
-
-    #[test]
-    fn json_response_err_creates_error_response() {
-        let response: JsonResponse<()> = JsonResponse::err("failed cmd", "error message");
+    fn api_response_err_creates_error_response() {
+        let response: ApiResponse<()> =
+            ApiResponse::err("failed cmd", ApiError::internal("error message"));
         assert!(!response.success);
-        assert_eq!(response.command, "failed cmd");
+        assert_eq!(response.command, Some("failed cmd".to_string()));
         assert!(response.data.is_none());
         assert!(response.error.is_some());
         let error = response.error.unwrap();
-        assert_eq!(error.code, error_codes::INTERNAL_ERROR);
-        assert_eq!(error.message, "error message");
+        assert_eq!(error.code, "RCH-E504"); // InternalStateError
     }
 
     #[test]
-    fn json_response_err_cmd_creates_error_with_custom_code() {
-        let response: JsonResponse<()> = JsonResponse::err_cmd(
+    fn api_response_err_with_specific_error_code() {
+        let response: ApiResponse<()> = ApiResponse::err(
             "cmd",
-            error_codes::WORKER_UNREACHABLE,
-            "Worker not available",
+            ApiError::new(ErrorCode::SshConnectionFailed, "Worker not available"),
         );
         assert!(!response.success);
         assert!(response.error.is_some());
         let error = response.error.unwrap();
-        assert_eq!(error.code, error_codes::WORKER_UNREACHABLE);
-        assert_eq!(error.message, "Worker not available");
+        assert_eq!(error.code, "RCH-E100"); // SshConnectionFailed
     }
 
     #[test]
-    fn json_response_ok_serializes_without_error_field() {
-        let response: JsonResponse<String> = JsonResponse::ok("test", "data".to_string());
+    fn api_response_ok_serializes_without_error_field() {
+        let response = ApiResponse::ok("test", "data".to_string());
         let json = serde_json::to_value(&response).unwrap();
         assert!(json.get("error").is_none());
         assert_eq!(json["data"], "data");
@@ -6359,8 +6174,9 @@ mod tests {
     }
 
     #[test]
-    fn json_response_err_serializes_without_data_field() {
-        let response: JsonResponse<String> = JsonResponse::err("test", "error msg");
+    fn api_response_err_serializes_without_data_field() {
+        let response: ApiResponse<String> =
+            ApiResponse::err("test", ApiError::internal("error msg"));
         let json = serde_json::to_value(&response).unwrap();
         assert!(json.get("data").is_none());
         assert!(json.get("error").is_some());
@@ -6368,7 +6184,7 @@ mod tests {
     }
 
     #[test]
-    fn json_response_with_complex_data_serializes() {
+    fn api_response_with_complex_data_serializes() {
         #[derive(Serialize)]
         struct ComplexData {
             name: String,
@@ -6380,7 +6196,7 @@ mod tests {
             count: 3,
             items: vec!["a".to_string(), "b".to_string()],
         };
-        let response = JsonResponse::ok("complex", data);
+        let response = ApiResponse::ok("complex", data);
         let json = serde_json::to_value(&response).unwrap();
         assert_eq!(json["data"]["name"], "test");
         assert_eq!(json["data"]["count"], 3);
@@ -6548,8 +6364,8 @@ mod tests {
     }
 
     #[test]
-    fn status_response_serializes() {
-        let response = StatusResponse {
+    fn system_overview_serializes() {
+        let response = SystemOverview {
             daemon_running: true,
             hook_installed: true,
             workers_count: 3,
@@ -6784,24 +6600,21 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // Error Codes Tests
+    // ErrorCode Tests
     // -------------------------------------------------------------------------
 
     #[test]
-    fn error_codes_are_strings() {
-        assert_eq!(error_codes::WORKER_UNREACHABLE, "WORKER_UNREACHABLE");
-        assert_eq!(error_codes::WORKER_NOT_FOUND, "WORKER_NOT_FOUND");
-        assert_eq!(error_codes::CONFIG_INVALID, "CONFIG_INVALID");
-        assert_eq!(error_codes::CONFIG_NOT_FOUND, "CONFIG_NOT_FOUND");
-        assert_eq!(error_codes::DAEMON_NOT_RUNNING, "DAEMON_NOT_RUNNING");
+    fn error_code_codes_have_rch_prefix() {
+        // Verify error codes follow RCH-Exxx format
+        assert_eq!(ErrorCode::ConfigNotFound.code_string(), "RCH-E001");
+        assert_eq!(ErrorCode::ConfigValidationError.code_string(), "RCH-E004");
+        assert_eq!(ErrorCode::ConfigInvalidWorker.code_string(), "RCH-E008");
+        assert_eq!(ErrorCode::SshConnectionFailed.code_string(), "RCH-E100");
         assert_eq!(
-            error_codes::DAEMON_CONNECTION_FAILED,
-            "DAEMON_CONNECTION_FAILED"
+            ErrorCode::InternalDaemonNotRunning.code_string(),
+            "RCH-E502"
         );
-        assert_eq!(error_codes::SSH_CONNECTION_FAILED, "SSH_CONNECTION_FAILED");
-        assert_eq!(error_codes::BENCHMARK_FAILED, "BENCHMARK_FAILED");
-        assert_eq!(error_codes::HOOK_INSTALL_FAILED, "HOOK_INSTALL_FAILED");
-        assert_eq!(error_codes::INTERNAL_ERROR, "INTERNAL_ERROR");
+        assert_eq!(ErrorCode::InternalStateError.code_string(), "RCH-E504");
     }
 
     // -------------------------------------------------------------------------
