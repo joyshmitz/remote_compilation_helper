@@ -7,6 +7,7 @@
 
 mod compile;
 mod pipeline;
+mod spinner;
 mod transfer;
 
 use crate::ui::OutputContext;
@@ -17,6 +18,7 @@ use std::time::Instant;
 
 pub use compile::{BuildPhase, BuildProfile, CompilationProgress, CrateInfo};
 pub use pipeline::{PipelineProgress, PipelineStage, StageStatus};
+pub use spinner::{AnimatedSpinner, SpinnerResult, SpinnerStyle};
 pub use transfer::{TransferDirection, TransferProgress};
 
 const DEFAULT_TERMINAL_WIDTH: u16 = 80;

@@ -55,6 +55,7 @@ pub mod config;
 pub mod console;
 pub mod context;
 pub mod markdown;
+pub mod probe;
 pub mod progress;
 pub mod status;
 pub mod styled;
@@ -91,6 +92,9 @@ pub use status::{StatusTable, render_daemon_offline};
 
 // Rich worker table display
 pub use workers::WorkerTable;
+
+// Rich probe result display
+pub use probe::{DetailedProbeResult, LatencyCategory, ProbeResultTable, ProbeSummary};
 
 // Rich benchmark table display
 pub use benchmark::BenchmarkTable;
