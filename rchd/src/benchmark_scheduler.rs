@@ -791,22 +791,28 @@ mod tests {
         // Manually add two running benchmarks
         {
             let mut running = scheduler.running.write().await;
-            running.insert(WorkerId::new("w1"), RunningBenchmark {
-                request: ScheduledBenchmarkRequest::new(
-                    WorkerId::new("w1"),
-                    BenchmarkPriority::Normal,
-                    BenchmarkReason::Scheduled,
-                ),
-                started_at: Utc::now(),
-            });
-            running.insert(WorkerId::new("w2"), RunningBenchmark {
-                request: ScheduledBenchmarkRequest::new(
-                    WorkerId::new("w2"),
-                    BenchmarkPriority::Normal,
-                    BenchmarkReason::Scheduled,
-                ),
-                started_at: Utc::now(),
-            });
+            running.insert(
+                WorkerId::new("w1"),
+                RunningBenchmark {
+                    request: ScheduledBenchmarkRequest::new(
+                        WorkerId::new("w1"),
+                        BenchmarkPriority::Normal,
+                        BenchmarkReason::Scheduled,
+                    ),
+                    started_at: Utc::now(),
+                },
+            );
+            running.insert(
+                WorkerId::new("w2"),
+                RunningBenchmark {
+                    request: ScheduledBenchmarkRequest::new(
+                        WorkerId::new("w2"),
+                        BenchmarkPriority::Normal,
+                        BenchmarkReason::Scheduled,
+                    ),
+                    started_at: Utc::now(),
+                },
+            );
         }
 
         // Enqueue another
@@ -908,14 +914,17 @@ mod tests {
         // Simulate a running benchmark
         {
             let mut running = scheduler.running.write().await;
-            running.insert(worker_id.clone(), RunningBenchmark {
-                request: ScheduledBenchmarkRequest::new(
-                    worker_id.clone(),
-                    BenchmarkPriority::Normal,
-                    BenchmarkReason::Scheduled,
-                ),
-                started_at: Utc::now(),
-            });
+            running.insert(
+                worker_id.clone(),
+                RunningBenchmark {
+                    request: ScheduledBenchmarkRequest::new(
+                        worker_id.clone(),
+                        BenchmarkPriority::Normal,
+                        BenchmarkReason::Scheduled,
+                    ),
+                    started_at: Utc::now(),
+                },
+            );
         }
 
         // Reserve a slot on the worker
@@ -954,14 +963,17 @@ mod tests {
         // Simulate a running benchmark
         {
             let mut running = scheduler.running.write().await;
-            running.insert(worker_id.clone(), RunningBenchmark {
-                request: ScheduledBenchmarkRequest::new(
-                    worker_id.clone(),
-                    BenchmarkPriority::High, // Started as high priority
-                    BenchmarkReason::NewWorker,
-                ),
-                started_at: Utc::now(),
-            });
+            running.insert(
+                worker_id.clone(),
+                RunningBenchmark {
+                    request: ScheduledBenchmarkRequest::new(
+                        worker_id.clone(),
+                        BenchmarkPriority::High, // Started as high priority
+                        BenchmarkReason::NewWorker,
+                    ),
+                    started_at: Utc::now(),
+                },
+            );
         }
 
         // Reserve a slot
@@ -996,14 +1008,17 @@ mod tests {
         // Simulate a running benchmark
         {
             let mut running = scheduler.running.write().await;
-            running.insert(worker_id.clone(), RunningBenchmark {
-                request: ScheduledBenchmarkRequest::new(
-                    worker_id.clone(),
-                    BenchmarkPriority::Normal,
-                    BenchmarkReason::Scheduled,
-                ),
-                started_at: Utc::now(),
-            });
+            running.insert(
+                worker_id.clone(),
+                RunningBenchmark {
+                    request: ScheduledBenchmarkRequest::new(
+                        worker_id.clone(),
+                        BenchmarkPriority::Normal,
+                        BenchmarkReason::Scheduled,
+                    ),
+                    started_at: Utc::now(),
+                },
+            );
         }
 
         // Reserve a slot

@@ -712,10 +712,13 @@ mod tests {
         let config = OutputConfig::default();
         let (ctx, stdout_buf, _) = make_test_context(config);
 
-        ctx.table(&["Name", "Status"], &[
-            vec!["worker-1".to_string(), "healthy".to_string()],
-            vec!["worker-2".to_string(), "degraded".to_string()],
-        ]);
+        ctx.table(
+            &["Name", "Status"],
+            &[
+                vec!["worker-1".to_string(), "healthy".to_string()],
+                vec!["worker-2".to_string(), "degraded".to_string()],
+            ],
+        );
 
         let output = stdout_buf.to_string_lossy();
         assert!(output.contains("Name"));
