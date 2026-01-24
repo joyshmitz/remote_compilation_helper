@@ -32,6 +32,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Clone rich_rust dependency
+        run: |
+          sudo mkdir -p /dp
+          sudo chown $USER /dp
+          git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-01
@@ -46,6 +51,11 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      - name: Clone rich_rust dependency
+        run: |
+          sudo mkdir -p /dp
+          sudo chown $USER /dp
+          git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-01
@@ -59,6 +69,11 @@ jobs:
     needs: check
     steps:
       - uses: actions/checkout@v4
+      - name: Clone rich_rust dependency
+        run: |
+          sudo mkdir -p /dp
+          sudo chown $USER /dp
+          git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-01
@@ -74,6 +89,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Clone rich_rust dependency
+        run: |
+          sudo mkdir -p /dp
+          sudo chown $USER /dp
+          git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -85,6 +105,11 @@ jobs:
     needs: check
     steps:
       - uses: actions/checkout@v4
+      - name: Clone rich_rust dependency
+        run: |
+          sudo mkdir -p /dp
+          sudo chown $USER /dp
+          git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-01
@@ -111,6 +136,12 @@ jobs:
     needs: check
     steps:
       - uses: actions/checkout@v4
+      - name: Clone rich_rust dependency (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          sudo mkdir -p /dp
+          sudo chown $USER /dp
+          git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-01
@@ -118,10 +149,16 @@ jobs:
         with:
           shared-key: test-${{ matrix.os }}
           cache-on-failure: true
-      - name: Run tests
+      - name: Run tests (Unix)
+        if: runner.os != 'Windows'
         env:
           RCH_MOCK_SSH: '1'
         run: cargo test --all-features --workspace
+      - name: Run tests (Windows - skip rich-ui)
+        if: runner.os == 'Windows'
+        env:
+          RCH_MOCK_SSH: '1'
+        run: cargo test --no-default-features --workspace
       - name: Upload test logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -139,6 +176,11 @@ jobs:
     needs: [check, clippy]
     steps:
       - uses: actions/checkout@v4
+      - name: Clone rich_rust dependency
+        run: |
+          sudo mkdir -p /dp
+          sudo chown $USER /dp
+          git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-01
@@ -169,6 +211,11 @@ jobs:
     needs: check
     steps:
       - uses: actions/checkout@v4
+      - name: Clone rich_rust dependency
+        run: |
+          sudo mkdir -p /dp
+          sudo chown $USER /dp
+          git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-01
@@ -232,6 +279,12 @@ jobs:
     needs: [test, clippy]
     steps:
       - uses: actions/checkout@v4
+      - name: Clone rich_rust dependency (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          sudo mkdir -p /dp
+          sudo chown $USER /dp
+          git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-01
@@ -243,10 +296,14 @@ jobs:
       - name: Install packages (Linux)
         if: matrix.packages
         run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
-      - name: Build release
+      - name: Build release (Unix)
+        if: runner.os != 'Windows'
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
         run: cargo build --release --target ${{ matrix.target }}
+      - name: Build release (Windows - skip rich-ui)
+        if: runner.os == 'Windows'
+        run: cargo build --release --no-default-features --target ${{ matrix.target }}
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -267,6 +324,11 @@ jobs:
     needs: check
     steps:
       - uses: actions/checkout@v4
+      - name: Clone rich_rust dependency
+        run: |
+          sudo mkdir -p /dp
+          sudo chown $USER /dp
+          git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-01
