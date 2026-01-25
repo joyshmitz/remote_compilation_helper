@@ -772,6 +772,7 @@ install_skill() {
     info "Installing RCH skill for Claude Code..."
 
     mkdir -p "$skill_dest"
+    mkdir -p "$skill_dest/references"
 
     # Try to download skill from release assets
     local skill_url="https://github.com/${GITHUB_REPO}/releases/latest/download/skill.tar.gz"
@@ -781,6 +782,7 @@ install_skill() {
         if tar -xzf "$skill_temp" -C "$HOME/.claude/skills" 2>/dev/null; then
             success "Installed RCH skill to $skill_dest"
             rm -f "$skill_temp"
+            show_skill_info
             return 0
         fi
         rm -f "$skill_temp"
@@ -792,37 +794,49 @@ install_skill() {
 ---
 name: rch
 description: >-
-  Remote compilation helper for AI agents. Use when setting up rch, configuring
-  workers, troubleshooting "no workers", running rch doctor, or "compilation slow".
+  Remote compilation helper (rch). Use when: rch doctor, rch setup, configuring
+  workers.toml, "no workers available", "compilation slow", offload cargo/gcc/bun.
 ---
 
-# RCH Quick Reference
+# RCH — Remote Compilation Helper
 
-Offloads `cargo build`, `bun test`, `gcc` to remote workers. Transparent—same commands, faster builds.
+Transparently offloads `cargo build`, `bun test`, `gcc` to remote workers. Same commands, faster builds.
 
-## Workflow
+## Diagnosis Loop
 
+```bash
+rch doctor              # What's broken?
+rch doctor --fix        # Auto-fix common issues
+rch doctor --verbose    # All checks passed? Ready to use
 ```
-1. rch doctor           # What's broken?
-2. rch doctor --fix     # Auto-fix common issues
-3. rch doctor           # All green? Done.
+
+## Quick Fixes (Copy-Paste)
+
+| Symptom | Command |
+|---------|---------|
+| SSH auth fails | `eval $(ssh-agent) && ssh-add ~/.ssh/your_key` |
+| Daemon not running | `rm -f /tmp/rch.sock && rchd &` |
+| Hook not installed | `rch hook install --force` |
+| No workers available | `vim ~/.config/rch/workers.toml` (add workers) |
+
+## Worker Config (`~/.config/rch/workers.toml`)
+
+```toml
+[[workers]]
+id = "builder"
+host = "192.168.1.100"
+user = "ubuntu"
+identity_file = "~/.ssh/id_ed25519"
+total_slots = 8
+priority = 100
 ```
-
-## Quick Fixes
-
-| Symptom | Fix |
-|---------|-----|
-| SSH fails | `eval $(ssh-agent) && ssh-add ~/.ssh/your_key` |
-| Daemon down | `rm -f /tmp/rch.sock && rchd &` |
-| Hook missing | `rch hook install --force` |
-| No workers | Check config path, SSH connectivity |
 
 ## Commands
 
 - `rch doctor` - Diagnose issues
 - `rch status` - Show daemon status
 - `rch workers probe --all` - Test all workers
-- `rch config show` - Show configuration
+- `rch workers discover --from-ssh-config` - Auto-discover workers
 
 ## Docs
 
@@ -830,6 +844,39 @@ Full documentation: https://github.com/Dicklesworthstone/remote_compilation_help
 SKILL_EOF
 
     success "Created minimal RCH skill at $skill_dest"
+    show_skill_info
+}
+
+# Show info about the installed skill
+show_skill_info() {
+    echo ""
+    if $USE_GUM; then
+        gum style \
+            --border rounded \
+            --border-foreground 141 \
+            --padding "0 2" \
+            --align left \
+            "🤖 Claude Code Skill Installed" \
+            "" \
+            "The /rch skill is now available in Claude Code." \
+            "It provides troubleshooting guidance and quick fixes." \
+            "" \
+            "How to use:" \
+            "  • Ask Claude about RCH issues" \
+            "  • Say 'rch doctor failing' or 'no workers'" \
+            "  • The skill auto-activates on RCH topics"
+    else
+        draw_box "1;36" \
+            "Claude Code Skill Installed" \
+            "" \
+            "The /rch skill is now available in Claude Code." \
+            "It provides troubleshooting guidance and quick fixes." \
+            "" \
+            "How to use:" \
+            "  - Ask Claude about RCH issues" \
+            "  - Say 'rch doctor failing' or 'no workers'" \
+            "  - The skill auto-activates on RCH topics"
+    fi
 }
 
 # ============================================================================
@@ -1665,6 +1712,35 @@ print_summary() {
             echo "Commands like 'cargo fmt', 'cargo install', 'ls' run locally."
         fi
         echo ""
+
+        # Claude Code skill info
+        if [[ -f "$HOME/.claude/skills/rch/SKILL.md" ]]; then
+            if $USE_GUM; then
+                gum style \
+                    --border rounded \
+                    --border-foreground 141 \
+                    --padding "0 2" \
+                    "🤖 Claude Code Integration" \
+                    "" \
+                    "Skill installed: ~/.claude/skills/rch/" \
+                    "" \
+                    "When you ask Claude about RCH issues, it will" \
+                    "automatically use the skill for troubleshooting." \
+                    "" \
+                    "Try: 'rch doctor is failing' or 'no workers available'"
+            else
+                draw_box "1;36" \
+                    "Claude Code Integration" \
+                    "" \
+                    "Skill installed: ~/.claude/skills/rch/" \
+                    "" \
+                    "When you ask Claude about RCH issues, it will" \
+                    "automatically use the skill for troubleshooting." \
+                    "" \
+                    "Try: 'rch doctor is failing' or 'no workers available'"
+            fi
+            echo ""
+        fi
     fi
 }
 
@@ -1867,5 +1943,9 @@ main() {
 
     print_summary
 }
+
+if [[ "${RCH_INSTALLER_LIB:-}" == "1" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
 
 main "$@"
