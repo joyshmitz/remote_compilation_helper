@@ -1,89 +1,106 @@
 ---
 name: rch
 description: >-
-  Remote compilation helper for AI agents. Use when setting up rch, configuring
-  workers, troubleshooting "no workers", running rch doctor, or "compilation slow".
+  Remote compilation helper (rch). Use when: rch doctor, rch setup, configuring
+  workers.toml, "no workers available", "compilation slow", offload cargo/gcc/bun.
 ---
 
-# RCH Setup
+# RCH — Remote Compilation Helper
 
-Offloads `cargo build`, `bun test`, `gcc` to remote workers. Transparent—same commands, faster builds.
+Transparently offloads `cargo build`, `bun test`, `gcc` to remote workers. Same commands, faster builds.
 
-## Workflow
+## Diagnosis Loop
 
+```bash
+rch doctor              # What's broken?
+rch doctor --fix        # Auto-fix common issues
+rch doctor --verbose    # All checks passed? Ready to use
 ```
-1. rch doctor           # What's broken?
-2. rch doctor --fix     # Auto-fix common issues
-3. rch doctor           # All green? Done.
-```
 
-If `--fix` can't solve it, continue below.
+**If `--fix` can't solve it → see Quick Fixes or references.**
 
-## Setup Checklist
+---
 
-- [ ] **Prerequisites**: `which rustup rsync zstd` (install missing)
-- [ ] **Install**: `cargo install --path rch` (or `--path .` from repo root)
-- [ ] **Configure**: Create `~/.config/rch/workers.toml` (see below)
-- [ ] **Hook**: `rch hook install`
-- [ ] **Daemon**: `rchd &` or `systemctl --user start rchd`
-- [ ] **Validate**: `rch doctor` → all checks pass
+## Quick Fixes (Copy-Paste)
 
-## Worker Config
+| Symptom | Command |
+|---------|---------|
+| SSH auth fails | `eval $(ssh-agent) && ssh-add ~/.ssh/your_key` |
+| Daemon not running | `rm -f /tmp/rch.sock && rchd &` |
+| Hook not installed | `rch hook install --force` |
+| No workers available | `vim ~/.config/rch/workers.toml` (add workers) |
+| Socket permission | `rm /tmp/rch.sock && rchd` |
+| Stale socket | `lsof /tmp/rch.sock` → kill stale process |
+
+---
+
+## Worker Config (`~/.config/rch/workers.toml`)
 
 ```toml
-# ~/.config/rch/workers.toml
 [[workers]]
-id = "worker1"
-host = "192.168.1.100"
+id = "builder"
+host = "192.168.1.100"        # IP or hostname
 user = "ubuntu"
 identity_file = "~/.ssh/id_ed25519"
-total_slots = 8    # ≈ CPU cores - 2
-priority = 100     # Higher = preferred
-tags = ["rust"]    # Optional capability tags
+total_slots = 8               # ≈ CPU cores - 2
+priority = 100                # Higher = preferred
+tags = ["rust", "bun"]        # Optional capabilities
 ```
 
-**Discover from SSH config**:
+### Auto-Discover from SSH Config
+
 ```bash
 rch workers discover --from-ssh-config --dry-run  # Preview
 rch workers discover --from-ssh-config            # Add to config
 ```
 
-**Verify workers**:
-```bash
-rch workers probe worker1 --verbose  # Test single
-rch workers probe --all              # Test all
-rch workers list --capabilities      # Show detected toolchains
-```
-
-## Quick Fixes
-
-| Symptom | Fix |
-|---------|-----|
-| SSH fails | `eval $(ssh-agent) && ssh-add ~/.ssh/your_key` |
-| Daemon down | `rm -f /tmp/rch.sock && rchd &` |
-| Hook missing | `rch hook install --force` |
-| No workers | Check config path, SSH connectivity |
-
-**Test hook directly**:
-```bash
-echo '{"tool":"Bash","input":{"command":"cargo check"}}' | rch hook
-# Expect: {"allow":true,"output":"..."}
-```
-
-## Validation
+### Verify Workers
 
 ```bash
-rch doctor --verbose   # Full diagnostics
-rch doctor --json      # Machine-readable
-RCH_DRY_RUN=1 cargo check  # Test without remote execution
+rch workers probe --all         # Test all workers
+rch workers probe worker1 -v    # Test single, verbose
+rch workers list                # Show status
 ```
 
-**All `rch doctor` checks must pass before use.**
+---
+
+## Fresh Install Checklist
+
+- [ ] Prerequisites: `which rsync zstd ssh` (install missing)
+- [ ] Config: Create `~/.config/rch/workers.toml` (see above)
+- [ ] Daemon: `rchd &` or `systemctl --user start rchd`
+- [ ] Hook: `rch hook install`
+- [ ] Validate: `rch doctor` → all green
+
+---
+
+## Supported Commands (Auto-Offloaded)
+
+| Category | Commands |
+|----------|----------|
+| Rust | `cargo build`, `cargo test`, `cargo check`, `rustc` |
+| Bun | `bun test`, `bun typecheck` |
+| C/C++ | `gcc`, `g++`, `clang`, `make`, `cmake`, `ninja` |
+
+**Never offloaded**: `bun install`, `cargo fmt`, piped/background commands.
+
+---
+
+## Debug
+
+```bash
+RCH_LOG=debug cargo build    # Show hook decisions
+RCH_DRY_RUN=1 cargo check    # Test without remote execution
+rch doctor --json > diag.json  # Export diagnostics
+```
+
+---
 
 ## References
 
-| Topic | Reference |
-|-------|-----------|
-| Worker schema, selection algorithm, tags | [WORKERS.md](references/WORKERS.md) |
-| All error messages & detailed fixes | [TROUBLESHOOTING.md](references/TROUBLESHOOTING.md) |
-| Hook protocol, 5-tier classification | [HOOKS.md](references/HOOKS.md) |
+| Topic | File |
+|-------|------|
+| Worker schema, selection algorithm, SSH discovery | [WORKERS.md](references/WORKERS.md) |
+| Error messages, symptom→fix table | [TROUBLESHOOTING.md](references/TROUBLESHOOTING.md) |
+| Hook protocol, 5-tier classification, security | [HOOKS.md](references/HOOKS.md) |
+| Command reference | [COMMANDS.md](references/COMMANDS.md) |
