@@ -3,8 +3,16 @@
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::fmt;
+use std::path::PathBuf;
 use std::str::FromStr;
+use std::time::Duration;
 use thiserror::Error;
+
+/// Cache duration for version check results (24 hours).
+pub const CACHE_DURATION: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Maximum number of backup versions to keep.
+pub const MAX_BACKUPS: usize = 3;
 
 /// Error types for update operations.
 #[derive(Error, Debug)]
@@ -226,6 +234,52 @@ pub fn current_target() -> String {
     };
 
     format!("{}-{}", arch_str, os_str)
+}
+
+/// Result of checking for updates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateCheck {
+    pub current_version: Version,
+    pub latest_version: Version,
+    pub update_available: bool,
+    pub release_url: String,
+    pub release_notes: Option<String>,
+    pub changelog_diff: Option<String>,
+    pub assets: Vec<ReleaseAsset>,
+}
+
+/// Cached version check result with timestamp.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedCheck {
+    /// The cached update check result.
+    pub result: UpdateCheck,
+    /// Unix timestamp (seconds) when the check was cached.
+    pub cached_at_secs: u64,
+}
+
+impl CachedCheck {
+    /// Check if the cache is still valid (less than CACHE_DURATION old).
+    pub fn is_valid(&self) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        now.saturating_sub(self.cached_at_secs) < CACHE_DURATION.as_secs()
+    }
+}
+
+/// Metadata for a backup entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupEntry {
+    /// Version string of the backup.
+    pub version: String,
+    /// Unix timestamp (seconds) when the backup was created.
+    pub created_at: u64,
+    /// Original installation path that was backed up.
+    pub original_path: PathBuf,
+    /// The backup directory path.
+    #[serde(default)]
+    pub backup_path: PathBuf,
 }
 
 #[cfg(test)]
