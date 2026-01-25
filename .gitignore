@@ -16,3 +16,9 @@ rustc-ice-*.txt
 *.snap.new
 sweep_*.png
 test_screenshot.png
+
+# macOS resource fork files
+._*
+
+# Diagram images (working artifacts)
+*.jpeg
