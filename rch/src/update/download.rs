@@ -1,7 +1,6 @@
 //! Download release artifacts with verification.
 
-use super::check::UpdateCheck;
-use super::types::{UpdateError, current_target};
+use super::types::{UpdateCheck, UpdateError, current_target};
 use super::verify::verify_checksum;
 use crate::ui::OutputContext;
 use std::path::PathBuf;

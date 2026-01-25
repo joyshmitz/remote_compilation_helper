@@ -1,9 +1,6 @@
 //! Version checking against GitHub releases.
 
-use super::types::{
-    CachedCheck, Channel, ReleaseAsset, ReleaseInfo, UpdateCheck, UpdateError, Version,
-    CACHE_DURATION,
-};
+use super::types::{CachedCheck, Channel, ReleaseInfo, UpdateCheck, UpdateError, Version};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;

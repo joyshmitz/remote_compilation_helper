@@ -14,10 +14,10 @@ mod lock;
 mod types;
 mod verify;
 
-pub use check::{UpdateCheck, check_for_updates};
+pub use check::{check_for_updates, read_cached_check, spawn_update_check_if_needed};
 pub use download::download_release;
-pub use install::{install_update, rollback};
-pub use types::Channel;
+pub use install::{create_backup, install_update, list_backups, prune_old_backups, rollback};
+pub use types::{BackupEntry, Channel, UpdateCheck};
 
 use crate::ui::OutputContext;
 use anyhow::Result;
@@ -39,7 +39,7 @@ pub async fn run_update(
     show_changelog: bool,
 ) -> Result<()> {
     if do_rollback {
-        return rollback(ctx, dry_run)
+        return rollback(ctx, dry_run, None)
             .await
             .map_err(|e| anyhow::anyhow!("{}", e));
     }

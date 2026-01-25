@@ -936,6 +936,9 @@ async fn main() -> Result<()> {
     }
     let _logging_guards = init_logging(&log_config)?;
 
+    // Spawn background update check to warm cache (non-blocking)
+    update::spawn_update_check_if_needed();
+
     // Create output context from CLI flags
     let format = resolve_output_format(cli.format.as_deref(), cli.json);
     let machine = machine_output_requested(cli.format.as_deref(), cli.json);

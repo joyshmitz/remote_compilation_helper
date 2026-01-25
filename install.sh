@@ -163,23 +163,76 @@ confirm() {
     fi
 }
 
+# Draw a Unicode box with auto-calculated width (DCG-style)
+# Usage: draw_box "color_code" "line1" "line2" ...
+draw_box() {
+    local color="$1"
+    shift
+    local lines=("$@")
+    local max_len=0
+
+    # Calculate maximum line length
+    for line in "${lines[@]}"; do
+        local len=${#line}
+        [[ $len -gt $max_len ]] && max_len=$len
+    done
+
+    # Add padding
+    local width=$((max_len + 4))
+    local inner_width=$((width - 2))
+
+    # Box characters
+    local tl="╭" tr="╮" bl="╰" br="╯" h="─" v="│"
+
+    # Top border
+    local top_border="${tl}"
+    for ((i=0; i<inner_width; i++)); do top_border+="${h}"; done
+    top_border+="${tr}"
+
+    # Bottom border
+    local bottom_border="${bl}"
+    for ((i=0; i<inner_width; i++)); do bottom_border+="${h}"; done
+    bottom_border+="${br}"
+
+    # Print box
+    echo ""
+    if $USE_COLOR; then
+        echo -e "\033[${color}m${top_border}\033[0m"
+        for line in "${lines[@]}"; do
+            local padding=$((inner_width - ${#line} - 2))
+            local pad_str=""
+            for ((i=0; i<padding; i++)); do pad_str+=" "; done
+            echo -e "\033[${color}m${v}\033[0m ${line}${pad_str} \033[${color}m${v}\033[0m"
+        done
+        echo -e "\033[${color}m${bottom_border}\033[0m"
+    else
+        echo "${top_border}"
+        for line in "${lines[@]}"; do
+            local padding=$((inner_width - ${#line} - 2))
+            local pad_str=""
+            for ((i=0; i<padding; i++)); do pad_str+=" "; done
+            echo "${v} ${line}${pad_str} ${v}"
+        done
+        echo "${bottom_border}"
+    fi
+    echo ""
+}
+
 # Header display
 show_header() {
     if $USE_GUM; then
         gum style \
-            --border rounded \
+            --border double \
             --border-foreground 212 \
-            --padding "0 2" \
-            --margin "1 0" \
+            --padding "1 3" \
             "RCH Installer v$VERSION" \
-            "Remote Compilation Helper"
+            "Remote Compilation Helper" \
+            "Transparent compilation offloading for AI agents"
     else
-        echo ""
-        echo -e "${BOLD}╭─────────────────────────────────────╮${NC}"
-        echo -e "${BOLD}│  RCH Installer v$VERSION              │${NC}"
-        echo -e "${BOLD}│  Remote Compilation Helper          │${NC}"
-        echo -e "${BOLD}╰─────────────────────────────────────╯${NC}"
-        echo ""
+        draw_box "1;35" \
+            "RCH Installer v$VERSION" \
+            "Remote Compilation Helper" \
+            "Transparent compilation offloading for AI agents"
     fi
 }
 
@@ -511,6 +564,146 @@ verify_checksum() {
     fi
 
     success "Checksum verified"
+}
+
+# ============================================================================
+# Upgrade Detection
+# ============================================================================
+
+check_existing_install() {
+    if [[ -x "$INSTALL_DIR/rch" ]]; then
+        local current
+        current=$("$INSTALL_DIR/rch" --version 2>/dev/null | head -1 | sed 's/rch //' || echo "")
+        if [[ -n "$current" ]]; then
+            EXISTING_VERSION="$current"
+            if $USE_GUM; then
+                gum style \
+                    --border rounded \
+                    --border-foreground 208 \
+                    --padding "0 2" \
+                    "Upgrading RCH" \
+                    "Current: v$current" \
+                    "Target:  v$VERSION"
+            else
+                draw_box "1;33" \
+                    "Upgrading RCH" \
+                    "Current: v$current" \
+                    "Target:  v$VERSION"
+            fi
+            return 0
+        fi
+    fi
+    EXISTING_VERSION=""
+    return 1
+}
+
+# ============================================================================
+# Sigstore Verification
+# ============================================================================
+
+verify_sigstore_bundle() {
+    local file="$1"
+    local artifact_url="$2"
+
+    # Check if cosign is available
+    if ! command_exists cosign; then
+        warn "cosign not found; skipping Sigstore signature verification"
+        info "Install cosign for enhanced security: https://docs.sigstore.dev/cosign/installation/"
+        return 0
+    fi
+
+    local bundle_url="${artifact_url}.sigstore.json"
+    local bundle_file="${file}.sigstore.json"
+
+    info "Downloading Sigstore bundle..."
+    if ! curl -fsSL $PROXY_ARGS "$bundle_url" -o "$bundle_file" 2>/dev/null; then
+        warn "Could not download Sigstore bundle; skipping signature verification"
+        return 0
+    fi
+
+    info "Verifying Sigstore signature..."
+    if cosign verify-blob --bundle "$bundle_file" \
+        --certificate-identity-regexp=".*" \
+        --certificate-oidc-issuer-regexp=".*" \
+        "$file" 2>/dev/null; then
+        success "Sigstore signature verified"
+        rm -f "$bundle_file"
+        return 0
+    else
+        error "Sigstore signature verification failed!"
+        rm -f "$bundle_file"
+        return 1
+    fi
+}
+
+# ============================================================================
+# Skill Installation
+# ============================================================================
+
+install_skill() {
+    local skill_dest="$HOME/.claude/skills/rch"
+
+    info "Installing RCH skill for Claude Code..."
+
+    mkdir -p "$skill_dest"
+
+    # Try to download skill from release assets
+    local skill_url="https://github.com/${GITHUB_REPO}/releases/latest/download/skill.tar.gz"
+    local skill_temp="${TEMP_DIR:-/tmp}/skill.tar.gz"
+
+    if curl -fsSL $PROXY_ARGS "$skill_url" -o "$skill_temp" 2>/dev/null; then
+        if tar -xzf "$skill_temp" -C "$HOME/.claude/skills" 2>/dev/null; then
+            success "Installed RCH skill to $skill_dest"
+            rm -f "$skill_temp"
+            return 0
+        fi
+        rm -f "$skill_temp"
+    fi
+
+    # Fallback: create minimal skill inline
+    info "Creating minimal skill (download failed)..."
+    cat > "$skill_dest/SKILL.md" << 'SKILL_EOF'
+---
+name: rch
+description: >-
+  Remote compilation helper for AI agents. Use when setting up rch, configuring
+  workers, troubleshooting "no workers", running rch doctor, or "compilation slow".
+---
+
+# RCH Quick Reference
+
+Offloads `cargo build`, `bun test`, `gcc` to remote workers. Transparent—same commands, faster builds.
+
+## Workflow
+
+```
+1. rch doctor           # What's broken?
+2. rch doctor --fix     # Auto-fix common issues
+3. rch doctor           # All green? Done.
+```
+
+## Quick Fixes
+
+| Symptom | Fix |
+|---------|-----|
+| SSH fails | `eval $(ssh-agent) && ssh-add ~/.ssh/your_key` |
+| Daemon down | `rm -f /tmp/rch.sock && rchd &` |
+| Hook missing | `rch hook install --force` |
+| No workers | Check config path, SSH connectivity |
+
+## Commands
+
+- `rch doctor` - Diagnose issues
+- `rch status` - Show daemon status
+- `rch workers probe --all` - Test all workers
+- `rch config show` - Show configuration
+
+## Docs
+
+Full documentation: https://github.com/Dicklesworthstone/remote_compilation_helper
+SKILL_EOF
+
+    success "Created minimal RCH skill at $skill_dest"
 }
 
 # ============================================================================
@@ -1367,6 +1560,9 @@ main() {
     # Acquire lock
     acquire_lock
 
+    # Check for existing installation (shows upgrade banner)
+    check_existing_install || true
+
     info "Installation mode: $MODE"
     echo ""
 
@@ -1389,6 +1585,7 @@ main() {
 
     if [[ "$MODE" == "local" ]]; then
         configure_claude_hook
+        install_skill
         setup_systemd_service
         setup_launchd_service
     fi

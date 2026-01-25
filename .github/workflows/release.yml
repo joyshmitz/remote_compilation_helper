@@ -281,6 +281,39 @@ jobs:
         with:
           subject-path: 'artifacts/*.tar.gz,artifacts/*.zip'
 
+      # Sigstore signing for additional verification
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.7.0
+
+      - name: Sign release artifacts with Sigstore
+        run: |
+          cd artifacts
+          for f in rch-*.tar.gz rch-*.zip; do
+            if [[ -f "$f" ]]; then
+              echo "Signing $f..."
+              cosign sign-blob --yes --bundle "${f}.sigstore.json" "$f"
+            fi
+          done
+          echo "=== Sigstore bundles created ==="
+          ls -la *.sigstore.json 2>/dev/null || echo "No bundles created"
+
+      # Bundle the Claude Code skill for installation
+      - name: Bundle skill
+        run: |
+          if [[ -d ".claude/skills/rch" ]]; then
+            tar -czf artifacts/skill.tar.gz -C .claude/skills rch
+            echo "Bundled skill from .claude/skills/rch"
+          elif [[ -d ".claude/skills/remote-compilation-helper-setup" ]]; then
+            # Create rch skill directory with symlinks/copies
+            mkdir -p .claude/skills/rch
+            cp -r .claude/skills/remote-compilation-helper-setup/* .claude/skills/rch/
+            tar -czf artifacts/skill.tar.gz -C .claude/skills rch
+            echo "Bundled skill from remote-compilation-helper-setup"
+          else
+            echo "No skill directory found, skipping skill bundle"
+          fi
+          ls -la artifacts/skill.tar.gz 2>/dev/null || true
+
       - name: Create shell installer (Unix)
         run: |
           cat > artifacts/install.sh << 'INSTALLER_EOF'
@@ -530,6 +563,25 @@ jobs:
           \`\`\`
 
           Or check against \`checksums.txt\` which contains all checksums.
+
+          ### Sigstore Verification
+
+          Artifacts are signed with Sigstore for enhanced supply chain security.
+          Verify with:
+          \`\`\`bash
+          cosign verify-blob --bundle rch-${{ needs.plan.outputs.tag }}-<target>.tar.gz.sigstore.json \\
+            --certificate-identity-regexp=".*" \\
+            --certificate-oidc-issuer-regexp=".*" \\
+            rch-${{ needs.plan.outputs.tag }}-<target>.tar.gz
+          \`\`\`
+
+          ### Claude Code Skill
+
+          The \`skill.tar.gz\` contains the RCH skill for Claude Code.
+          Install with:
+          \`\`\`bash
+          mkdir -p ~/.claude/skills && tar -xzf skill.tar.gz -C ~/.claude/skills/
+          \`\`\`
           EOF
 
       - name: Create GitHub Release
@@ -546,9 +598,11 @@ jobs:
             artifacts/*.tar.gz
             artifacts/*.zip
             artifacts/*.sha256
+            artifacts/*.sigstore.json
             artifacts/checksums.txt
             artifacts/install.sh
             artifacts/install.ps1
+            artifacts/skill.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
