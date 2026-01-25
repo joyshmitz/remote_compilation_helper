@@ -1136,6 +1136,12 @@ maybe_prompt_service() {
         return
     fi
 
+    if ! is_interactive; then
+        ENABLE_SERVICE="false"
+        info "Non-interactive install without opt-in; skipping background daemon setup (use --install-service or --easy-mode)."
+        return
+    fi
+
     if confirm "Run rchd automatically in the background? (falls back to local if unavailable)"; then
         ENABLE_SERVICE="true"
     else
