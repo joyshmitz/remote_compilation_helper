@@ -141,6 +141,7 @@ run_install_case() {
     local stub_bin="$7"
     local systemctl_log="$8"
     local systemctl_mode="$9"
+    local home_dir="${10:-}"
 
     local output
     local status=0
@@ -148,23 +149,41 @@ run_install_case() {
     if [[ "$use_script" == "true" ]]; then
         if command -v script >/dev/null 2>&1; then
             local cmd
-            cmd="RCH_INSTALL_DIR=\"$install_dir\" RCH_CONFIG_DIR=\"$config_dir\" RCH_SKIP_DOCTOR=1 RCH_NO_HOOK=1 NO_GUM=1 SYSTEMCTL_LOG=\"$systemctl_log\" SYSTEMCTL_MODE=\"$systemctl_mode\" PATH=\"$stub_bin:$PATH\" \"$PROJECT_ROOT/install.sh\" --offline \"$tarball\" $extra_args"
+            cmd="RCH_INSTALL_DIR=\"$install_dir\" RCH_CONFIG_DIR=\"$config_dir\" RCH_SKIP_DOCTOR=1 RCH_NO_HOOK=1 NO_GUM=1 SYSTEMCTL_LOG=\"$systemctl_log\" SYSTEMCTL_MODE=\"$systemctl_mode\" PATH=\"$stub_bin:$PATH\""
+            if [[ -n \"$home_dir\" ]]; then
+                cmd="$cmd HOME=\"$home_dir\""
+            fi
+            cmd="$cmd \"$PROJECT_ROOT/install.sh\" --offline \"$tarball\" $extra_args"
             output=$(printf '%s' "$input_data" | script -q /dev/null -c "$cmd" 2>&1) || status=$?
         else
             log "SKIP: script command not available for interactive prompt test"
             return 2
         fi
     else
-        output=$(printf '%s' "$input_data" | \
-            SYSTEMCTL_LOG="$systemctl_log" \
-            SYSTEMCTL_MODE="$systemctl_mode" \
-            PATH="$stub_bin:$PATH" \
-            RCH_INSTALL_DIR="$install_dir" \
-            RCH_CONFIG_DIR="$config_dir" \
-            RCH_SKIP_DOCTOR=1 \
-            RCH_NO_HOOK=1 \
-            NO_GUM=1 \
-            "$PROJECT_ROOT/install.sh" --offline "$tarball" $extra_args 2>&1) || status=$?
+        if [[ -n "$home_dir" ]]; then
+            output=$(printf '%s' "$input_data" | \
+                SYSTEMCTL_LOG="$systemctl_log" \
+                SYSTEMCTL_MODE="$systemctl_mode" \
+                PATH="$stub_bin:$PATH" \
+                HOME="$home_dir" \
+                RCH_INSTALL_DIR="$install_dir" \
+                RCH_CONFIG_DIR="$config_dir" \
+                RCH_SKIP_DOCTOR=1 \
+                RCH_NO_HOOK=1 \
+                NO_GUM=1 \
+                "$PROJECT_ROOT/install.sh" --offline "$tarball" $extra_args 2>&1) || status=$?
+        else
+            output=$(printf '%s' "$input_data" | \
+                SYSTEMCTL_LOG="$systemctl_log" \
+                SYSTEMCTL_MODE="$systemctl_mode" \
+                PATH="$stub_bin:$PATH" \
+                RCH_INSTALL_DIR="$install_dir" \
+                RCH_CONFIG_DIR="$config_dir" \
+                RCH_SKIP_DOCTOR=1 \
+                RCH_NO_HOOK=1 \
+                NO_GUM=1 \
+                "$PROJECT_ROOT/install.sh" --offline "$tarball" $extra_args 2>&1) || status=$?
+        fi
     fi
 
     echo "$output"
@@ -725,6 +744,84 @@ test_service_prompt_behavior() {
 }
 
 # ============================================================================
+# Test 14: Systemd unit generation
+# ============================================================================
+
+test_systemd_unit_generation() {
+    start_test "Systemd unit generation"
+
+    local tarball
+    tarball=$(create_prompt_tarball "systemd")
+
+    local stub_bin="$TEST_DIR/systemd_stub_bin"
+    create_systemd_stubs "$stub_bin"
+
+    local home_dir="$TEST_DIR/systemd_home"
+    local install_dir="$TEST_DIR/systemd_install/bin"
+    local config_dir="$home_dir/.config/rch"
+    local unit_file="$home_dir/.config/systemd/user/rchd.service"
+    local systemctl_log="$TEST_DIR/systemd_systemctl.log"
+
+    mkdir -p "$install_dir" "$config_dir"
+
+    local output
+    output=$(run_install_case "$install_dir" "$config_dir" "$tarball" "--install-service" "" "false" "$stub_bin" "$systemctl_log" "ok" "$home_dir") || true
+
+    if [[ -f "$unit_file" ]]; then
+        pass "Systemd unit file created"
+    else
+        fail "Systemd unit file missing"
+        return
+    fi
+
+    if grep -q "After=network.target network-online.target" "$unit_file"; then
+        pass "Unit has network-online After"
+    else
+        fail "Unit missing network-online After"
+    fi
+
+    if grep -q "Wants=network-online.target" "$unit_file"; then
+        pass "Unit has network-online Wants"
+    else
+        fail "Unit missing network-online Wants"
+    fi
+
+    if grep -q "ExecStart=$install_dir/rchd --foreground --workers-config $config_dir/workers.toml" "$unit_file"; then
+        pass "Unit ExecStart includes foreground + workers config"
+    else
+        fail "Unit ExecStart missing expected args"
+    fi
+
+    if [[ -f "$systemctl_log" ]] && grep -q "enable" "$systemctl_log"; then
+        pass "Systemctl enable invoked"
+    else
+        fail "Systemctl enable not invoked"
+    fi
+
+    # Negative path: --no-service should not create unit or call systemctl
+    local no_service_home="$TEST_DIR/systemd_no_service_home"
+    local no_service_install="$TEST_DIR/systemd_no_service_install/bin"
+    local no_service_config="$no_service_home/.config/rch"
+    local no_service_unit="$no_service_home/.config/systemd/user/rchd.service"
+    local no_service_log="$TEST_DIR/systemd_no_service.log"
+
+    mkdir -p "$no_service_install" "$no_service_config"
+    output=$(run_install_case "$no_service_install" "$no_service_config" "$tarball" "--no-service --yes" "" "false" "$stub_bin" "$no_service_log" "ok" "$no_service_home") || true
+
+    if [[ ! -f "$no_service_unit" ]]; then
+        pass "No-service flag skips unit creation"
+    else
+        fail "No-service should not create unit file"
+    fi
+
+    if [[ ! -f "$no_service_log" ]] || ! grep -q "enable" "$no_service_log"; then
+        pass "No-service avoids systemctl enable"
+    else
+        fail "No-service should not call systemctl enable"
+    fi
+}
+
+# ============================================================================
 # Run all tests
 # ============================================================================
 
@@ -745,6 +842,7 @@ test_proxy_config
 test_lock_file
 test_config_generation
 test_service_prompt_behavior
+test_systemd_unit_generation
 
 # ============================================================================
 # Summary
