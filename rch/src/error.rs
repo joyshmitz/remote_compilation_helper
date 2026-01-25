@@ -18,6 +18,7 @@ pub type Result<T> = std::result::Result<T, miette::Report>;
 // =============================================================================
 
 /// Errors related to configuration file parsing and validation.
+#[allow(unused_assignments)]
 #[derive(Error, Diagnostic, Debug)]
 pub enum ConfigError {
     /// Failed to read the configuration file from disk.

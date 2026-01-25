@@ -338,7 +338,7 @@ mod tests {
         ];
 
         for legacy in legacy_codes {
-            let parsed = LegacyErrorCode::from_str(legacy);
+            let parsed = LegacyErrorCode::parse(legacy);
             assert!(parsed.is_some(), "Failed to parse: {}", legacy);
             let modern = parsed.unwrap().to_error_code();
             // Verify it produces a valid RCH-E code
