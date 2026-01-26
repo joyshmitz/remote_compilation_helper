@@ -97,16 +97,21 @@ pub fn has_dotenv_files(project_dir: &Path) -> bool {
 #[allow(unsafe_code)]
 mod tests {
     use super::*;
+    use crate::config::env_test_lock;
     use std::fs;
     use tempfile::TempDir;
 
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        env_test_lock()
+    }
+
     fn set_env(key: &str, value: &str) {
-        // SAFETY: Tests run single-threaded, no concurrent access to env vars
+        // SAFETY: Tests are serialized with env_guard().
         unsafe { std::env::set_var(key, value) };
     }
 
     fn remove_env(key: &str) {
-        // SAFETY: Tests run single-threaded, no concurrent access to env vars
+        // SAFETY: Tests are serialized with env_guard().
         unsafe { std::env::remove_var(key) };
     }
 
@@ -162,6 +167,7 @@ mod tests {
 
     #[test]
     fn test_load_dotenv_only_rch_vars() {
+        let _guard = env_guard();
         let tmp = TempDir::new().unwrap();
         let env_file = tmp.path().join(".env");
         fs::write(
@@ -189,6 +195,7 @@ mod tests {
 
     #[test]
     fn test_load_dotenv_no_override() {
+        let _guard = env_guard();
         let tmp = TempDir::new().unwrap();
         let env_file = tmp.path().join(".rch.env");
         fs::write(&env_file, "RCH_PRESET=fromfile").unwrap();
