@@ -31,7 +31,7 @@ use tracing::debug;
 
 use crate::hook::{query_daemon, release_worker, required_runtime_for_kind};
 use crate::toolchain::detect_toolchain;
-use crate::transfer::{parse_rchignore, project_id_from_path};
+use crate::transfer::project_id_from_path;
 
 /// Default socket path.
 const DEFAULT_SOCKET_PATH: &str = "/tmp/rch.sock";
@@ -6466,7 +6466,7 @@ pub async fn diagnose(command: &str, ctx: &OutputContext) -> Result<()> {
     let project_root = std::env::current_dir().ok();
     let rchignore_count = project_root
         .as_ref()
-        .and_then(|root| parse_rchignore(&root.join(".rchignore")).ok())
+        .and_then(|root| crate::transfer::parse_rchignore(&root.join(".rchignore")).ok())
         .map(|patterns| patterns.len())
         .unwrap_or(0);
     let effective_count = config_exclude_count + rchignore_count;
@@ -6475,7 +6475,10 @@ pub async fn diagnose(command: &str, ctx: &OutputContext) -> Result<()> {
         "  {} {} {}",
         style.key("Exclude patterns:"),
         style.value(&effective_count.to_string()),
-        style.muted(&format!("({} from config, {} from .rchignore)", config_exclude_count, rchignore_count))
+        style.muted(&format!(
+            "({} from config, {} from .rchignore)",
+            config_exclude_count, rchignore_count
+        ))
     );
     if rchignore_count > 0 {
         println!(
