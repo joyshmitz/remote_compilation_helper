@@ -96,6 +96,96 @@ WORKERS:
 
 ---
 
+## Beautiful Terminal Output (rich_rust)
+
+RCH ships with rich terminal output for human use (tables, panels, progress). It automatically falls back to plain ASCII when a terminal is not available or machine output is requested. Rich output goes to stderr so stdout remains clean for JSON/machine consumption.
+
+### UI Features Overview
+
+- Colored status output with consistent icons
+- Progress visualization for sync and execution phases
+- Rich error panels with remediation hints
+- Worker status tables (status, slots, speed, latency)
+
+### Controlling Output
+
+Use these flags and environment variables to force the desired output mode:
+
+- `--json` or `--format json|toon` -> machine output on stdout, no rich UI
+- `--color=never` or `NO_COLOR=1` -> plain ASCII output (no ANSI)
+- `--color=always` or `CLICOLOR_FORCE=1` / `FORCE_COLOR=1` -> force color output
+- `TERM=dumb` -> plain ASCII fallback
+- `-q/--quiet` -> errors only
+- `-v/--verbose` -> extra details (timings, diagnostics)
+
+### Before / After (Plain vs Rich)
+
+Plain fallback (no colors, no tables):
+
+```text
+$ rch status
+Daemon: running (pid 4123)
+Workers: 3 total, 3 healthy, 72 slots
+Active jobs: 1
+Recent builds: 5
+```
+
+Rich output (conceptual layout):
+
+```text
+$ rch status
+[Status]  Daemon: healthy  |  Workers: 3  |  Slots: 72 (12 used)
+---------------------------------------------------------------
+WORKERS
+  id    status    slots    speed   latency
+  css   healthy   8/32     94.2    12ms
+  csd   healthy   2/16     88.1    18ms
+  cse   healthy   2/24     91.0    15ms
+```
+
+### Screenshots Gallery (Text Previews)
+
+Status overview:
+
+```text
+$ rch status --workers
+WORKERS
+  css  healthy  8/32  speed 94.2  latency 12ms
+  csd  healthy  2/16  speed 88.1  latency 18ms
+```
+
+Worker probe results:
+
+```text
+$ rch workers probe --all
+css: OK   (latency 12ms, rust 1.87-nightly, bun 1.2.0)
+csd: OK   (latency 18ms, rust 1.87-nightly, bun 1.2.0)
+```
+
+Compilation progress:
+
+```text
+Syncing project...  182 MB / 182 MB  (1.2s)
+Compiling...        cargo build --release
+Returning artifacts...  14 files  (0.6s)
+```
+
+Error display:
+
+```text
+ERROR: Worker 'css' unreachable
+Suggested fix: rch workers probe css
+```
+
+### Accessibility
+
+- Colors are optional; plain ASCII is always available.
+- Output avoids emoji-only signals and includes text labels.
+- Rich UI renders to stderr, keeping stdout available for tooling.
+- Use `--color=never` or `NO_COLOR=1` for screen reader friendliness.
+
+---
+
 ## Design Philosophy
 
 ### 1. Transparency Above All
@@ -493,6 +583,14 @@ Tier 4: Full Classification (<5ms)
 ---
 
 ## Troubleshooting
+
+### Display issues (colors, glyphs, or rich tables missing)
+
+- Rich UI renders to stderr; ensure stderr is a TTY when testing locally.
+- Force color output with `--color=always`, `CLICOLOR_FORCE=1`, or `FORCE_COLOR=1`.
+- Disable styling with `--color=never` or `NO_COLOR=1`.
+- For automation, prefer `--json` or `--format json|toon` to avoid ANSI output.
+- If your terminal is mis-detected, set `TERM=dumb` to force plain output.
 
 ### "Connection refused to worker"
 
