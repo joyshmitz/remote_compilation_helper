@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn test_cleanup_result_creation() {
         let result = CleanupResult {
-            worker_id: "test-worker".into(),
+            worker_id: WorkerId::new("test-worker"),
             success: true,
             dirs_removed: Some(5),
             bytes_freed: Some(1024 * 1024 * 100),
