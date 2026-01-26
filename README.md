@@ -380,8 +380,7 @@ exclude_patterns = [            # Additional excludes
 ]
 
 [environment]
-RUSTFLAGS = "-C target-cpu=native"
-CARGO_BUILD_JOBS = "16"
+allowlist = ["RUSTFLAGS", "CARGO_TARGET_DIR"]
 ```
 
 ### Environment Variables
@@ -395,6 +394,7 @@ CARGO_BUILD_JOBS = "16"
 | `RCH_DRY_RUN` | Show what would happen | `false` |
 | `RCH_LOCAL_ONLY` | Force local execution | `false` |
 | `RCH_BYPASS` | Disable RCH entirely | `false` |
+| `RCH_ENV_ALLOWLIST` | Comma-separated env vars to forward | unset |
 | `RCH_VERBOSE` | Enable verbose logging | `false` |
 | `RCH_OUTPUT_FORMAT` | Machine output format: `json` or `toon` | unset |
 | `TOON_DEFAULT_FORMAT` | Default machine format when `--json` is set | unset |

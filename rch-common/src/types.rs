@@ -1633,6 +1633,135 @@ mod tests {
         assert_eq!(parsed.half_open_max_probes, 2);
     }
 
+    // ========================================================================
+    // WorkerCapabilities Tests
+    // ========================================================================
+
+    #[test]
+    fn test_worker_capabilities_default() {
+        let caps = WorkerCapabilities::default();
+        assert!(caps.rustc_version.is_none());
+        assert!(caps.bun_version.is_none());
+        assert!(caps.node_version.is_none());
+        assert!(caps.npm_version.is_none());
+    }
+
+    #[test]
+    fn test_worker_capabilities_new() {
+        let caps = WorkerCapabilities::new();
+        assert!(caps.rustc_version.is_none());
+        assert!(!caps.has_rust());
+        assert!(!caps.has_bun());
+        assert!(!caps.has_node());
+    }
+
+    #[test]
+    fn test_worker_capabilities_has_rust() {
+        let mut caps = WorkerCapabilities::new();
+        assert!(!caps.has_rust());
+
+        caps.rustc_version = Some("rustc 1.76.0 (07dca489a 2024-02-04)".to_string());
+        assert!(caps.has_rust());
+    }
+
+    #[test]
+    fn test_worker_capabilities_has_bun() {
+        let mut caps = WorkerCapabilities::new();
+        assert!(!caps.has_bun());
+
+        caps.bun_version = Some("1.0.25".to_string());
+        assert!(caps.has_bun());
+    }
+
+    #[test]
+    fn test_worker_capabilities_has_node() {
+        let mut caps = WorkerCapabilities::new();
+        assert!(!caps.has_node());
+
+        caps.node_version = Some("v20.11.0".to_string());
+        assert!(caps.has_node());
+    }
+
+    #[test]
+    fn test_worker_capabilities_multiple_runtimes() {
+        let caps = WorkerCapabilities {
+            rustc_version: Some("rustc 1.76.0".to_string()),
+            bun_version: Some("1.0.25".to_string()),
+            node_version: Some("v20.11.0".to_string()),
+            npm_version: Some("10.2.4".to_string()),
+        };
+
+        assert!(caps.has_rust());
+        assert!(caps.has_bun());
+        assert!(caps.has_node());
+    }
+
+    #[test]
+    fn test_worker_capabilities_serialization_empty() {
+        let caps = WorkerCapabilities::new();
+        let json = serde_json::to_string(&caps).unwrap();
+        // Empty capabilities should serialize to {}
+        assert_eq!(json, "{}");
+
+        // And deserialize back correctly
+        let parsed: WorkerCapabilities = serde_json::from_str(&json).unwrap();
+        assert!(!parsed.has_rust());
+        assert!(!parsed.has_bun());
+        assert!(!parsed.has_node());
+    }
+
+    #[test]
+    fn test_worker_capabilities_serialization_with_versions() {
+        let caps = WorkerCapabilities {
+            rustc_version: Some("rustc 1.76.0-nightly".to_string()),
+            bun_version: Some("1.0.25".to_string()),
+            node_version: None,
+            npm_version: None,
+        };
+
+        let json = serde_json::to_string(&caps).unwrap();
+        assert!(json.contains("rustc_version"));
+        assert!(json.contains("rustc 1.76.0-nightly"));
+        assert!(json.contains("bun_version"));
+        assert!(json.contains("1.0.25"));
+        // None fields should be skipped
+        assert!(!json.contains("node_version"));
+        assert!(!json.contains("npm_version"));
+
+        let parsed: WorkerCapabilities = serde_json::from_str(&json).unwrap();
+        assert!(parsed.has_rust());
+        assert!(parsed.has_bun());
+        assert!(!parsed.has_node());
+    }
+
+    #[test]
+    fn test_worker_capabilities_deserialization_partial() {
+        // Deserialize JSON with only some fields
+        let json = r#"{"bun_version": "1.0.0"}"#;
+        let caps: WorkerCapabilities = serde_json::from_str(json).unwrap();
+
+        assert!(!caps.has_rust());
+        assert!(caps.has_bun());
+        assert!(!caps.has_node());
+        assert_eq!(caps.bun_version, Some("1.0.0".to_string()));
+    }
+
+    #[test]
+    fn test_worker_capabilities_clone() {
+        let caps = WorkerCapabilities {
+            rustc_version: Some("1.76.0".to_string()),
+            bun_version: None,
+            node_version: Some("v20".to_string()),
+            npm_version: None,
+        };
+
+        let cloned = caps.clone();
+        assert_eq!(cloned.rustc_version, caps.rustc_version);
+        assert_eq!(cloned.bun_version, caps.bun_version);
+        assert_eq!(cloned.node_version, caps.node_version);
+        assert_eq!(cloned.npm_version, caps.npm_version);
+    }
+
     #[test]
     fn test_selection_reason_serialization() {
         // Test that all variants serialize to snake_case

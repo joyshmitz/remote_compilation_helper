@@ -73,6 +73,7 @@ ENVIRONMENT VARIABLES:
     RCH_DAEMON_TIMEOUT_MS Timeout for daemon communication (default: 5000)
     RCH_SSH_KEY           Path to SSH private key for worker connections
     RCH_TRANSFER_ZSTD_LEVEL  Compression level 1-22 (default: 3)
+    RCH_ENV_ALLOWLIST     Comma-separated env vars to forward (e.g., RUSTFLAGS,CARGO_TARGET_DIR)
     RCH_VISIBILITY        Hook output visibility: none, summary, verbose
     RCH_VERBOSE           Convenience: sets visibility=verbose when true
     RCH_QUIET             Force visibility=none when true

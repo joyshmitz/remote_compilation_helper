@@ -457,63 +457,100 @@ pub fn inc_requests(endpoint: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracing::info;
+
+    fn setup_tracing() {
+        let _ = tracing_subscriber::fmt()
+            .with_test_writer()
+            .with_max_level(tracing::Level::INFO)
+            .try_init();
+    }
 
     #[test]
     fn test_metrics_registration() {
+        setup_tracing();
+        info!("TEST START: test_metrics_registration");
+
         // Create a new registry for testing (don't pollute global)
         let test_registry = Registry::new();
 
-        // Register a sample metric
+        info!("INPUT: Creating counter metric with label");
         let counter =
             CounterVec::new(Opts::new("test_counter", "A test counter"), &["label"]).unwrap();
         test_registry.register(Box::new(counter.clone())).unwrap();
 
         // Increment the counter
         counter.with_label_values(&["value"]).inc();
+        info!("ACTION: Incremented counter once");
 
         // Gather and verify
         let metrics = test_registry.gather();
         assert!(!metrics.is_empty());
         let names: Vec<_> = metrics.iter().map(|m| m.name()).collect();
         assert!(names.contains(&"test_counter"));
+
+        info!("VERIFY: Metric registered and gatherable");
+        info!("TEST PASS: test_metrics_registration");
     }
 
     #[test]
     fn test_histogram_observe() {
+        setup_tracing();
+        info!("TEST START: test_histogram_observe");
+
         let histogram = prometheus::Histogram::with_opts(
             HistogramOpts::new("test_histogram", "A test histogram")
                 .buckets(vec![0.1, 0.5, 1.0, 5.0]),
         )
         .unwrap();
 
+        info!("INPUT: Observing values 0.3, 0.8, 3.0");
         histogram.observe(0.3);
         histogram.observe(0.8);
         histogram.observe(3.0);
 
         assert_eq!(histogram.get_sample_count(), 3);
+        info!(
+            "VERIFY: Histogram has {} samples",
+            histogram.get_sample_count()
+        );
+        info!("TEST PASS: test_histogram_observe");
     }
 
     #[test]
     fn test_gauge_set() {
+        setup_tracing();
+        info!("TEST START: test_gauge_set");
+
         let gauge = prometheus::Gauge::new("test_gauge", "A test gauge").unwrap();
 
+        info!("INPUT: Setting gauge to 42.0");
         gauge.set(42.0);
         assert_eq!(gauge.get(), 42.0);
 
+        info!("ACTION: Incrementing gauge");
         gauge.inc();
         assert_eq!(gauge.get(), 43.0);
 
+        info!("ACTION: Decrementing gauge");
         gauge.dec();
         assert_eq!(gauge.get(), 42.0);
+
+        info!("VERIFY: Gauge operations work correctly");
+        info!("TEST PASS: test_gauge_set");
     }
 
     #[test]
     fn test_encode_format() {
+        setup_tracing();
+        info!("TEST START: test_encode_format");
+
         let test_registry = Registry::new();
         let counter = prometheus::Counter::new("test_counter", "A test counter").unwrap();
         test_registry.register(Box::new(counter.clone())).unwrap();
         counter.inc();
 
+        info!("ACTION: Encoding metrics to Prometheus text format");
         let encoder = TextEncoder::new();
         let mut buffer = Vec::new();
         encoder
@@ -521,8 +558,196 @@ mod tests {
             .unwrap();
 
         let output = String::from_utf8(buffer).unwrap();
+        info!("OUTPUT: Encoded {} bytes", output.len());
+
         assert!(output.contains("# HELP test_counter"));
         assert!(output.contains("# TYPE test_counter counter"));
         assert!(output.contains("test_counter 1"));
+
+        info!("VERIFY: Output contains HELP, TYPE, and value");
+        info!("TEST PASS: test_encode_format");
+    }
+
+    #[test]
+    fn test_worker_metric_helpers() {
+        setup_tracing();
+        info!("TEST START: test_worker_metric_helpers");
+
+        // Use a unique worker ID to avoid conflicts with other tests
+        let worker_id = "test-worker-helpers";
+
+        info!("INPUT: Setting worker metrics for {}", worker_id);
+
+        set_worker_slots_total(worker_id, 16);
+        set_worker_slots_available(worker_id, 12);
+        set_worker_status(worker_id, "healthy", 1.0);
+        set_worker_last_seen(worker_id, 1705936800.0);
+        observe_worker_latency(worker_id, 5.5);
+
+        // Verify by checking metric values directly
+        let total = WORKER_SLOTS_TOTAL.with_label_values(&[worker_id]).get();
+        let available = WORKER_SLOTS_AVAILABLE.with_label_values(&[worker_id]).get();
+        let status = WORKER_STATUS
+            .with_label_values(&[worker_id, "healthy"])
+            .get();
+
+        assert_eq!(total, 16.0);
+        assert_eq!(available, 12.0);
+        assert_eq!(status, 1.0);
+
+        info!(
+            "VERIFY: Worker slots total={}, available={}, status={}",
+            total, available, status
+        );
+        info!("TEST PASS: test_worker_metric_helpers");
+    }
+
+    #[test]
+    fn test_circuit_breaker_metric_helpers() {
+        setup_tracing();
+        info!("TEST START: test_circuit_breaker_metric_helpers");
+
+        let worker_id = "test-worker-circuit";
+
+        info!("INPUT: Recording circuit breaker events for {}", worker_id);
+
+        set_circuit_state(worker_id, 0); // closed
+        inc_circuit_failure(worker_id);
+        inc_circuit_failure(worker_id);
+        set_circuit_state(worker_id, 2); // open
+        inc_circuit_trip(worker_id);
+        set_circuit_state(worker_id, 0); // closed again
+        inc_circuit_recovery(worker_id);
+
+        let state = CIRCUIT_STATE.with_label_values(&[worker_id]).get();
+        let failures = CIRCUIT_FAILURES_TOTAL.with_label_values(&[worker_id]).get();
+        let trips = CIRCUIT_TRIPS_TOTAL.with_label_values(&[worker_id]).get();
+        let recoveries = CIRCUIT_RECOVERIES_TOTAL.with_label_values(&[worker_id]).get();
+
+        assert_eq!(state, 0.0); // closed
+        assert_eq!(failures, 2.0);
+        assert_eq!(trips, 1.0);
+        assert_eq!(recoveries, 1.0);
+
+        info!(
+            "VERIFY: Circuit state={}, failures={}, trips={}, recoveries={}",
+            state, failures, trips, recoveries
+        );
+        info!("TEST PASS: test_circuit_breaker_metric_helpers");
+    }
+
+    #[test]
+    fn test_build_metric_helpers() {
+        setup_tracing();
+        info!("TEST START: test_build_metric_helpers");
+
+        info!("INPUT: Recording build events");
+
+        inc_active_builds("remote");
+        inc_active_builds("remote");
+        inc_build_total("success", "remote");
+        observe_build_duration("remote", 15.5);
+        dec_active_builds("remote");
+        set_build_queue_depth(5);
+
+        let active = BUILDS_ACTIVE.with_label_values(&["remote"]).get();
+        let total = BUILDS_TOTAL
+            .with_label_values(&["success", "remote"])
+            .get();
+        let queue_depth = BUILD_QUEUE_DEPTH.get();
+
+        assert_eq!(active, 1.0); // 2 inc - 1 dec
+        assert_eq!(total, 1.0);
+        assert_eq!(queue_depth, 5.0);
+
+        info!(
+            "VERIFY: Active builds={}, total={}, queue_depth={}",
+            active, total, queue_depth
+        );
+        info!("TEST PASS: test_build_metric_helpers");
+    }
+
+    #[test]
+    fn test_transfer_metric_helpers() {
+        setup_tracing();
+        info!("TEST START: test_transfer_metric_helpers");
+
+        info!("INPUT: Recording transfer events");
+
+        inc_transfer_bytes("upload", 1_000_000);
+        inc_transfer_files("upload", 50);
+        observe_transfer_duration("upload", 2.5);
+        observe_compression_ratio(0.65);
+
+        let bytes = TRANSFER_BYTES_TOTAL.with_label_values(&["upload"]).get();
+        let files = TRANSFER_FILES_TOTAL.with_label_values(&["upload"]).get();
+
+        assert_eq!(bytes, 1_000_000.0);
+        assert_eq!(files, 50.0);
+
+        info!("VERIFY: Transfer bytes={}, files={}", bytes, files);
+        info!("TEST PASS: test_transfer_metric_helpers");
+    }
+
+    #[test]
+    fn test_daemon_metric_helpers() {
+        setup_tracing();
+        info!("TEST START: test_daemon_metric_helpers");
+
+        info!("INPUT: Recording daemon metrics");
+
+        set_daemon_info("0.1.0-test");
+        inc_connections();
+        inc_connections();
+        inc_requests("select-worker");
+        inc_requests("status");
+        dec_connections();
+
+        let info_val = DAEMON_INFO.with_label_values(&["0.1.0-test"]).get();
+        let connections = DAEMON_CONNECTIONS_ACTIVE.get();
+        let select_requests = DAEMON_REQUESTS_TOTAL
+            .with_label_values(&["select-worker"])
+            .get();
+        let status_requests = DAEMON_REQUESTS_TOTAL.with_label_values(&["status"]).get();
+
+        assert_eq!(info_val, 1.0);
+        assert_eq!(connections, 1.0); // 2 inc - 1 dec
+        assert_eq!(select_requests, 1.0);
+        assert_eq!(status_requests, 1.0);
+
+        info!(
+            "VERIFY: Daemon info={}, connections={}, requests={}",
+            info_val,
+            connections,
+            select_requests + status_requests
+        );
+        info!("TEST PASS: test_daemon_metric_helpers");
+    }
+
+    #[test]
+    fn test_classification_metric_helpers() {
+        setup_tracing();
+        info!("TEST START: test_classification_metric_helpers");
+
+        info!("INPUT: Recording classification decisions");
+
+        inc_build_classification(0, "reject");
+        inc_build_classification(1, "reject");
+        inc_build_classification(2, "pass");
+        inc_build_classification(3, "pass");
+        inc_build_classification(4, "intercept");
+
+        let tier0 = BUILD_CLASSIFICATION_TOTAL
+            .with_label_values(&["0", "reject"])
+            .get();
+        let tier4 = BUILD_CLASSIFICATION_TOTAL
+            .with_label_values(&["4", "intercept"])
+            .get();
+
+        assert_eq!(tier0, 1.0);
+        assert_eq!(tier4, 1.0);
+
+        info!("VERIFY: Classification metrics recorded for tiers 0-4");
+        info!("TEST PASS: test_classification_metric_helpers");
     }
 }

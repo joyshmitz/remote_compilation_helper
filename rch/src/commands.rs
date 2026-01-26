@@ -4698,6 +4698,9 @@ fn config_set_at(config_path: &Path, key: &str, value: &str, ctx: &OutputContext
         "transfer.exclude_patterns" => {
             config.transfer.exclude_patterns = parse_string_list(value, key)?;
         }
+        "environment.allowlist" => {
+            config.environment.allowlist = parse_string_list(value, key)?;
+        }
         "output.visibility" => {
             let trimmed = value.trim().trim_matches(|c| c == '"');
             let visibility = trimmed
@@ -4712,7 +4715,7 @@ fn config_set_at(config_path: &Path, key: &str, value: &str, ctx: &OutputContext
         }
         _ => {
             bail!(
-                "Unknown config key: {}. Supported keys: general.enabled, general.log_level, general.socket_path, compilation.confidence_threshold, compilation.min_local_time_ms, transfer.compression_level, transfer.exclude_patterns, output.visibility, output.first_run_complete, first_run_complete",
+                "Unknown config key: {}. Supported keys: general.enabled, general.log_level, general.socket_path, compilation.confidence_threshold, compilation.min_local_time_ms, transfer.compression_level, transfer.exclude_patterns, environment.allowlist, output.visibility, output.first_run_complete, first_run_complete",
                 key
             );
         }
@@ -4766,6 +4769,10 @@ pub fn config_export(format: &str, ctx: &OutputContext) -> Result<()> {
                 "export RCH_TRANSFER_ZSTD_LEVEL={}",
                 config.transfer.compression_level
             );
+            println!(
+                "export RCH_ENV_ALLOWLIST=\"{}\"",
+                config.environment.allowlist.join(",")
+            );
         }
         "env" => {
             // .env file format
@@ -4788,6 +4795,10 @@ pub fn config_export(format: &str, ctx: &OutputContext) -> Result<()> {
                 "RCH_TRANSFER_ZSTD_LEVEL={}",
                 config.transfer.compression_level
             );
+            println!(
+                "RCH_ENV_ALLOWLIST={}",
+                config.environment.allowlist.join(",")
+            );
         }
         "json" => {
             // JSON format (ignore ctx.is_json() since user explicitly requested JSON)
@@ -4809,6 +4820,9 @@ pub fn config_export(format: &str, ctx: &OutputContext) -> Result<()> {
                     "transfer": {
                         "compression_level": config.transfer.compression_level,
                         "exclude_patterns": config.transfer.exclude_patterns,
+                    },
+                    "environment": {
+                        "allowlist": config.environment.allowlist,
                     }
                 }),
             ));
