@@ -28,7 +28,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::UnixListener;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
+use tokio::time::interval;
 use tracing::{info, warn};
 
 use benchmark_queue::BenchmarkQueue;
@@ -38,7 +39,7 @@ use rch_telemetry::storage::TelemetryStorage;
 use selection::WorkerSelector;
 use self_test::{DEFAULT_RESULT_CAPACITY, DEFAULT_RUN_CAPACITY, SelfTestHistory, SelfTestService};
 use telemetry::{TelemetryPoller, TelemetryPollerConfig, TelemetryStore};
-use ui::DaemonBanner;
+use ui::{DaemonBanner, MetricsDashboard, WorkerStatusPanel};
 
 #[derive(Parser)]
 #[command(name = "rchd")]
@@ -71,6 +72,14 @@ struct Cli {
     /// Port for HTTP metrics/health endpoints (0 to disable)
     #[arg(long, default_value = "9100")]
     metrics_port: u16,
+
+    /// Reset interval for metrics dashboard window, in seconds
+    #[arg(long, default_value = "300")]
+    metrics_reset_interval: u64,
+
+    /// Emit worker selection routing decisions to stderr
+    #[arg(long)]
+    debug_routing: bool,
 }
 
 /// Shared daemon context passed to all API handlers.
@@ -104,6 +113,11 @@ pub struct DaemonContext {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let startup_started = Instant::now();
+
+    if cli.debug_routing {
+        // Safety: set before any worker threads spawn; no concurrent env access.
+        unsafe { std::env::set_var("RCHD_DEBUG_ROUTING", "1") };
+    }
 
     // Initialize logging
     let mut log_config = LogConfig::from_env("info");
@@ -279,9 +293,18 @@ async fn main() -> Result<()> {
         pid: std::process::id(),
     };
 
+    let worker_status_panel = Arc::new(Mutex::new(
+        WorkerStatusPanel::new()
+            .with_verbose(cli.verbose)
+            .with_debug_routing(cli.debug_routing),
+    ));
+    let metrics_interval = Duration::from_secs(cli.metrics_reset_interval.max(1));
+    let metrics_dashboard = Arc::new(Mutex::new(MetricsDashboard::new(metrics_interval)));
+
     // Start health monitor
     let health_config = health::HealthConfig::default();
-    let health_monitor = health::HealthMonitor::new(worker_pool.clone(), health_config);
+    let health_monitor = health::HealthMonitor::new(worker_pool.clone(), health_config)
+        .with_status_panel(worker_status_panel.clone());
     let health_handle = health_monitor.start();
     info!("Health monitor started");
 
@@ -293,6 +316,21 @@ async fn main() -> Result<()> {
     );
     let _telemetry_handle = telemetry_poller.start();
     info!("Telemetry poller started");
+
+    let metrics_pool = worker_pool.clone();
+    let metrics_history = context.history.clone();
+    let metrics_selector = worker_selector.clone();
+    let metrics_dashboard_handle = metrics_dashboard.clone();
+    let _metrics_handle = tokio::spawn(async move {
+        let mut ticker = interval(metrics_interval);
+        loop {
+            ticker.tick().await;
+            let mut dashboard = metrics_dashboard_handle.lock().await;
+            dashboard
+                .emit_update(&metrics_pool, &metrics_history, &metrics_selector)
+                .await;
+        }
+    });
 
     if let Some(storage) = telemetry_storage {
         let _maintenance = telemetry::start_storage_maintenance(storage);

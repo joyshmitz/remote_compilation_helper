@@ -10,6 +10,7 @@
 #![allow(dead_code)] // Scaffold code - methods will be used in future beads
 
 use crate::metrics::latency::{DecisionTimer, DecisionType};
+use crate::ui::workers::{debug_routing_enabled, log_routing_decision};
 use crate::workers::{WorkerPool, WorkerState};
 use rand::Rng;
 use rch_common::{
@@ -278,6 +279,19 @@ impl WorkerSelector {
         };
 
         if let Some((worker, circuit_state)) = selected {
+            if debug_routing_enabled() {
+                let scores = self.debug_scores(&eligible, request).await;
+                let worker_id = worker.config.read().await.id.as_str().to_string();
+                let circuit_label = format!("{:?}", circuit_state);
+                log_routing_decision(
+                    self.config.strategy,
+                    &worker_id,
+                    Some(circuit_label.as_str()),
+                    &scores,
+                    eligible.len(),
+                );
+            }
+
             // If selecting a half-open worker, start the probe
             if circuit_state == CircuitState::HalfOpen {
                 worker.start_probe(&self.circuit_config).await;
@@ -314,6 +328,60 @@ impl WorkerSelector {
     pub async fn record_build(&self, worker_id: &str, project_id: &str) {
         let mut cache = self.cache_tracker.write().await;
         cache.record_build(worker_id, project_id);
+    }
+
+    async fn debug_scores(
+        &self,
+        workers: &[(Arc<WorkerState>, CircuitState)],
+        request: &SelectionRequest,
+    ) -> Vec<(String, f64)> {
+        let mut scores = Vec::new();
+
+        match self.config.strategy {
+            SelectionStrategy::Priority => {
+                for (worker, _) in workers {
+                    let config = worker.config.read().await;
+                    scores.push((config.id.as_str().to_string(), config.priority as f64));
+                }
+            }
+            SelectionStrategy::Fastest | SelectionStrategy::FairFastest => {
+                for (worker, _) in workers {
+                    let score = worker.get_speed_score().await;
+                    let id = worker.config.read().await.id.as_str().to_string();
+                    scores.push((id, score));
+                }
+            }
+            SelectionStrategy::Balanced => {
+                let cache = self.cache_tracker.read().await;
+                let weights = &self.config.weights;
+                let (min_priority, max_priority) = Self::priority_range(workers).await;
+                for (worker, circuit_state) in workers {
+                    let score = self
+                        .compute_balanced_score(
+                            worker,
+                            *circuit_state,
+                            &request.project,
+                            &cache,
+                            weights,
+                            min_priority,
+                            max_priority,
+                        )
+                        .await;
+                    let id = worker.config.read().await.id.as_str().to_string();
+                    scores.push((id, score));
+                }
+            }
+            SelectionStrategy::CacheAffinity => {
+                let cache = self.cache_tracker.read().await;
+                for (worker, _) in workers {
+                    let id = worker.config.read().await.id.as_str().to_string();
+                    let score = cache.estimate_warmth(id.as_str(), &request.project);
+                    scores.push((id, score));
+                }
+            }
+        }
+
+        scores
     }
 
     /// Get eligible workers filtered by health, circuits, slots, and runtime.

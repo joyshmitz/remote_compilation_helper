@@ -457,12 +457,12 @@ pub fn inc_requests(endpoint: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tracing::info;
+    use ::tracing::info;
 
     fn setup_tracing() {
         let _ = tracing_subscriber::fmt()
             .with_test_writer()
-            .with_max_level(tracing::Level::INFO)
+            .with_max_level(::tracing::Level::INFO)
             .try_init();
     }
 

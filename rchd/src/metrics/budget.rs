@@ -8,11 +8,11 @@
 
 use serde::Serialize;
 
-use super::DECISION_BUDGET_VIOLATIONS;
 use super::latency::{
     COMPILATION_BUDGET_MS, COMPILATION_PANIC_MS, NON_COMPILATION_BUDGET_MS,
     NON_COMPILATION_PANIC_MS, WORKER_SELECTION_BUDGET_MS, WORKER_SELECTION_PANIC_MS,
 };
+use super::DECISION_BUDGET_VIOLATIONS;
 
 /// Overall budget compliance status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

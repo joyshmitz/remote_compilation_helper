@@ -12,11 +12,17 @@
 
 pub mod banner;
 pub mod jobs;
+pub mod metrics;
 pub mod shutdown;
+pub mod workers;
 
 #[allow(unused_imports)]
 pub use banner::DaemonBanner;
 #[allow(unused_imports)]
 pub use jobs::JobLifecycleLog;
 #[allow(unused_imports)]
+pub use metrics::MetricsDashboard;
+#[allow(unused_imports)]
 pub use shutdown::{JobDrainEvent, SessionStats, ShutdownSequence};
+#[allow(unused_imports)]
+pub use workers::WorkerStatusPanel;

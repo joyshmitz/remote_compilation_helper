@@ -5,6 +5,7 @@
 #![allow(dead_code)] // Scaffold code - methods will be used in future beads
 
 use crate::metrics;
+use crate::ui::workers::WorkerStatusPanel;
 use crate::workers::{WorkerPool, WorkerState};
 use rch_common::mock::{self, MockConfig, MockSshClient};
 use rch_common::{
@@ -12,7 +13,7 @@ use rch_common::{
 };
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio::time::interval;
 use tracing::{debug, info, warn};
 
@@ -269,6 +270,8 @@ pub struct HealthMonitor {
     health_states: Arc<RwLock<std::collections::HashMap<String, WorkerHealth>>>,
     /// Whether monitor is running.
     running: Arc<RwLock<bool>>,
+    /// Optional worker status panel for log output.
+    status_panel: Option<Arc<Mutex<WorkerStatusPanel>>>,
 }
 
 impl HealthMonitor {
@@ -279,7 +282,15 @@ impl HealthMonitor {
             config,
             health_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
             running: Arc::new(RwLock::new(false)),
+            status_panel: None,
         }
+    }
+
+    /// Attach a worker status panel for periodic output.
+    #[must_use]
+    pub fn with_status_panel(mut self, panel: Arc<Mutex<WorkerStatusPanel>>) -> Self {
+        self.status_panel = Some(panel);
+        self
     }
 
     /// Start the health monitoring background task.
@@ -288,6 +299,7 @@ impl HealthMonitor {
         let config = self.config.clone();
         let health_states = self.health_states.clone();
         let running = self.running.clone();
+        let status_panel = self.status_panel.clone();
 
         tokio::spawn(async move {
             *running.write().await = true;
@@ -389,6 +401,12 @@ impl HealthMonitor {
                     // Update worker pool status
                     let worker_config = worker.config.read().await;
                     pool.set_status(&worker_config.id, new_status).await;
+                }
+
+                if let Some(panel) = &status_panel {
+                    let snapshot = WorkerStatusPanel::collect_snapshot(&pool).await;
+                    let mut panel = panel.lock().await;
+                    panel.emit_update(&snapshot, 0);
                 }
             }
         })
