@@ -157,9 +157,16 @@ impl Default for HarnessConfig {
         }
 
         // Find binaries in target/debug or target/release
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir.parent().unwrap_or(manifest_dir.as_path());
         let cargo_target = std::env::var("CARGO_TARGET_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("target"));
+            .unwrap_or_else(|_| workspace_root.join("target"));
+        let cargo_target = if cargo_target.is_relative() {
+            workspace_root.join(cargo_target)
+        } else {
+            cargo_target
+        };
 
         let profile = if cfg!(debug_assertions) {
             "debug"

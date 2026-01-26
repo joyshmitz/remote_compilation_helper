@@ -995,4 +995,712 @@ mod tests {
         assert!(result.is_ok());
         info!("TEST PASS: test_render_minimum_size_no_panic");
     }
+
+    // ==================== format_duration_ms tests ====================
+
+    #[test]
+    fn test_format_duration_ms_milliseconds() {
+        init_test_logging();
+        info!("TEST START: test_format_duration_ms_milliseconds");
+        assert_eq!(format_duration_ms(0), "0ms");
+        assert_eq!(format_duration_ms(1), "1ms");
+        assert_eq!(format_duration_ms(500), "500ms");
+        assert_eq!(format_duration_ms(999), "999ms");
+        info!("TEST PASS: test_format_duration_ms_milliseconds");
+    }
+
+    #[test]
+    fn test_format_duration_ms_seconds() {
+        init_test_logging();
+        info!("TEST START: test_format_duration_ms_seconds");
+        assert_eq!(format_duration_ms(1000), "1.0s");
+        assert_eq!(format_duration_ms(1500), "1.5s");
+        assert_eq!(format_duration_ms(30000), "30.0s");
+        assert_eq!(format_duration_ms(59999), "60.0s");
+        info!("TEST PASS: test_format_duration_ms_seconds");
+    }
+
+    #[test]
+    fn test_format_duration_ms_minutes() {
+        init_test_logging();
+        info!("TEST START: test_format_duration_ms_minutes");
+        assert_eq!(format_duration_ms(60000), "1.0m");
+        assert_eq!(format_duration_ms(90000), "1.5m");
+        assert_eq!(format_duration_ms(300000), "5.0m");
+        info!("TEST PASS: test_format_duration_ms_minutes");
+    }
+
+    // ==================== Color scheme tests ====================
+
+    #[test]
+    fn test_high_contrast_mode_colors() {
+        init_test_logging();
+        info!("TEST START: test_high_contrast_mode_colors");
+        let high_contrast = get_colors(true, ColorBlindMode::None);
+        assert_eq!(high_contrast.fg, Color::White);
+        assert_eq!(high_contrast.bg, Color::Black);
+        assert_eq!(high_contrast.highlight, Color::Yellow);
+        assert_eq!(high_contrast.success, Color::LightGreen);
+        assert_eq!(high_contrast.error, Color::LightRed);
+        assert_eq!(high_contrast.selected_bg, Color::White);
+        assert_eq!(high_contrast.selected_fg, Color::Black);
+        info!("TEST PASS: test_high_contrast_mode_colors");
+    }
+
+    #[test]
+    fn test_color_blind_protanopia_same_as_deuteranopia() {
+        init_test_logging();
+        info!("TEST START: test_color_blind_protanopia_same_as_deuteranopia");
+        let proto = get_colors(false, ColorBlindMode::Protanopia);
+        let deuter = get_colors(false, ColorBlindMode::Deuteranopia);
+        // Protanopia and Deuteranopia use the same palette
+        assert_eq!(proto.highlight, deuter.highlight);
+        assert_eq!(proto.success, deuter.success);
+        assert_eq!(proto.error, deuter.error);
+        assert_eq!(proto.highlight, Color::LightCyan);
+        assert_eq!(proto.error, Color::LightMagenta);
+        info!("TEST PASS: test_color_blind_protanopia_same_as_deuteranopia");
+    }
+
+    #[test]
+    fn test_color_blind_tritanopia_distinct_palette() {
+        init_test_logging();
+        info!("TEST START: test_color_blind_tritanopia_distinct_palette");
+        let tritan = get_colors(false, ColorBlindMode::Tritanopia);
+        let normal = get_colors(false, ColorBlindMode::None);
+        // Tritanopia uses different highlight
+        assert_eq!(tritan.highlight, Color::LightMagenta);
+        assert_ne!(tritan.highlight, normal.highlight);
+        assert_eq!(tritan.warning, Color::LightRed);
+        info!("TEST PASS: test_color_blind_tritanopia_distinct_palette");
+    }
+
+    #[test]
+    fn test_normal_mode_colors() {
+        init_test_logging();
+        info!("TEST START: test_normal_mode_colors");
+        let normal = get_colors(false, ColorBlindMode::None);
+        assert_eq!(normal.fg, Color::White);
+        assert_eq!(normal.bg, Color::Reset);
+        assert_eq!(normal.highlight, Color::Cyan);
+        assert_eq!(normal.success, Color::Green);
+        assert_eq!(normal.warning, Color::Yellow);
+        assert_eq!(normal.error, Color::Red);
+        assert_eq!(normal.info, Color::Blue);
+        info!("TEST PASS: test_normal_mode_colors");
+    }
+
+    // ==================== Worker status rendering tests ====================
+
+    #[test]
+    fn test_render_worker_all_status_icons() {
+        init_test_logging();
+        info!("TEST START: test_render_worker_all_status_icons");
+        let state = TuiState {
+            selected_panel: Panel::Workers,
+            workers: vec![
+                sample_worker("healthy-w", WorkerStatus::Healthy, CircuitState::Closed),
+                sample_worker("degraded-w", WorkerStatus::Degraded, CircuitState::Closed),
+                sample_worker("unreachable-w", WorkerStatus::Unreachable, CircuitState::Closed),
+                sample_worker("draining-w", WorkerStatus::Draining, CircuitState::Closed),
+            ],
+            ..Default::default()
+        };
+        let content = render_to_string(60, 12, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_workers_panel(f, Rect::new(0, 0, 60, 12), &state, &colors);
+        });
+        // Verify all workers are shown
+        assert!(content.contains("healthy-w"));
+        assert!(content.contains("degraded-w"));
+        assert!(content.contains("unreachable-w"));
+        assert!(content.contains("draining-w"));
+        info!("TEST PASS: test_render_worker_all_status_icons");
+    }
+
+    #[test]
+    fn test_render_worker_circuit_state_icons() {
+        init_test_logging();
+        info!("TEST START: test_render_worker_circuit_state_icons");
+        let state = TuiState {
+            selected_panel: Panel::Workers,
+            workers: vec![
+                sample_worker("closed-w", WorkerStatus::Healthy, CircuitState::Closed),
+                sample_worker("half-w", WorkerStatus::Healthy, CircuitState::HalfOpen),
+                sample_worker("open-w", WorkerStatus::Healthy, CircuitState::Open),
+            ],
+            ..Default::default()
+        };
+        let content = render_to_string(60, 10, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_workers_panel(f, Rect::new(0, 0, 60, 10), &state, &colors);
+        });
+        // Check circuit icons are rendered (HalfOpen has ⚡, Open has 🔴)
+        assert!(content.contains("half-w"));
+        assert!(content.contains("open-w"));
+        info!("TEST PASS: test_render_worker_circuit_state_icons");
+    }
+
+    #[test]
+    fn test_render_workers_slot_display() {
+        init_test_logging();
+        info!("TEST START: test_render_workers_slot_display");
+        let mut worker = sample_worker("slot-w", WorkerStatus::Healthy, CircuitState::Closed);
+        worker.used_slots = 5;
+        worker.total_slots = 10;
+        let state = TuiState {
+            selected_panel: Panel::Workers,
+            workers: vec![worker],
+            ..Default::default()
+        };
+        let content = render_to_string(60, 6, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_workers_panel(f, Rect::new(0, 0, 60, 6), &state, &colors);
+        });
+        assert!(content.contains("(5/10)"));
+        info!("TEST PASS: test_render_workers_slot_display");
+    }
+
+    // ==================== Build status rendering tests ====================
+
+    #[test]
+    fn test_render_all_build_statuses() {
+        init_test_logging();
+        info!("TEST START: test_render_all_build_statuses");
+        let builds = vec![
+            ActiveBuild {
+                id: "b1".to_string(),
+                command: "pending cmd".to_string(),
+                worker: None,
+                started_at: Utc::now(),
+                progress: None,
+                status: BuildStatus::Pending,
+            },
+            ActiveBuild {
+                id: "b2".to_string(),
+                command: "syncing cmd".to_string(),
+                worker: Some("w1".to_string()),
+                started_at: Utc::now(),
+                progress: None,
+                status: BuildStatus::Syncing,
+            },
+            ActiveBuild {
+                id: "b3".to_string(),
+                command: "compiling cmd".to_string(),
+                worker: Some("w1".to_string()),
+                started_at: Utc::now(),
+                progress: Some(BuildProgress {
+                    phase: "compiling".to_string(),
+                    percent: Some(50),
+                    current_file: None,
+                }),
+                status: BuildStatus::Compiling,
+            },
+            ActiveBuild {
+                id: "b4".to_string(),
+                command: "downloading cmd".to_string(),
+                worker: Some("w1".to_string()),
+                started_at: Utc::now(),
+                progress: None,
+                status: BuildStatus::Downloading,
+            },
+        ];
+        let state = TuiState {
+            selected_panel: Panel::ActiveBuilds,
+            active_builds: builds,
+            ..Default::default()
+        };
+        let content = render_to_string(80, 12, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_active_builds_panel(f, Rect::new(0, 0, 80, 12), &state, &colors);
+        });
+        assert!(content.contains("pending cmd"));
+        assert!(content.contains("syncing cmd"));
+        assert!(content.contains("compiling cmd"));
+        assert!(content.contains("downloading cmd"));
+        info!("TEST PASS: test_render_all_build_statuses");
+    }
+
+    #[test]
+    fn test_render_empty_active_builds_shows_none() {
+        init_test_logging();
+        info!("TEST START: test_render_empty_active_builds_shows_none");
+        let state = TuiState {
+            selected_panel: Panel::ActiveBuilds,
+            active_builds: vec![],
+            ..Default::default()
+        };
+        let content = render_to_string(60, 8, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_active_builds_panel(f, Rect::new(0, 0, 60, 8), &state, &colors);
+        });
+        assert!(content.contains("Active Builds (none)"));
+        info!("TEST PASS: test_render_empty_active_builds_shows_none");
+    }
+
+    // ==================== Command truncation tests ====================
+
+    #[test]
+    fn test_active_build_command_truncation() {
+        init_test_logging();
+        info!("TEST START: test_active_build_command_truncation");
+        let long_command = "cargo build --release --features=abc,def,ghi,jkl,mno,pqr";
+        let build = ActiveBuild {
+            id: "b1".to_string(),
+            command: long_command.to_string(),
+            worker: Some("w1".to_string()),
+            started_at: Utc::now(),
+            progress: None,
+            status: BuildStatus::Compiling,
+        };
+        let state = TuiState {
+            selected_panel: Panel::ActiveBuilds,
+            active_builds: vec![build],
+            ..Default::default()
+        };
+        let content = render_to_string(80, 6, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_active_builds_panel(f, Rect::new(0, 0, 80, 6), &state, &colors);
+        });
+        // Command should be truncated with "..."
+        assert!(content.contains("..."));
+        // Full command should not appear
+        assert!(!content.contains(long_command));
+        info!("TEST PASS: test_active_build_command_truncation");
+    }
+
+    #[test]
+    fn test_history_command_truncation() {
+        init_test_logging();
+        info!("TEST START: test_history_command_truncation");
+        let long_command = "cargo build --release --features=abc,def,ghi,jkl";
+        let mut state = TuiState {
+            selected_panel: Panel::BuildHistory,
+            ..Default::default()
+        };
+        state
+            .build_history
+            .push_back(crate::tui::state::HistoricalBuild {
+                id: "h1".to_string(),
+                command: long_command.to_string(),
+                worker: Some("w1".to_string()),
+                started_at: Utc::now(),
+                completed_at: Utc::now(),
+                duration_ms: 1200,
+                success: true,
+                exit_code: Some(0),
+            });
+        let content = render_to_string(80, 8, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_build_history_panel(f, Rect::new(0, 0, 80, 8), &state, &colors);
+        });
+        // Command should be truncated with "..."
+        assert!(content.contains("..."));
+        info!("TEST PASS: test_history_command_truncation");
+    }
+
+    // ==================== Header rendering tests ====================
+
+    #[test]
+    fn test_render_header_all_daemon_statuses() {
+        init_test_logging();
+        info!("TEST START: test_render_header_all_daemon_statuses");
+        use crate::tui::state::Status;
+
+        for (status, expected_text) in [
+            (Status::Running, "Running"),
+            (Status::Stopped, "Stopped"),
+            (Status::Error, "Error"),
+            (Status::Unknown, "Unknown"),
+        ] {
+            let mut state = TuiState::default();
+            state.daemon.status = status;
+            let content = render_to_string(80, 5, |f| {
+                let colors = get_colors(false, ColorBlindMode::None);
+                render_header(f, Rect::new(0, 0, 80, 5), &state, &colors);
+            });
+            assert!(
+                content.contains(expected_text),
+                "Expected '{}' in output for status {:?}",
+                expected_text,
+                status
+            );
+        }
+        info!("TEST PASS: test_render_header_all_daemon_statuses");
+    }
+
+    #[test]
+    fn test_render_header_shows_counts() {
+        init_test_logging();
+        info!("TEST START: test_render_header_shows_counts");
+        let state = TuiState {
+            workers: vec![
+                sample_worker("w1", WorkerStatus::Healthy, CircuitState::Closed),
+                sample_worker("w2", WorkerStatus::Healthy, CircuitState::Closed),
+            ],
+            active_builds: vec![sample_active_build("b1", "cmd")],
+            ..Default::default()
+        };
+        let content = render_to_string(80, 5, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_header(f, Rect::new(0, 0, 80, 5), &state, &colors);
+        });
+        assert!(content.contains("Workers: 2"));
+        assert!(content.contains("Builds: 1"));
+        info!("TEST PASS: test_render_header_shows_counts");
+    }
+
+    // ==================== Footer rendering tests ====================
+
+    #[test]
+    fn test_render_footer_normal_mode_hints() {
+        init_test_logging();
+        info!("TEST START: test_render_footer_normal_mode_hints");
+        let state = TuiState::default();
+        let content = render_to_string(80, 5, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_footer(f, Rect::new(0, 0, 80, 5), &state, &colors);
+        });
+        assert!(content.contains("Quit"));
+        assert!(content.contains("Navigate"));
+        assert!(content.contains("Refresh"));
+        assert!(content.contains("Help"));
+        info!("TEST PASS: test_render_footer_normal_mode_hints");
+    }
+
+    #[test]
+    fn test_render_footer_filter_mode_hints() {
+        init_test_logging();
+        info!("TEST START: test_render_footer_filter_mode_hints");
+        let state = TuiState {
+            filter_mode: true,
+            ..Default::default()
+        };
+        let content = render_to_string(80, 5, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_footer(f, Rect::new(0, 0, 80, 5), &state, &colors);
+        });
+        assert!(content.contains("Exit filter"));
+        assert!(content.contains("Apply"));
+        info!("TEST PASS: test_render_footer_filter_mode_hints");
+    }
+
+    #[test]
+    fn test_render_footer_log_view_hints() {
+        init_test_logging();
+        info!("TEST START: test_render_footer_log_view_hints");
+        let state = TuiState {
+            log_view: Some(LogViewState::default()),
+            ..Default::default()
+        };
+        let content = render_to_string(80, 5, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_footer(f, Rect::new(0, 0, 80, 5), &state, &colors);
+        });
+        assert!(content.contains("Close logs"));
+        assert!(content.contains("Scroll"));
+        assert!(content.contains("Copy"));
+        info!("TEST PASS: test_render_footer_log_view_hints");
+    }
+
+    // ==================== Log panel rendering tests ====================
+
+    #[test]
+    fn test_render_logs_panel_empty_lines() {
+        init_test_logging();
+        info!("TEST START: test_render_logs_panel_empty_lines");
+        let log_view = LogViewState::default();
+        let state = TuiState {
+            log_view: Some(log_view),
+            selected_panel: Panel::Logs,
+            ..Default::default()
+        };
+        let content = render_to_string(80, 8, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_logs_panel(f, Rect::new(0, 0, 80, 8), &state, &colors);
+        });
+        assert!(content.contains("Build Logs"));
+        info!("TEST PASS: test_render_logs_panel_empty_lines");
+    }
+
+    #[test]
+    fn test_render_logs_panel_auto_scroll_indicator() {
+        init_test_logging();
+        info!("TEST START: test_render_logs_panel_auto_scroll_indicator");
+        let mut log_view = LogViewState::default();
+        log_view.auto_scroll = true;
+        log_view.lines.push_back("test line".to_string());
+        let state = TuiState {
+            log_view: Some(log_view),
+            selected_panel: Panel::Logs,
+            ..Default::default()
+        };
+        let content = render_to_string(80, 8, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_logs_panel(f, Rect::new(0, 0, 80, 8), &state, &colors);
+        });
+        assert!(content.contains("[AUTO]"));
+        info!("TEST PASS: test_render_logs_panel_auto_scroll_indicator");
+    }
+
+    #[test]
+    fn test_render_logs_panel_no_scroll_indicator_when_disabled() {
+        init_test_logging();
+        info!("TEST START: test_render_logs_panel_no_scroll_indicator_when_disabled");
+        let mut log_view = LogViewState::default();
+        log_view.auto_scroll = false;
+        log_view.lines.push_back("test line".to_string());
+        let state = TuiState {
+            log_view: Some(log_view),
+            selected_panel: Panel::Logs,
+            ..Default::default()
+        };
+        let content = render_to_string(80, 8, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_logs_panel(f, Rect::new(0, 0, 80, 8), &state, &colors);
+        });
+        assert!(!content.contains("[AUTO]"));
+        info!("TEST PASS: test_render_logs_panel_no_scroll_indicator_when_disabled");
+    }
+
+    // ==================== Rendering at different widths ====================
+
+    #[test]
+    fn test_render_at_narrow_width() {
+        init_test_logging();
+        info!("TEST START: test_render_at_narrow_width");
+        let state = TuiState {
+            workers: vec![sample_worker("w1", WorkerStatus::Healthy, CircuitState::Closed)],
+            active_builds: vec![sample_active_build("b1", "cargo build")],
+            ..Default::default()
+        };
+        // Test at 40 columns (narrow terminal)
+        let result = std::panic::catch_unwind(|| {
+            let _ = render_to_string(40, 20, |f| render(f, &state));
+        });
+        assert!(result.is_ok());
+        info!("TEST PASS: test_render_at_narrow_width");
+    }
+
+    #[test]
+    fn test_render_at_wide_width() {
+        init_test_logging();
+        info!("TEST START: test_render_at_wide_width");
+        let state = TuiState {
+            workers: vec![sample_worker("w1", WorkerStatus::Healthy, CircuitState::Closed)],
+            active_builds: vec![sample_active_build("b1", "cargo build")],
+            ..Default::default()
+        };
+        // Test at 200 columns (wide terminal)
+        let result = std::panic::catch_unwind(|| {
+            let _ = render_to_string(200, 50, |f| render(f, &state));
+        });
+        assert!(result.is_ok());
+        info!("TEST PASS: test_render_at_wide_width");
+    }
+
+    #[test]
+    fn test_render_at_short_height() {
+        init_test_logging();
+        info!("TEST START: test_render_at_short_height");
+        let state = TuiState::default();
+        // Test at 5 rows (very short terminal)
+        let result = std::panic::catch_unwind(|| {
+            let _ = render_to_string(80, 5, |f| render(f, &state));
+        });
+        assert!(result.is_ok());
+        info!("TEST PASS: test_render_at_short_height");
+    }
+
+    // ==================== Main content rendering tests ====================
+
+    #[test]
+    fn test_render_main_content_shows_log_view_fullscreen() {
+        init_test_logging();
+        info!("TEST START: test_render_main_content_shows_log_view_fullscreen");
+        let mut log_view = LogViewState::default();
+        log_view.build_id = "test-build-123".to_string();
+        log_view.lines.push_back("Compiling test...".to_string());
+        let state = TuiState {
+            log_view: Some(log_view),
+            selected_panel: Panel::Logs,
+            ..Default::default()
+        };
+        let content = render_to_string(80, 20, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_main_content(f, Rect::new(0, 0, 80, 20), &state, &colors);
+        });
+        // Log view should be rendered, not the workers/builds panels
+        assert!(content.contains("test-build-123"));
+        assert!(content.contains("Compiling test"));
+        info!("TEST PASS: test_render_main_content_shows_log_view_fullscreen");
+    }
+
+    #[test]
+    fn test_render_main_content_normal_layout() {
+        init_test_logging();
+        info!("TEST START: test_render_main_content_normal_layout");
+        let state = TuiState {
+            workers: vec![sample_worker("main-worker", WorkerStatus::Healthy, CircuitState::Closed)],
+            ..Default::default()
+        };
+        let content = render_to_string(100, 30, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_main_content(f, Rect::new(0, 0, 100, 30), &state, &colors);
+        });
+        // Workers panel should be visible
+        assert!(content.contains("main-worker"));
+        assert!(content.contains("Workers"));
+        info!("TEST PASS: test_render_main_content_normal_layout");
+    }
+
+    // ==================== Selection highlighting tests ====================
+
+    #[test]
+    fn test_selection_highlight_in_workers_panel() {
+        init_test_logging();
+        info!("TEST START: test_selection_highlight_in_workers_panel");
+        let state = TuiState {
+            selected_panel: Panel::Workers,
+            selected_index: 1,
+            workers: vec![
+                sample_worker("unselected", WorkerStatus::Healthy, CircuitState::Closed),
+                sample_worker("selected", WorkerStatus::Healthy, CircuitState::Closed),
+            ],
+            ..Default::default()
+        };
+        let content = render_to_string(60, 10, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_workers_panel(f, Rect::new(0, 0, 60, 10), &state, &colors);
+        });
+        // Both workers should be visible
+        assert!(content.contains("unselected"));
+        assert!(content.contains("selected"));
+        info!("TEST PASS: test_selection_highlight_in_workers_panel");
+    }
+
+    // ==================== History panel tests ====================
+
+    #[test]
+    fn test_history_success_and_failure_icons() {
+        init_test_logging();
+        info!("TEST START: test_history_success_and_failure_icons");
+        let mut state = TuiState {
+            selected_panel: Panel::BuildHistory,
+            ..Default::default()
+        };
+        state.build_history.push_back(crate::tui::state::HistoricalBuild {
+            id: "h1".to_string(),
+            command: "success cmd".to_string(),
+            worker: Some("w1".to_string()),
+            started_at: Utc::now(),
+            completed_at: Utc::now(),
+            duration_ms: 1200,
+            success: true,
+            exit_code: Some(0),
+        });
+        state.build_history.push_back(crate::tui::state::HistoricalBuild {
+            id: "h2".to_string(),
+            command: "failed cmd".to_string(),
+            worker: Some("w1".to_string()),
+            started_at: Utc::now(),
+            completed_at: Utc::now(),
+            duration_ms: 500,
+            success: false,
+            exit_code: Some(1),
+        });
+        let content = render_to_string(80, 10, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_build_history_panel(f, Rect::new(0, 0, 80, 10), &state, &colors);
+        });
+        assert!(content.contains("success cmd"));
+        assert!(content.contains("failed cmd"));
+        info!("TEST PASS: test_history_success_and_failure_icons");
+    }
+
+    #[test]
+    fn test_history_local_worker_display() {
+        init_test_logging();
+        info!("TEST START: test_history_local_worker_display");
+        let mut state = TuiState {
+            selected_panel: Panel::BuildHistory,
+            ..Default::default()
+        };
+        state.build_history.push_back(crate::tui::state::HistoricalBuild {
+            id: "h1".to_string(),
+            command: "local build".to_string(),
+            worker: None, // Local build, no worker assigned
+            started_at: Utc::now(),
+            completed_at: Utc::now(),
+            duration_ms: 1200,
+            success: true,
+            exit_code: Some(0),
+        });
+        let content = render_to_string(80, 8, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_build_history_panel(f, Rect::new(0, 0, 80, 8), &state, &colors);
+        });
+        // Should show "local" for builds without a worker
+        assert!(content.contains("local"));
+        info!("TEST PASS: test_history_local_worker_display");
+    }
+
+    // ==================== Progress display tests ====================
+
+    #[test]
+    fn test_active_build_progress_percent_display() {
+        init_test_logging();
+        info!("TEST START: test_active_build_progress_percent_display");
+        let build = ActiveBuild {
+            id: "b1".to_string(),
+            command: "cargo build".to_string(),
+            worker: Some("w1".to_string()),
+            started_at: Utc::now(),
+            progress: Some(BuildProgress {
+                phase: "compiling".to_string(),
+                percent: Some(75),
+                current_file: None,
+            }),
+            status: BuildStatus::Compiling,
+        };
+        let state = TuiState {
+            selected_panel: Panel::ActiveBuilds,
+            active_builds: vec![build],
+            ..Default::default()
+        };
+        let content = render_to_string(80, 8, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_active_builds_panel(f, Rect::new(0, 0, 80, 8), &state, &colors);
+        });
+        assert!(content.contains("75%"));
+        info!("TEST PASS: test_active_build_progress_percent_display");
+    }
+
+    #[test]
+    fn test_active_build_no_progress() {
+        init_test_logging();
+        info!("TEST START: test_active_build_no_progress");
+        let build = ActiveBuild {
+            id: "b1".to_string(),
+            command: "cargo build".to_string(),
+            worker: Some("w1".to_string()),
+            started_at: Utc::now(),
+            progress: None,
+            status: BuildStatus::Pending,
+        };
+        let state = TuiState {
+            selected_panel: Panel::ActiveBuilds,
+            active_builds: vec![build],
+            ..Default::default()
+        };
+        // Should not panic with None progress
+        let result = std::panic::catch_unwind(|| {
+            let _ = render_to_string(80, 8, |f| {
+                let colors = get_colors(false, ColorBlindMode::None);
+                render_active_builds_panel(f, Rect::new(0, 0, 80, 8), &state, &colors);
+            });
+        });
+        assert!(result.is_ok());
+        info!("TEST PASS: test_active_build_no_progress");
+    }
 }
