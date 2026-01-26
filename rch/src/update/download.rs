@@ -167,8 +167,18 @@ async fn extract_checksum(checksum_file: &PathBuf, filename: &str) -> Result<Str
         .await
         .map_err(|e| UpdateError::DownloadFailed(format!("Failed to read checksum file: {}", e)))?;
 
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+
+    // Some checksum files contain just the hash (single non-empty line).
+    if lines.len() == 1 {
+        let parts: Vec<&str> = lines[0].split_whitespace().collect();
+        if parts.len() == 1 {
+            return Ok(parts[0].to_string());
+        }
+    }
+
     // Checksum files typically have format: "checksum  filename" or "checksum filename"
-    for line in content.lines() {
+    for line in lines {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 2 {
             let checksum = parts[0];
@@ -176,9 +186,6 @@ async fn extract_checksum(checksum_file: &PathBuf, filename: &str) -> Result<Str
             if *file == filename || file.ends_with(filename) {
                 return Ok(checksum.to_string());
             }
-        } else if parts.len() == 1 && !content.contains(char::is_whitespace) {
-            // Single checksum file for single asset
-            return Ok(parts[0].to_string());
         }
     }
 
@@ -239,7 +246,7 @@ mod tests {
         let checksum_file = temp.path().join("rch.tar.gz.sha256");
 
         // Some checksum files contain just the hash
-        std::fs::write(&checksum_file, "abc123def456").unwrap();
+        std::fs::write(&checksum_file, "abc123def456\n").unwrap();
 
         let result = extract_checksum(&checksum_file.to_path_buf(), "rch.tar.gz").await;
         assert_eq!(result.unwrap(), "abc123def456");
