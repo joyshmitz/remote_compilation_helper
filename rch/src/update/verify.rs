@@ -219,4 +219,102 @@ mod tests {
 
         assert!(verify_sha256_bytes(content, expected).is_ok());
     }
+
+    #[tokio::test]
+    async fn test_verify_checksum_file_not_found() {
+        let temp = TempDir::new().unwrap();
+        let nonexistent = temp.path().join("does_not_exist.bin");
+
+        let result = verify_checksum(&nonexistent, "0".repeat(64).as_str()).await;
+        assert!(result.is_err());
+        match result {
+            Err(UpdateError::InstallFailed(msg)) => {
+                assert!(msg.contains("Failed to open file"));
+            }
+            _ => panic!("Expected InstallFailed error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_compute_sha256_file_not_found() {
+        let temp = TempDir::new().unwrap();
+        let nonexistent = temp.path().join("nonexistent.txt");
+
+        let result = compute_sha256(&nonexistent).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_verify_checksum_blake3() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("blake3_test.txt");
+
+        std::fs::write(&file_path, "test content").unwrap();
+
+        // Compute BLAKE3 hash of "test content"
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"test content");
+        let blake3_hash = hasher.finalize().to_hex().to_string();
+
+        // verify_checksum should accept BLAKE3 hash
+        let result = verify_checksum(&file_path, &blake3_hash).await.unwrap();
+        assert!(result.checksum_valid);
+    }
+
+    #[test]
+    fn test_verification_result_fields() {
+        let result = VerificationResult {
+            checksum_valid: true,
+            signature_valid: Some(true),
+        };
+        assert!(result.checksum_valid);
+        assert_eq!(result.signature_valid, Some(true));
+
+        let result_no_sig = VerificationResult {
+            checksum_valid: false,
+            signature_valid: None,
+        };
+        assert!(!result_no_sig.checksum_valid);
+        assert!(result_no_sig.signature_valid.is_none());
+    }
+
+    #[test]
+    fn test_verify_sha256_bytes_invalid_hex_length() {
+        let content = b"test";
+        // Too short to be a valid SHA256 hash
+        let short_hash = "abc123";
+
+        // Should fail because actual hash won't match this short string
+        let result = verify_sha256_bytes(content, short_hash);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_verify_checksum_with_mixed_case_hex() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("mixedcase.txt");
+
+        std::fs::write(&file_path, "test content").unwrap();
+
+        // Mixed case SHA256 hash
+        let expected = "6Ae8A75555209fD6C44157c0AED8016E763Ff435a19cF186F76863140143Ff72";
+        let result = verify_checksum(&file_path, expected).await.unwrap();
+
+        assert!(result.checksum_valid);
+    }
+
+    #[tokio::test]
+    async fn test_compute_sha256_empty_file() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("empty.txt");
+
+        std::fs::write(&file_path, "").unwrap();
+
+        let hash = compute_sha256(&file_path).await.unwrap();
+        // SHA256 of empty file
+        assert_eq!(
+            hash,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
 }

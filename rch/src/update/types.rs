@@ -348,4 +348,153 @@ mod tests {
         // Should contain architecture
         assert!(target.contains("x86_64") || target.contains("aarch64") || target.contains("arm"));
     }
+
+    #[test]
+    fn test_version_parse_invalid_empty() {
+        let result = Version::parse("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_version_parse_invalid_non_numeric() {
+        let result = Version::parse("a.b.c");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_version_parse_invalid_single_number() {
+        let result = Version::parse("1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_version_parse_two_parts() {
+        // Two-part version should work (patch defaults to 0)
+        let v = Version::parse("1.2").unwrap();
+        assert_eq!(v.major, 1);
+        assert_eq!(v.minor, 2);
+        assert_eq!(v.patch, 0);
+    }
+
+    #[test]
+    fn test_version_parse_too_many_parts() {
+        let result = Version::parse("1.2.3.4");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_version_equality() {
+        let v1 = Version::parse("1.2.3").unwrap();
+        let v2 = Version::parse("1.2.3").unwrap();
+        assert_eq!(v1, v2);
+
+        let v3 = Version::parse("v1.2.3").unwrap();
+        assert_eq!(v1, v3); // v prefix should be stripped
+    }
+
+    #[test]
+    fn test_version_prerelease_ordering() {
+        let alpha = Version::parse("1.0.0-alpha").unwrap();
+        let beta = Version::parse("1.0.0-beta").unwrap();
+        let release = Version::parse("1.0.0").unwrap();
+
+        assert!(alpha < beta); // alpha < beta lexicographically
+        assert!(beta < release); // prerelease < release
+        assert!(alpha < release);
+    }
+
+    #[test]
+    fn test_version_ordering_across_major() {
+        let v1 = Version::parse("0.9.9").unwrap();
+        let v2 = Version::parse("1.0.0").unwrap();
+        assert!(v1 < v2);
+    }
+
+    #[test]
+    fn test_channel_display() {
+        assert_eq!(Channel::Stable.to_string(), "stable");
+        assert_eq!(Channel::Beta.to_string(), "beta");
+        assert_eq!(Channel::Nightly.to_string(), "nightly");
+    }
+
+    #[test]
+    fn test_cached_check_is_valid_fresh() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let cached = CachedCheck {
+            result: UpdateCheck {
+                current_version: Version::parse("1.0.0").unwrap(),
+                latest_version: Version::parse("1.0.0").unwrap(),
+                update_available: false,
+                release_url: String::new(),
+                release_notes: None,
+                changelog_diff: None,
+                assets: vec![],
+            },
+            cached_at_secs: now,
+        };
+
+        assert!(cached.is_valid());
+    }
+
+    #[test]
+    fn test_cached_check_is_valid_stale() {
+        // Set cached_at to 25 hours ago (beyond CACHE_DURATION of 24 hours)
+        let stale_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - (25 * 60 * 60);
+
+        let cached = CachedCheck {
+            result: UpdateCheck {
+                current_version: Version::parse("1.0.0").unwrap(),
+                latest_version: Version::parse("1.0.0").unwrap(),
+                update_available: false,
+                release_url: String::new(),
+                release_notes: None,
+                changelog_diff: None,
+                assets: vec![],
+            },
+            cached_at_secs: stale_time,
+        };
+
+        assert!(!cached.is_valid());
+    }
+
+    #[test]
+    fn test_update_error_display() {
+        let err = UpdateError::ChecksumMismatch {
+            expected: "abc".to_string(),
+            actual: "def".to_string(),
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("abc"));
+        assert!(msg.contains("def"));
+
+        let err = UpdateError::LockHeld;
+        assert!(format!("{}", err).contains("lock"));
+
+        let err = UpdateError::InvalidVersion("bad".to_string());
+        assert!(format!("{}", err).contains("bad"));
+    }
+
+    #[test]
+    fn test_backup_entry_serde() {
+        let entry = BackupEntry {
+            version: "1.0.0".to_string(),
+            created_at: 1234567890,
+            original_path: PathBuf::from("/usr/bin/rch"),
+            backup_path: PathBuf::from("/var/backup/rch-1.0.0"),
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: BackupEntry = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.version, "1.0.0");
+        assert_eq!(parsed.created_at, 1234567890);
+    }
 }
