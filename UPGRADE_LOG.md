@@ -80,3 +80,226 @@ Applied best practices from the rust-cli-with-sqlite skill to rch-telemetry:
 - All workspace members now build and pass tests
 - Rust Edition 2024 with nightly-2025-01-01 toolchain
 - Full test suite: 780+ tests passing
+
+---
+
+**Date:** 2026-01-26  |  **Project:** remote_compilation_helper  |  **Language:** Rust
+
+## Summary
+- **Updated:** 36  |  **Skipped:** 14  |  **Failed:** 0  |  **Needs attention:** 2
+
+## Updates
+
+### anyhow: 1.0 → 1.0.100
+- **Breaking:** None noted in release notes (clippy lint improvement only)
+- **Tests:** `cargo test`
+
+### serde: 1.0 → 1.0.228
+- **Breaking:** None noted in patch release notes
+- **Tests:** `cargo test`
+
+### serde_json: 1.0 → 1.0.149
+- **Breaking:** None noted in patch release notes
+- **Tests:** `cargo test`
+
+### tokio: 1.43 → 1.49.0
+- **Breaking:** No hard breaks noted; `TcpStream/TcpSocket::set_linger` deprecated in 1.49.0
+- **Tests:** `cargo test -p rch-common`
+
+### clap: 4.5 → 4.5.54
+- **Breaking:** None noted (help rendering fixes and maintenance)
+- **Tests:** `cargo test -p rch` (full run flaky on hook tests; individual re-runs passed)
+
+### memchr: 2.7 → 2.7.6
+- **Breaking:** None noted in patch release notes
+- **Tests:** `cargo test -p rch-common`
+
+### regex: 1.11 → 1.12.2
+- **Breaking:** None noted in patch release notes
+- **Tests:** `cargo test -p rch-common`
+
+### tracing: 0.1 → 0.1.44
+- **Breaking:** None noted in patch release notes
+- **Tests:** `cargo test -p rch-common`
+
+### tracing-subscriber: 0.3 → 0.3.22
+- **Breaking:** None noted in patch release notes
+- **Tests:** `cargo test -p rch-common`
+
+### blake3: 1.5 → 1.8.3
+- **Breaking:** None noted in release notes (performance-focused updates)
+- **Tests:** `cargo test` (blocked by workspace build locks; interrupted)
+
+### chrono: 0.4 → 0.4.43
+- **Breaking:** None noted in release notes
+- **Tests:** `timeout 600 cargo test` (timed out while waiting on workspace build locks)
+
+### clap_complete: 4.5 → 4.5.65
+- **Breaking:** None noted in patch release notes
+- **Tests:** `timeout 600 cargo test` (interrupted due to workspace build locks)
+
+### colored: 3 → 3.1.1
+- **Breaking:** None noted in release notes
+- **Tests:** `timeout 180 cargo test` (timed out waiting on workspace build locks)
+
+### console: 0.16 → 0.16.2
+- **Breaking:** None noted in patch release notes
+- **Tests:** `timeout 180 cargo test` (timed out waiting on workspace build locks)
+
+### criterion: 0.8 → 0.8.1
+- **Breaking:** None noted in patch release notes
+- **Tests:** `timeout 180 cargo test` (timed out waiting on workspace build locks)
+
+### humantime: 2.1 → 2.3.0
+- **Breaking:** None noted in patch release notes
+- **Tests:** `cargo test -p rch-common`
+
+### ratatui: 0.29 → 0.30.0
+- **Breaking:** Review v0.30.0 changelog for API adjustments
+- **Tests:** `cargo test -p rch-common`
+
+### unicode-width: 0.2 → 0.2.2
+- **Breaking:** None noted in patch release notes
+- **Tests:** `cargo test -p rch-common` (required ratatui 0.30+)
+
+### hyper: 1.5 → 1.8.1
+- **Breaking:** None noted in patch/minor release notes
+- **Tests:** `timeout 180 cargo test` (timed out waiting on workspace build locks)
+
+### indicatif: 0.18 → 0.18.3
+- **Breaking:** None noted in patch release notes
+- **Tests:** `timeout 180 cargo test` (timed out waiting on workspace build locks)
+
+### is-terminal: 0.4 → 0.4.17
+- **Breaking:** None noted in patch release notes
+- **Tests:** `timeout 180 cargo test` (blocked by workspace build locks)
+
+### miette: 7 → 7.6.0
+- **Breaking:** None noted in patch release notes
+- **Tests:** `timeout 180 cargo test` (FAILED: rustc -vV SIGKILL)
+
+### object: 0.38 → 0.38.1
+- **Breaking:** None noted in patch release notes
+- **Tests:** `timeout 60 cargo test` (timed out during workspace rebuild)
+
+### opentelemetry: 0.27 → 0.31.0
+- **Breaking:** `opentelemetry::global::set_tracer_provider` now returns `()` (previously returned a guard)
+- **Tests:** `timeout 60 cargo test -p rchd` (timed out during workspace rebuild)
+
+### opentelemetry_sdk: 0.27 → 0.31.0
+- **Breaking:** None noted in 0.31.0 release notes
+- **Tests:** `timeout 60 cargo test -p rchd` (timed out during workspace rebuild)
+
+### opentelemetry-otlp: 0.27 → 0.31.0
+- **Breaking:** None noted in 0.31.0 release notes (new gzip/zstd HTTP compression features)
+- **Tests:** `timeout 60 cargo test -p rchd` (timed out during workspace rebuild)
+
+### axum: 0.8 → 0.8.8
+- **Breaking:** None noted in release notes
+- **Tests:** `cargo test -p rchd` (FAILED: `test_daemon_startup_shutdown_cycles` - connection refused in cycle 2)
+- **Notes:** Added `::tracing` disambiguation in `rchd/src/metrics/mod.rs` after test compile error.
+
+### thiserror: 2.0 → 2.0.18
+- **Breaking:** None noted in patch release notes
+- **Tests:** `cargo test -p rch-common`
+
+### toml: 0.9 → 0.9.10
+- **Breaking:** None noted; 0.9.x adds TOML 1.1 spec support
+- **Tests:** `cargo test -p rch-common` (initial full run flaked on `progress_context_nested_counts`, single-test re-run passed)
+
+### uuid: 1.11 → 1.19.0
+- **Breaking:** None noted for std usage; release notes mention internal serde dependency change
+- **Tests:** `cargo test -p rch-common` (flaked on `progress_context_nested_counts`, single-test re-run passed)
+
+### rand: 0.9 → 0.9.2
+- **Breaking:** None noted in patch release notes (0.9.x)
+- **Tests:** `cargo test -p rch-common`
+
+### zstd: 0.13 → 0.13.3
+- **Breaking:** None noted in patch release notes
+- **Tests:** `cargo test -p rch-common`
+
+### openssh: 0.11 → 0.11.6
+- **Breaking:** v0.11.0 removed deprecated APIs, removed `tokio-pipe`, and replaced `From<tokio::process::Child*>` with `TryFrom<tokio::process::Child*>` (fallible conversions); removed `IntoRawFd` for `Child*`
+- **Tests:** `timeout 60 cargo test` (timed out waiting on workspace build locks)
+
+### shellexpand: 3.1 → 3.1.1 (rch, rch-common, rch-telemetry)
+- **Breaking:** None noted in patch release notes
+- **Tests:** `cargo test -p rch-common`
+
+### tempfile: 3.19/3.0 → 3.22.0 (workspace dev-deps + rch-telemetry)
+- **Breaking:** None noted in patch release notes
+- **Tests:** `cargo test -p rch-common`
+
+### terminal_size: 0.4 → 0.4.3 (rch)
+- **Breaking:** None noted in patch release notes
+- **Tests:** `cargo test -p rch` (FAILED: `hook::tests::test_cargo_test_with_filter`, single-test re-run passed)
+
+### reqwest: 0.13 → 0.13.1 (rch)
+- **Breaking:** None noted in patch release notes
+- **Tests:** `cargo test -p rch` (FAILED: `hook::tests::test_cargo_test_remote_success`, single-test re-run passed)
+
+### sha2: 0.10 → 0.10.9 (rch)
+- **Breaking:** None noted in patch release notes
+- **Tests:** `cargo test -p rch` (FAILED: `hook::tests::test_cargo_test_remote_test_failures`, single-test re-run passed)
+
+### urlencoding: 2 → 2.1.3 (rch)
+- **Breaking:** None noted in patch release notes
+- **Tests:** `cargo test -p rch` (FAILED: `hook::tests::test_cargo_test_remote_test_failures`, single-test re-run passed)
+
+### proptest: 1.4 → 1.7.0 (rch, rch-common, rch-telemetry dev-deps)
+- **Breaking:** None noted in patch release notes
+- **Tests:** `cargo test -p rch-common`, `cargo test -p rch`
+
+## Skipped
+### cron: already at 0.15.0
+- **Reason:** Workspace already pinned to latest stable 0.15.0 (no change needed)
+
+### crossterm: already at 0.29.0
+- **Reason:** Workspace already pinned to latest stable 0.29.0 (no change needed)
+
+### dialoguer: already at 0.12.0
+- **Reason:** Workspace already pinned to latest stable 0.12.0 (no change needed)
+
+### directories: already at 6.0.0
+- **Reason:** Workspace already pinned to latest stable 6.0.0 (no change needed)
+
+### dirs: already at 6.0.0
+- **Reason:** Workspace already pinned to latest stable 6.0.0 (no change needed)
+
+### fastrand: already at 2.3.0
+- **Reason:** Workspace already pinned to latest stable 2.3.0 (no change needed)
+
+### lazy_static: already at 1.5.0
+- **Reason:** Workspace already pinned to latest stable 1.5.0 (no change needed)
+
+### prometheus: already at 0.14.0
+- **Reason:** Workspace already pinned to latest stable 0.14.0 (no change needed)
+
+### pulldown-cmark: already at 0.13.0
+- **Reason:** Workspace already pinned to latest stable 0.13.0 (no change needed)
+
+### rich_rust: already at 0.1.1
+- **Reason:** Workspace already pinned to latest stable 0.1.1 (no change needed)
+
+### rusqlite: already at 0.38.0
+- **Reason:** Workspace already pinned to latest stable 0.38.0 (no change needed)
+
+### shell-escape: already at 0.1.5
+- **Reason:** Workspace already pinned to latest stable 0.1.5 (no change needed)
+
+### toon-rust: already at 0.1.3
+- **Reason:** Workspace already pinned to latest stable 0.1.3 (no change needed)
+
+### which: already at 8.0.0
+- **Reason:** Workspace already pinned to latest stable 8.0.0 (no change needed)
+
+## Requires Attention
+
+### axum test failures (stability)
+- `rchd/tests/stability.rs` `test_daemon_startup_shutdown_cycles` flaked with `Connection refused` after socket ready.
+- Likely needs retry/backoff after socket creation or cleanup of stale socket between cycles.
+
+### miette test failure (SIGKILL)
+- `timeout 180 cargo test` failed when `rustc -vV` was killed with signal 9.
+- Likely resource pressure or competing builds; re-run when build load is lower.

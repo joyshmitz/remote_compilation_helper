@@ -53,7 +53,7 @@ default = ["rich-ui"]
 rich-ui = ["rich_rust"]
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = "3.22.0"
 whoami = "2"
 rch-common = { workspace = true }
 

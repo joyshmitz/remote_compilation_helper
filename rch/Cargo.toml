@@ -26,21 +26,21 @@ miette = { workspace = true }
 toml = { workspace = true }
 directories = { workspace = true }
 blake3 = { workspace = true }
-shellexpand = "3.1"
+shellexpand = "3.1.1"
 dirs = { workspace = true }
-urlencoding = "2"
-colored = "3"
+urlencoding = "2.1.3"
+colored = "3.1.1"
 unicode-width = { workspace = true }
-is-terminal = "0.4"
-terminal_size = "0.4"
+is-terminal = "0.4.17"
+terminal_size = "0.4.3"
 regex = "1"
-indicatif = { version = "0.18", features = ["tokio"] }
+indicatif = { version = "0.18.3", features = ["tokio"] }
 chrono = { workspace = true, features = ["serde"] }
 uuid = { workspace = true }
 
 # Update system dependencies
-reqwest = { version = "0.13", features = ["json"] }
-sha2 = "0.10"
+reqwest = { version = "0.13.1", features = ["json"] }
+sha2 = "0.10.9"
 shell-escape = "0.1.5"
 
 # State detection dependencies
@@ -66,12 +66,17 @@ rich-ui = ["rich_rust"]
 true-e2e = []
 
 [dev-dependencies]
-tempfile = "3"
-proptest = "1.4"
+tempfile = "3.22.0"
+proptest = "1.7.0"
 
 [[test]]
 name = "true_e2e"
 path = "../tests/true_e2e/mod.rs"
+required-features = ["true-e2e"]
+
+[[test]]
+name = "true_e2e_ssh"
+path = "../tests/true_e2e/ssh_tests.rs"
 required-features = ["true-e2e"]
 
 [lints.rust]
