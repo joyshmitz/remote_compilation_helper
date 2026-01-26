@@ -400,7 +400,7 @@ fn summarize_capabilities(capabilities: &WorkerCapabilities) -> String {
 }
 
 /// Daemon status response.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct DaemonStatusResponse {
     pub running: bool,
     pub socket_path: String,
@@ -422,7 +422,7 @@ pub struct SystemOverview {
 }
 
 /// Configuration show response for JSON output.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ConfigShowResponse {
     pub general: ConfigGeneralSection,
     pub compilation: ConfigCompilationSection,
@@ -437,7 +437,7 @@ pub struct ConfigShowResponse {
 }
 
 /// Source information for a single configuration value.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ConfigValueSourceInfo {
     pub key: String,
     pub value: String,
@@ -453,7 +453,7 @@ pub struct ConfigExportResponse {
 }
 
 /// General configuration section.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ConfigGeneralSection {
     pub enabled: bool,
     pub log_level: String,
@@ -461,14 +461,14 @@ pub struct ConfigGeneralSection {
 }
 
 /// Compilation configuration section.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ConfigCompilationSection {
     pub confidence_threshold: f64,
     pub min_local_time_ms: u64,
 }
 
 /// Transfer configuration section.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ConfigTransferSection {
     pub compression_level: u32,
     pub exclude_patterns: Vec<String>,
