@@ -123,6 +123,18 @@ struct Cli {
     /// Color output mode: auto, always, never
     #[arg(long, global = true, default_value = "auto")]
     color: String,
+
+    /// Emit JSON Schema for command output format
+    ///
+    /// When specified with a command, outputs the JSON Schema for that command's
+    /// JSON output format. Use to validate output or understand structure programmatically.
+    ///
+    /// Examples:
+    ///   rch --schema config lint    # Schema for 'config lint' output
+    ///   rch --schema workers list   # Schema for 'workers list' output
+    ///   rch --schema daemon status  # Schema for 'daemon status' output
+    #[arg(long, global = true)]
+    schema: bool,
 }
 
 #[derive(Subcommand)]

@@ -746,11 +746,35 @@ impl TestHarness {
 
         while start.elapsed() < max_wait {
             if socket_path.exists() {
-                self.logger.info(format!(
-                    "Socket ready after {:?}: {socket_display}",
-                    start.elapsed()
-                ));
-                return Ok(());
+                #[cfg(unix)]
+                {
+                    // A socket file can exist while the daemon is not yet accepting connections
+                    // (or after a previous process died). Prefer probing connect() to avoid flakes.
+                    match std::os::unix::net::UnixStream::connect(socket_path) {
+                        Ok(stream) => {
+                            drop(stream);
+                            self.logger.info(format!(
+                                "Socket ready after {:?}: {socket_display}",
+                                start.elapsed()
+                            ));
+                            return Ok(());
+                        }
+                        Err(err) => {
+                            self.logger.debug(format!(
+                                "Socket exists but not connectable yet ({err}); retrying..."
+                            ));
+                        }
+                    }
+                }
+
+                #[cfg(not(unix))]
+                {
+                    self.logger.info(format!(
+                        "Socket ready after {:?}: {socket_display}",
+                        start.elapsed()
+                    ));
+                    return Ok(());
+                }
             }
             std::thread::sleep(delay);
             delay = (delay * 2).min(max_delay);

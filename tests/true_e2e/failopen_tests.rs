@@ -29,10 +29,8 @@ use std::time::Duration;
 /// Get the absolute path to the project root directory
 fn project_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // tests/true_e2e is 2 levels deep, go up to workspace root
     manifest_dir
         .parent()
-        .and_then(|p| p.parent())
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| manifest_dir.clone())
 }
