@@ -5,6 +5,7 @@
 //! clean teardown on interrupts. It is intentionally simple and ASCII-only
 //! to avoid leaving partial escape sequences in mixed-output scenarios.
 
+mod celebrate;
 mod compile;
 mod pipeline;
 mod spinner;
@@ -16,6 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
+pub use celebrate::{ArtifactSummary, CelebrationSummary, CompletionCelebration};
 pub use compile::{BuildPhase, BuildProfile, CompilationProgress, CrateInfo};
 pub use pipeline::{PipelineProgress, PipelineStage, StageStatus};
 pub use spinner::{AnimatedSpinner, SpinnerResult, SpinnerStyle};

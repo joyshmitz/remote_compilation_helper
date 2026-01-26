@@ -43,8 +43,9 @@ pub use error::{ErrorContext, ErrorPanel, ErrorSeverity, show_error, show_info, 
 pub use errors::NetworkErrorDisplay;
 pub use icons::Icons;
 pub use progress::{
-    AnimatedSpinner, BuildPhase, BuildProfile, CompilationProgress, CrateInfo, PipelineProgress,
-    PipelineStage, ProgressContext, RateLimiter, SpinnerResult, SpinnerStyle, StageStatus,
-    TransferDirection, TransferProgress,
+    AnimatedSpinner, ArtifactSummary, BuildPhase, BuildProfile, CelebrationSummary,
+    CompilationProgress, CompletionCelebration, CrateInfo, PipelineProgress, PipelineStage,
+    ProgressContext, RateLimiter, SpinnerResult, SpinnerStyle, StageStatus, TransferDirection,
+    TransferProgress,
 };
 pub use theme::RchTheme;
