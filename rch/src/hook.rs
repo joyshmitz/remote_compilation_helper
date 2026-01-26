@@ -17,7 +17,10 @@ use rch_common::{
     ColorMode, CompilationKind, HookInput, HookOutput, OutputVisibility, RequiredRuntime,
     SelectedWorker, SelectionResponse, SelfHealingConfig, ToolchainInfo, TransferConfig,
     WorkerConfig, WorkerId, classify_command,
-    ui::{CompilationProgress, Icons, OutputContext, RchTheme, TransferProgress},
+    ui::{
+        ArtifactSummary, CelebrationSummary, CompilationProgress, CompletionCelebration, Icons,
+        OutputContext, RchTheme, TransferProgress,
+    },
 };
 use rch_telemetry::protocol::{
     PIGGYBACK_MARKER, TelemetrySource, TestRunRecord, WorkerTelemetry,
@@ -158,6 +161,52 @@ fn format_speed(bytes: u64, duration_ms: u64) -> String {
 
 fn cache_hit(sync: &SyncResult) -> bool {
     sync.bytes_transferred == 0 && sync.files_transferred == 0
+}
+
+fn detect_target_label(command: &str, output: &str) -> Option<String> {
+    if let Some(profile) = detect_profile_from_output(output) {
+        return Some(profile);
+    }
+    if let Some(profile) = extract_profile_flag(command) {
+        return Some(profile);
+    }
+    if command.contains("--release") {
+        return Some("release".to_string());
+    }
+    None
+}
+
+fn detect_profile_from_output(output: &str) -> Option<String> {
+    for line in output.lines() {
+        if line.contains("Finished `release`") {
+            return Some("release".to_string());
+        }
+        if line.contains("Finished `dev`") || line.contains("Finished `debug`") {
+            return Some("debug".to_string());
+        }
+        if line.contains("Finished `bench`") {
+            return Some("bench".to_string());
+        }
+    }
+    None
+}
+
+fn extract_profile_flag(command: &str) -> Option<String> {
+    for token in command.split_whitespace() {
+        if let Some(profile) = token.strip_prefix("--profile=") {
+            return Some(profile.to_string());
+        }
+    }
+
+    let mut iter = command.split_whitespace();
+    while let Some(token) = iter.next() {
+        if token == "--profile" {
+            if let Some(value) = iter.next() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn emit_job_banner(
@@ -1580,6 +1629,8 @@ async fn execute_remote_compilation(
         progress: Option<CompilationProgress>,
         output: String,
         output_truncated: bool,
+        crates_compiled: Option<u32>,
+        warnings: Option<u32>,
     }
     let use_compile_progress = progress_enabled
         && matches!(
@@ -1604,6 +1655,8 @@ async fn execute_remote_compilation(
         },
         output: String::new(),
         output_truncated: false,
+        crates_compiled: None,
+        warnings: None,
     }));
 
     // Stream stdout/stderr to our stderr so the agent sees the output
@@ -1680,7 +1733,9 @@ async fn execute_remote_compilation(
     {
         let mut state = ui_state.borrow_mut();
 
+        let mut progress_stats = None;
         if let Some(progress) = state.progress.as_mut() {
+            progress_stats = Some((progress.crates_compiled(), progress.warnings()));
             if result.success() {
                 progress.finish();
             } else {
@@ -1690,6 +1745,10 @@ async fn execute_remote_compilation(
                     .unwrap_or("remote compilation failed");
                 progress.finish_error(message);
             }
+        }
+        if let Some((crates_compiled, warnings)) = progress_stats {
+            state.crates_compiled = Some(crates_compiled);
+            state.warnings = Some(warnings);
         }
 
         if use_compile_progress && !result.success() && !state.output.is_empty() {
@@ -1791,6 +1850,11 @@ async fn execute_remote_compilation(
         }
     }
 
+    let (crates_compiled, output_snapshot) = {
+        let state = ui_state.borrow();
+        (state.crates_compiled, state.output.clone())
+    };
+
     if feedback_visible {
         render_compile_summary(
             &console,
@@ -1804,6 +1868,24 @@ async fn execute_remote_compilation(
             cache_hit(&sync_result),
             result.success(),
         );
+    }
+
+    if result.success() {
+        let artifacts_summary = artifacts_result.as_ref().map(|artifact| ArtifactSummary {
+            files: u64::from(artifact.files_transferred),
+            bytes: artifact.bytes_transferred,
+        });
+        let target_label = detect_target_label(command, &output_snapshot);
+
+        let summary = CelebrationSummary::new(project_id.clone(), result.duration_ms)
+            .worker(worker_config.id.as_str())
+            .crates_compiled(crates_compiled)
+            .artifacts(artifacts_summary)
+            .cache_hit(Some(cache_hit(&sync_result)))
+            .target(target_label)
+            .quiet(reporter.visibility == OutputVisibility::None);
+
+        CompletionCelebration::new(summary).record_and_render(output_ctx);
     }
 
     Ok(RemoteExecutionResult {

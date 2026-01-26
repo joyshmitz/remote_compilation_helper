@@ -3915,11 +3915,7 @@ pub async fn daemon_reload(ctx: &OutputContext) -> Result<()> {
                             }
 
                             for warning in &warnings {
-                                println!(
-                                    "{} {}",
-                                    StatusIndicator::Warning.display(style),
-                                    warning
-                                );
+                                println!("{} {}", StatusIndicator::Warning.display(style), warning);
                             }
                         }
                     }
@@ -3927,7 +3923,10 @@ pub async fn daemon_reload(ctx: &OutputContext) -> Result<()> {
                         if ctx.is_json() {
                             let _ = ctx.json(&ApiResponse::<()>::err(
                                 "daemon reload",
-                                ApiError::internal(&format!("Failed to parse reload response: {}", e)),
+                                ApiError::internal(&format!(
+                                    "Failed to parse reload response: {}",
+                                    e
+                                )),
                             ));
                         } else {
                             println!(
@@ -3939,11 +3938,7 @@ pub async fn daemon_reload(ctx: &OutputContext) -> Result<()> {
                     }
                 }
             } else if response.contains("HTTP/1.1 500") {
-                let error_msg = response
-                    .lines()
-                    .skip(2)
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                let error_msg = response.lines().skip(2).collect::<Vec<_>>().join("\n");
                 if ctx.is_json() {
                     let _ = ctx.json(&ApiResponse::<()>::err(
                         "daemon reload",
