@@ -1073,7 +1073,7 @@ configure_hook_with_jq() {
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": {"tools": ["Bash"]},
         "hooks": [
           {
             "type": "command",
@@ -1106,7 +1106,7 @@ EOF
                 return
             fi
 
-            local new_hook='{"matcher": "Bash", "hooks": [{"type": "command", "command": "'"$hook_path"'"}]}'
+            local new_hook='{"matcher": {"tools": ["Bash"]}, "hooks": [{"type": "command", "command": "'"$hook_path"'"}]}'
             echo "$existing" | jq ".hooks.PreToolUse += [$new_hook]" > "$settings_path"
         else
             # Use * for deep merge to preserve other hooks (e.g., PostToolUse)
@@ -1132,7 +1132,7 @@ configure_hook_manual() {
     echo '  "hooks": {'
     echo '    "PreToolUse": ['
     echo '      {'
-    echo '        "matcher": "Bash",'
+    echo '        "matcher": {"tools": ["Bash"]},'
     echo '        "hooks": ['
     echo '          {'
     echo '            "type": "command",'
