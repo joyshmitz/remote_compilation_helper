@@ -387,4 +387,71 @@ mod tests {
         // This test depends on the environment, so we just verify it doesn't panic
         let _ = detect_current_shell();
     }
+
+    #[test]
+    fn test_install_paths_all_shells() {
+        // Test that all supported shells have valid install paths
+        use clap_complete::Shell;
+        for shell in [Shell::Bash, Shell::Zsh, Shell::Fish, Shell::PowerShell, Shell::Elvish] {
+            let result = get_install_paths(shell);
+            assert!(result.is_ok(), "Failed to get install paths for {:?}", shell);
+            let paths = result.unwrap();
+            assert!(!paths.script_path.as_os_str().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_rc_file_has_rch_setup_missing_file() {
+        // Non-existent file should return false
+        let nonexistent = std::path::PathBuf::from("/tmp/nonexistent_rc_file_123456");
+        let result = rc_file_has_rch_setup(&nonexistent).unwrap();
+        assert!(!result, "Non-existent file should return false");
+    }
+
+    #[test]
+    fn test_rc_file_has_rch_setup_with_marker() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let rc_path = temp_dir.path().join(".zshrc");
+
+        // Write file with RCH marker
+        std::fs::write(&rc_path, "# some config\n# RCH completions\nfpath=(~/.zfunc $fpath)\n").unwrap();
+        let result = rc_file_has_rch_setup(&rc_path).unwrap();
+        assert!(result, "Should detect RCH completions marker");
+    }
+
+    #[test]
+    fn test_rc_file_has_rch_setup_without_marker() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let rc_path = temp_dir.path().join(".bashrc");
+
+        // Write file without RCH marker
+        std::fs::write(&rc_path, "# some other config\nexport PATH=$PATH:/usr/local/bin\n").unwrap();
+        let result = rc_file_has_rch_setup(&rc_path).unwrap();
+        assert!(!result, "Should not detect RCH setup in unrelated config");
+    }
+
+    #[test]
+    fn test_rc_file_detects_various_markers() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        // Test _rch marker (zsh completion function)
+        let path1 = temp_dir.path().join("rc1");
+        std::fs::write(&path1, "autoload _rch\n").unwrap();
+        assert!(rc_file_has_rch_setup(&path1).unwrap());
+
+        // Test rch.fish marker
+        let path2 = temp_dir.path().join("rc2");
+        std::fs::write(&path2, "source rch.fish\n").unwrap();
+        assert!(rc_file_has_rch_setup(&path2).unwrap());
+
+        // Test rch.ps1 marker
+        let path3 = temp_dir.path().join("rc3");
+        std::fs::write(&path3, ". rch.ps1\n").unwrap();
+        assert!(rc_file_has_rch_setup(&path3).unwrap());
+
+        // Test rch.elv marker
+        let path4 = temp_dir.path().join("rc4");
+        std::fs::write(&path4, "use rch.elv\n").unwrap();
+        assert!(rc_file_has_rch_setup(&path4).unwrap());
+    }
 }

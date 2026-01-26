@@ -46,6 +46,7 @@ pub mod error_recovery_tests;
 pub mod exit_code_tests;
 pub mod failopen_tests;
 pub mod output;
+pub mod performance_tests;
 pub mod ssh_command_tests;
 pub mod ssh_tests;
 

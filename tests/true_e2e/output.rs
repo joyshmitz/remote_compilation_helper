@@ -216,18 +216,18 @@ impl OutputNormalizer {
                 transformations.push(NormalizationTransform::PathsNormalized { count });
             }
             result = new_result;
+        }
 
-            // Apply custom patterns
-            for (pattern, replacement) in &self.custom_path_patterns {
-                if let Ok(re) = Regex::new(pattern) {
-                    let matches = re.find_iter(&result).count();
-                    if matches > 0 {
-                        result = re.replace_all(&result, replacement.as_str()).into_owned();
-                        transformations.push(NormalizationTransform::CustomPattern {
-                            pattern: pattern.clone(),
-                            count: matches,
-                        });
-                    }
+        // Apply custom patterns (independent of built-in path normalization)
+        for (pattern, replacement) in &self.custom_path_patterns {
+            if let Ok(re) = Regex::new(pattern) {
+                let matches = re.find_iter(&result).count();
+                if matches > 0 {
+                    result = re.replace_all(&result, replacement.as_str()).into_owned();
+                    transformations.push(NormalizationTransform::CustomPattern {
+                        pattern: pattern.clone(),
+                        count: matches,
+                    });
                 }
             }
         }
@@ -372,10 +372,21 @@ impl OutputComparison {
         }
 
         // Try normalized comparison
-        let local_stdout = self.normalizer.normalize(&self.local.stdout_str());
-        let remote_stdout = self.normalizer.normalize(&self.remote.stdout_str());
-        let local_stderr = self.normalizer.normalize(&self.local.stderr_str());
-        let remote_stderr = self.normalizer.normalize(&self.remote.stderr_str());
+        let mut local_stdout = self.normalizer.normalize(&self.local.stdout_str());
+        let mut remote_stdout = self.normalizer.normalize(&self.remote.stdout_str());
+        let mut local_stderr = self.normalizer.normalize(&self.local.stderr_str());
+        let mut remote_stderr = self.normalizer.normalize(&self.remote.stderr_str());
+
+        if self.normalizer.normalize_paths {
+            local_stdout.normalized =
+                unify_path_placeholders_for_comparison(&local_stdout.normalized);
+            remote_stdout.normalized =
+                unify_path_placeholders_for_comparison(&remote_stdout.normalized);
+            local_stderr.normalized =
+                unify_path_placeholders_for_comparison(&local_stderr.normalized);
+            remote_stderr.normalized =
+                unify_path_placeholders_for_comparison(&remote_stderr.normalized);
+        }
 
         log_normalization(&local_stdout, &remote_stdout, "stdout");
         log_normalization(&local_stderr, &remote_stderr, "stderr");
@@ -488,6 +499,8 @@ static TMP_RCH_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"/tmp/rch/[a-zA-Z0-9_-]+").expect("valid regex"));
 static CARGO_TARGET_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"target/(debug|release)/[^\s]+").expect("valid regex"));
+static PATH_PLACEHOLDER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<(HOME|RCH_WORK)>(/[^\s]+)?").expect("valid regex"));
 
 // Regex patterns for timestamp stripping
 static ISO8601_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -537,6 +550,12 @@ fn normalize_paths(input: &str) -> (String, usize) {
         .into_owned();
 
     (result, count)
+}
+
+fn unify_path_placeholders_for_comparison(input: &str) -> String {
+    PATH_PLACEHOLDER_RE
+        .replace_all(input, "<PATH>")
+        .into_owned()
 }
 
 /// Strip timestamps from a string

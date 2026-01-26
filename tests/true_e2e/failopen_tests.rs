@@ -1054,6 +1054,12 @@ total_slots = 4
     harness.wait_for_socket(&socket_path, Duration::from_secs(10))?;
 
     // Phase 5: Verify recovery
+    harness.wait_for(
+        "daemon to become healthy after restart",
+        Duration::from_secs(10),
+        Duration::from_millis(200),
+        || send_request(&socket_path, "GET /health").is_ok(),
+    )?;
     let health_after_restart = send_request(&socket_path, "GET /health");
 
     logger.log_with_context(
