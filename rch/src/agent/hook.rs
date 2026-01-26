@@ -121,7 +121,9 @@ fn check_claude_code_hook() -> Result<HookStatus> {
                 return Ok(HookStatus::Installed);
             }
             // Also check for string hooks
-            if let Some(cmd) = hook.as_str() && cmd.contains("rch") {
+            if let Some(cmd) = hook.as_str()
+                && cmd.contains("rch")
+            {
                 return Ok(HookStatus::Installed);
             }
         }

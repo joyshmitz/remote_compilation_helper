@@ -597,49 +597,45 @@ fn contains_unquoted_standalone_ampersand(cmd: &str) -> bool {
     let mut in_single = false;
     let mut in_double = false;
     let mut escaped = false;
-    let chars: Vec<char> = cmd.chars().collect();
+    let bytes = cmd.as_bytes();
     let mut i = 0;
 
-    while i < chars.len() {
-        let c = chars[i];
+    while i < bytes.len() {
+        let b = bytes[i];
         if escaped {
             escaped = false;
             i += 1;
             continue;
         }
 
-        if c == '\\' {
+        if b == b'\\' {
             escaped = true;
             i += 1;
             continue;
         }
 
-        if c == '\'' && !in_double {
+        if b == b'\'' && !in_double {
             in_single = !in_single;
             i += 1;
             continue;
         }
-        if c == '"' && !in_single {
+        if b == b'"' && !in_single {
             in_double = !in_double;
             i += 1;
             continue;
         }
 
-        if c == '&' && !in_single && !in_double {
+        if b == b'&' && !in_single && !in_double {
             // Check for &&
-            if i + 1 < chars.len() && chars[i + 1] == '&' {
+            if i + 1 < bytes.len() && bytes[i + 1] == b'&' {
                 // Found &&. Skip both.
                 i += 2;
                 continue;
             }
-            let prev = if i > 0 { chars[i - 1] } else { '\0' };
-            let next = if i + 1 < chars.len() {
-                chars[i + 1]
-            } else {
-                '\0'
-            };
+            let prev = if i > 0 { bytes[i - 1] } else { 0 };
+            let next = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
             // Ignore redirection patterns like 2>&1 or &>
-            if prev == '>' || next == '>' {
+            if prev == b'>' || next == b'>' {
                 i += 1;
                 continue;
             }
