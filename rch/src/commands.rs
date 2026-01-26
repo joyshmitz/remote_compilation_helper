@@ -31,7 +31,7 @@ use tracing::debug;
 
 use crate::hook::{query_daemon, release_worker, required_runtime_for_kind};
 use crate::toolchain::detect_toolchain;
-use crate::transfer::project_id_from_path;
+use crate::transfer::{parse_rchignore, project_id_from_path};
 
 /// Default socket path.
 const DEFAULT_SOCKET_PATH: &str = "/tmp/rch.sock";
@@ -6458,6 +6458,48 @@ pub async fn diagnose(command: &str, ctx: &OutputContext) -> Result<()> {
     if let Some(error) = &daemon_status.error {
         println!("  {} {}", style.key("Error:"), style.value(error));
     }
+    println!();
+
+    // Show transfer exclude info including .rchignore
+    println!("{}", style.highlight("Transfer Configuration"));
+    let config_exclude_count = config.transfer.exclude_patterns.len();
+    let project_root = std::env::current_dir().ok();
+    let rchignore_count = project_root
+        .as_ref()
+        .and_then(|root| parse_rchignore(&root.join(".rchignore")).ok())
+        .map(|patterns| patterns.len())
+        .unwrap_or(0);
+    let effective_count = config_exclude_count + rchignore_count;
+
+    println!(
+        "  {} {} {}",
+        style.key("Exclude patterns:"),
+        style.value(&effective_count.to_string()),
+        style.muted(&format!("({} from config, {} from .rchignore)", config_exclude_count, rchignore_count))
+    );
+    if rchignore_count > 0 {
+        println!(
+            "  {} {}",
+            style.key(".rchignore:"),
+            style.format_success("detected")
+        );
+    } else {
+        println!(
+            "  {} {}",
+            style.key(".rchignore:"),
+            style.muted("not found")
+        );
+    }
+    println!(
+        "  {} {}",
+        style.key("Compression:"),
+        style.value(&format!("zstd level {}", config.transfer.compression_level))
+    );
+    println!(
+        "  {} {}",
+        style.key("Remote base:"),
+        style.value(&config.transfer.remote_base)
+    );
     println!();
 
     println!("{}", style.highlight("Worker Selection (simulated)"));
