@@ -170,6 +170,7 @@ impl BuildHistory {
             duration_ms,
             location: state.location,
             bytes_transferred,
+            timing: None,
         };
 
         self.record(record.clone());
@@ -199,6 +200,7 @@ impl BuildHistory {
             duration_ms,
             location: state.location,
             bytes_transferred,
+            timing: None,
         };
 
         self.record(record.clone());
@@ -405,6 +407,7 @@ mod tests {
             duration_ms: 100,
             location: BuildLocation::Local,
             bytes_transferred: None,
+            timing: None,
         }
     }
 

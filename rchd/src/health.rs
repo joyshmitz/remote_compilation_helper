@@ -4,6 +4,7 @@
 
 #![allow(dead_code)] // Scaffold code - methods will be used in future beads
 
+use crate::alerts::AlertManager;
 use crate::metrics;
 use crate::ui::workers::WorkerStatusPanel;
 use crate::workers::{WorkerPool, WorkerState};
@@ -272,6 +273,8 @@ pub struct HealthMonitor {
     running: Arc<RwLock<bool>>,
     /// Optional worker status panel for log output.
     status_panel: Option<Arc<Mutex<WorkerStatusPanel>>>,
+    /// Optional alert manager for worker health alerting.
+    alert_manager: Option<Arc<AlertManager>>,
 }
 
 impl HealthMonitor {
@@ -283,6 +286,7 @@ impl HealthMonitor {
             health_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
             running: Arc::new(RwLock::new(false)),
             status_panel: None,
+            alert_manager: None,
         }
     }
 
@@ -293,6 +297,13 @@ impl HealthMonitor {
         self
     }
 
+    /// Attach an alert manager for worker health alerting.
+    #[must_use]
+    pub fn with_alert_manager(mut self, alert_manager: Arc<AlertManager>) -> Self {
+        self.alert_manager = Some(alert_manager);
+        self
+    }
+
     /// Start the health monitoring background task.
     pub fn start(&self) -> tokio::task::JoinHandle<()> {
         let pool = self.pool.clone();
@@ -300,6 +311,7 @@ impl HealthMonitor {
         let health_states = self.health_states.clone();
         let running = self.running.clone();
         let status_panel = self.status_panel.clone();
+        let alert_manager = self.alert_manager.clone();
 
         tokio::spawn(async move {
             *running.write().await = true;
@@ -322,6 +334,10 @@ impl HealthMonitor {
                 let workers = pool.all_workers().await;
                 debug!("Checking health of {} workers", workers.len());
 
+                // Track unreachable count for all-workers-offline alert
+                let total_workers = workers.len();
+                let mut unreachable_count = 0;
+
                 for worker in workers {
                     let worker_config_guard = worker.config.read().await;
                     let worker_id = worker_config_guard.id.as_str().to_string();
@@ -342,13 +358,49 @@ impl HealthMonitor {
                         metrics::set_worker_last_seen(&worker_id, now);
                     }
 
-                    // Update health state
+                    // Update health state, tracking previous status for alerting
                     let mut states = health_states.write().await;
                     let health = states.entry(worker_id.clone()).or_default();
+                    let previous_status = health.status();
+                    let previous_circuit_state = health.circuit_state();
                     health.update(result.clone(), &config, &worker_id);
+
+                    if result.healthy {
+                        worker
+                            .set_last_latency_ms(Some(result.response_time_ms))
+                            .await;
+                    } else {
+                        worker.set_last_latency_ms(None).await;
+                    }
 
                     // Log status changes
                     let new_status = health.status();
+                    let new_circuit_state = health.circuit_state();
+
+                    // Track unreachable workers for all-workers-offline alert
+                    if new_status == WorkerStatus::Unreachable {
+                        unreachable_count += 1;
+                    }
+
+                    // Notify alert manager of status changes and circuit state changes
+                    if let Some(ref alert_mgr) = alert_manager {
+                        // Status change notification
+                        if previous_status != new_status {
+                            alert_mgr.handle_worker_status_change(
+                                &worker_id,
+                                previous_status,
+                                new_status,
+                                health.last_error(),
+                            );
+                        }
+
+                        // Circuit breaker opened notification
+                        if previous_circuit_state != CircuitState::Open
+                            && new_circuit_state == CircuitState::Open
+                        {
+                            alert_mgr.handle_circuit_open(&worker_id);
+                        }
+                    }
 
                     // Record worker status metric
                     let status_value = match new_status {
@@ -361,8 +413,7 @@ impl HealthMonitor {
                     metrics::set_worker_status(&worker_id, "current", status_value);
 
                     // Record circuit breaker state
-                    let circuit_state = health.circuit_stats().state();
-                    let circuit_value = match circuit_state {
+                    let circuit_value = match new_circuit_state {
                         CircuitState::Closed => 0,
                         CircuitState::HalfOpen => 1,
                         CircuitState::Open => 2,
@@ -401,6 +452,11 @@ impl HealthMonitor {
                     // Update worker pool status
                     let worker_config = worker.config.read().await;
                     pool.set_status(&worker_config.id, new_status).await;
+                }
+
+                // Check for all-workers-offline condition
+                if let Some(ref alert_mgr) = alert_manager {
+                    alert_mgr.handle_all_workers_offline(total_workers, unreachable_count);
                 }
 
                 if let Some(panel) = &status_panel {
