@@ -17,6 +17,20 @@ mod tests {
     use std::path::PathBuf;
     use tracing::info;
 
+    /// Safely truncate a string to at most `max_bytes` bytes, ensuring we don't
+    /// split in the middle of a multi-byte UTF-8 character.
+    fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+        if s.len() <= max_bytes {
+            return s;
+        }
+        // Find the last char boundary at or before max_bytes
+        let mut end = max_bytes;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        &s[..end]
+    }
+
     // ============================================================================
     // Classification Fuzzing Tests
     // ============================================================================
@@ -130,7 +144,7 @@ mod tests {
         /// Property: TOML parsing never panics on arbitrary input.
         #[test]
         fn toml_parsing_never_panics(content in ".*") {
-            info!(target: "proptest::config", "Parsing TOML: {:?}", &content[..content.len().min(100)]);
+            info!(target: "proptest::config", "Parsing TOML: {:?}", safe_truncate(&content, 100));
 
             // Parse as generic TOML value - should never panic
             let result: Result<toml::Value, _> = toml::from_str(&content);
@@ -170,7 +184,7 @@ mod tests {
                 enabled: Option<bool>,
             }
 
-            info!(target: "proptest::config", "Parsing config struct: {:?}", &content[..content.len().min(50)]);
+            info!(target: "proptest::config", "Parsing config struct: {:?}", safe_truncate(&content, 50));
 
             // Should never panic
             let _result: Result<TestConfig, _> = toml::from_str(&content);
@@ -179,7 +193,7 @@ mod tests {
         /// Property: .env file parsing never panics.
         #[test]
         fn dotenv_parsing_never_panics(content in ".*") {
-            info!(target: "proptest::dotenv", "Parsing dotenv: {:?}", &content[..content.len().min(50)]);
+            info!(target: "proptest::dotenv", "Parsing dotenv: {:?}", safe_truncate(&content, 50));
 
             // Simulate .env parsing logic from config/dotenv.rs
             let mut vars = Vec::new();
@@ -272,6 +286,9 @@ mod tests {
             // Simulate expand_tilde from discovery.rs
             let expanded = if let Some(rest) = path.strip_prefix("~/") {
                 if let Some(home) = dirs::home_dir() {
+                    // Strip leading slashes to prevent PathBuf::join from treating
+                    // rest as absolute and ignoring the home directory
+                    let rest = rest.trim_start_matches('/');
                     home.join(rest).display().to_string()
                 } else {
                     path.clone()
@@ -367,7 +384,7 @@ mod tests {
         /// Property: Unicode handling in commands doesn't cause panics.
         #[test]
         fn unicode_command_handling(command in "\\PC*") {
-            info!(target: "proptest::unicode", "Unicode command: {:?}", &command[..command.len().min(50)]);
+            info!(target: "proptest::unicode", "Unicode command: {:?}", safe_truncate(&command, 50));
 
             // Should handle any valid Unicode string
             let result = classify_command(&command);

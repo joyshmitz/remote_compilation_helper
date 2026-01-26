@@ -493,20 +493,21 @@ fn check_structure(cmd: &str) -> Option<&'static str> {
         return Some("piped command");
     }
 
-    // Check for output redirection
+    // Check for subshell/process substitution (unquoted open paren)
+    // Covers (cmd), <(cmd), >(cmd)
+    // Must come BEFORE redirection checks so <( and >( are detected as process substitution
+    if contains_unquoted(cmd, '(') {
+        return Some("subshell execution");
+    }
+
+    // Check for output redirection (after subshell check to not match >( )
     if contains_unquoted(cmd, '>') {
         return Some("output redirected");
     }
 
-    // Check for input redirection
+    // Check for input redirection (after subshell check to not match <( )
     if contains_unquoted(cmd, '<') {
         return Some("input redirected");
-    }
-
-    // Check for subshell/process substitution (unquoted open paren)
-    // Covers (cmd), <(cmd), >(cmd)
-    if contains_unquoted(cmd, '(') {
-        return Some("subshell execution");
     }
 
     // Check for command chaining
