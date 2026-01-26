@@ -92,6 +92,9 @@ pub struct SelectionRequest {
     /// This tracks how long the 5-tier classification took on the hook side.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classification_duration_us: Option<u64>,
+    /// Process ID of the hook (for active build tracking).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_pid: Option<u32>,
 }
 
 /// Reason for worker selection result.

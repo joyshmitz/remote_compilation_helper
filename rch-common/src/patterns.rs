@@ -188,6 +188,23 @@ pub enum CompilationKind {
     BunTypecheck,
 }
 
+impl CompilationKind {
+    /// Returns true if this is a test-related command.
+    ///
+    /// Test commands have special cache affinity behavior because test binaries
+    /// (e.g., target/debug/deps/) are expensive to compile and benefit more
+    /// from warm caches than regular builds.
+    pub fn is_test_command(&self) -> bool {
+        matches!(
+            self,
+            CompilationKind::CargoTest
+                | CompilationKind::CargoNextest
+                | CompilationKind::CargoBench
+                | CompilationKind::BunTest
+        )
+    }
+}
+
 /// Classify a shell command.
 ///
 /// Implements the 5-tier classification system for maximum precision with
@@ -479,6 +496,17 @@ fn check_structure(cmd: &str) -> Option<&'static str> {
     // Check for output redirection
     if contains_unquoted(cmd, '>') {
         return Some("output redirected");
+    }
+
+    // Check for input redirection
+    if contains_unquoted(cmd, '<') {
+        return Some("input redirected");
+    }
+
+    // Check for subshell/process substitution (unquoted open paren)
+    // Covers (cmd), <(cmd), >(cmd)
+    if contains_unquoted(cmd, '(') {
+        return Some("subshell execution");
     }
 
     // Check for command chaining
@@ -938,6 +966,27 @@ mod tests {
         let result = classify_command("cargo build > log.txt");
         assert!(!result.is_compilation);
         assert!(result.reason.contains("redirect"));
+    }
+
+    #[test]
+    fn test_input_redirected_not_intercepted() {
+        let result = classify_command("cargo build < input.txt");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("input redirected"));
+    }
+
+    #[test]
+    fn test_process_substitution_not_intercepted() {
+        let result = classify_command("cargo build --config <(echo ...)");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("subshell execution"));
+    }
+
+    #[test]
+    fn test_subshell_not_intercepted() {
+        let result = classify_command("(cargo build)");
+        assert!(!result.is_compilation);
+        assert!(result.reason.contains("subshell execution"));
     }
 
     #[test]
