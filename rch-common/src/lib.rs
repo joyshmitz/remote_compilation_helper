@@ -51,7 +51,7 @@ pub use types::{
     SelectedWorker, SelectionConfig, SelectionReason, SelectionRequest, SelectionResponse,
     SelectionStrategy, SelectionWeightConfig, SelfHealingConfig, SelfTestConfig,
     SelfTestFailureAction, SelfTestWorkers, TransferConfig, WorkerCapabilities, WorkerConfig,
-    WorkerId, WorkerStatus, default_socket_path,
+    WorkerId, WorkerStatus, default_socket_path, validate_remote_base,
 };
 
 // Config module re-exports

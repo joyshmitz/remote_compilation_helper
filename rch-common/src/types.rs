@@ -2658,4 +2658,84 @@ mod tests {
             std::time::Duration::from_secs(3600)
         );
     }
+
+    // ========================================================================
+    // validate_remote_base Tests
+    // ========================================================================
+
+    #[test]
+    fn test_validate_remote_base_absolute_path() {
+        assert_eq!(
+            validate_remote_base("/tmp/rch").unwrap(),
+            "/tmp/rch"
+        );
+        assert_eq!(
+            validate_remote_base("/var/rch-builds").unwrap(),
+            "/var/rch-builds"
+        );
+        assert_eq!(
+            validate_remote_base("/home/builder/.rch").unwrap(),
+            "/home/builder/.rch"
+        );
+    }
+
+    #[test]
+    fn test_validate_remote_base_tilde_expansion() {
+        // Tilde expansion should work
+        let result = validate_remote_base("~/rch");
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        assert!(path.starts_with('/'), "Path should be absolute after expansion: {}", path);
+        assert!(!path.contains('~'), "Tilde should be expanded: {}", path);
+    }
+
+    #[test]
+    fn test_validate_remote_base_rejects_relative_path() {
+        let result = validate_remote_base("tmp/rch");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("absolute path"));
+    }
+
+    #[test]
+    fn test_validate_remote_base_rejects_path_traversal() {
+        let result = validate_remote_base("/tmp/../etc/rch");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("path traversal"));
+
+        let result = validate_remote_base("/tmp/rch/../other");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("path traversal"));
+    }
+
+    #[test]
+    fn test_validate_remote_base_normalizes_trailing_slash() {
+        assert_eq!(
+            validate_remote_base("/tmp/rch/").unwrap(),
+            "/tmp/rch"
+        );
+        assert_eq!(
+            validate_remote_base("/tmp/rch///").unwrap(),
+            "/tmp/rch"
+        );
+    }
+
+    #[test]
+    fn test_validate_remote_base_root_path() {
+        // Root path should be allowed (though unusual)
+        assert_eq!(
+            validate_remote_base("/").unwrap(),
+            "/"
+        );
+    }
+
+    #[test]
+    fn test_default_remote_base() {
+        assert_eq!(default_remote_base(), "/tmp/rch");
+    }
+
+    #[test]
+    fn test_transfer_config_default_has_remote_base() {
+        let config = TransferConfig::default();
+        assert_eq!(config.remote_base, "/tmp/rch");
+    }
 }

@@ -4,6 +4,7 @@ import type {
   ReadyResponse,
   BudgetStatusResponse,
   SpeedScoreHistoryResponse,
+  SpeedScoreListResponse,
 } from './types';
 
 // Default to local daemon socket proxy
@@ -20,9 +21,9 @@ class ApiError extends Error {
   }
 }
 
-async function fetchApi<T>(endpoint: string): Promise<T> {
+async function fetchJson<T>(url: string): Promise<T> {
   try {
-    const response = await fetch(`${API_BASE}${endpoint}`, {
+    const response = await fetch(url, {
       headers: {
         'Accept': 'application/json',
       },
@@ -48,6 +49,10 @@ async function fetchApi<T>(endpoint: string): Promise<T> {
       0
     );
   }
+}
+
+async function fetchApi<T>(endpoint: string): Promise<T> {
+  return fetchJson<T>(`${API_BASE}${endpoint}`);
 }
 
 export const api = {
@@ -102,7 +107,16 @@ export const api = {
     if (options?.limit) params.set('limit', String(options.limit));
     if (options?.offset) params.set('offset', String(options.offset));
     const query = params.toString() ? `?${params}` : '';
-    return fetchApi<SpeedScoreHistoryResponse>(`/api/speedscore/${workerId}/history${query}`);
+    return fetchJson<SpeedScoreHistoryResponse>(
+      `/api/workers/${encodeURIComponent(workerId)}/speedscore/history${query}`
+    );
+  },
+
+  /**
+   * Get SpeedScore list for all workers
+   */
+  async getSpeedScores(): Promise<SpeedScoreListResponse> {
+    return fetchJson<SpeedScoreListResponse>('/api/workers/speedscores');
   },
 };
 

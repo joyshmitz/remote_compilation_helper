@@ -1256,8 +1256,10 @@ mod tests {
 
     #[test]
     fn test_remote_path_with_custom_remote_base() {
-        let mut config = TransferConfig::default();
-        config.remote_base = "/var/rch-builds".to_string();
+        let config = TransferConfig {
+            remote_base: "/var/rch-builds".to_string(),
+            ..Default::default()
+        };
 
         let pipeline = TransferPipeline::new(
             PathBuf::from("/home/user/project"),
@@ -1271,8 +1273,10 @@ mod tests {
 
     #[test]
     fn test_remote_path_with_home_directory_base() {
-        let mut config = TransferConfig::default();
-        config.remote_base = "/home/builder/.rch".to_string();
+        let config = TransferConfig {
+            remote_base: "/home/builder/.rch".to_string(),
+            ..Default::default()
+        };
 
         let pipeline = TransferPipeline::new(
             PathBuf::from("/workspace/project"),

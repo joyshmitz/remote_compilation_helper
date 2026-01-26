@@ -3,7 +3,7 @@
 #![allow(dead_code)] // Scaffold code - functions will be used in future beads
 
 use anyhow::Result;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use tracing::{debug, info, warn};
 
@@ -12,7 +12,14 @@ const CACHE_BASE: &str = "/tmp/rch";
 
 /// Clean up old project caches.
 pub async fn cleanup(max_age_hours: u64) -> Result<()> {
-    let cache_dir = PathBuf::from(CACHE_BASE);
+    cleanup_in(Path::new(CACHE_BASE), max_age_hours).await
+}
+
+/// Clean up old project caches under a specific base directory.
+///
+/// This exists primarily for test isolation; production callers should prefer [`cleanup`].
+pub async fn cleanup_in(cache_base: &Path, max_age_hours: u64) -> Result<()> {
+    let cache_dir = cache_base.to_path_buf();
 
     if !cache_dir.exists() {
         info!("Cache directory does not exist, nothing to clean");
@@ -44,7 +51,15 @@ pub async fn cleanup(max_age_hours: u64) -> Result<()> {
         };
 
         let project_path = project_entry.path();
-        if !project_path.is_dir() {
+        let project_meta = match std::fs::symlink_metadata(&project_path) {
+            Ok(meta) => meta,
+            Err(e) => {
+                warn!("Failed to get metadata for {:?}: {}", project_path, e);
+                errors += 1;
+                continue;
+            }
+        };
+        if !project_meta.is_dir() {
             continue;
         }
 
@@ -71,21 +86,20 @@ pub async fn cleanup(max_age_hours: u64) -> Result<()> {
             };
 
             let hash_path = hash_entry.path();
-            if !hash_path.is_dir() {
-                continue;
-            }
-
-            // Check modification time
-            let metadata = match std::fs::metadata(&hash_path) {
-                Ok(m) => m,
+            let hash_meta = match std::fs::symlink_metadata(&hash_path) {
+                Ok(meta) => meta,
                 Err(e) => {
                     warn!("Failed to get metadata for {:?}: {}", hash_path, e);
                     errors += 1;
                     continue;
                 }
             };
+            if !hash_meta.is_dir() {
+                continue;
+            }
 
-            let modified = match metadata.modified() {
+            // Check modification time
+            let modified = match hash_meta.modified() {
                 Ok(t) => t,
                 Err(e) => {
                     warn!("Failed to get modified time for {:?}: {}", hash_path, e);
@@ -149,7 +163,12 @@ pub async fn cleanup(max_age_hours: u64) -> Result<()> {
 
 /// Get the cache path for a project.
 pub fn cache_path(project: &str, hash: &str) -> PathBuf {
-    PathBuf::from(CACHE_BASE).join(project).join(hash)
+    cache_path_in(Path::new(CACHE_BASE), project, hash)
+}
+
+/// Get the cache path for a project under a specific cache base directory.
+pub fn cache_path_in(cache_base: &Path, project: &str, hash: &str) -> PathBuf {
+    cache_base.join(project).join(hash)
 }
 
 /// Update the last-used timestamp of a project cache.
@@ -327,10 +346,9 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_nonexistent_directory() {
         println!("TEST START: test_cleanup_nonexistent_directory");
-        // cleanup() should handle nonexistent CACHE_BASE gracefully
-        // This test relies on the actual CACHE_BASE not existing or being empty
-        // We test by ensuring no error is returned
-        let result = cleanup(0).await;
+        // cleanup_in() should handle nonexistent base directory gracefully
+        let cache_base = unique_test_dir("cleanup-nonexistent");
+        let result = cleanup_in(&cache_base, 0).await;
         assert!(
             result.is_ok(),
             "cleanup should succeed even if cache is empty"
@@ -339,43 +357,43 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Flaky: requires exclusive access to /tmp/rch, parallel tests interfere"]
     async fn test_cleanup_removes_old_caches() {
         println!("TEST START: test_cleanup_removes_old_caches");
 
-        // We need to test with the actual CACHE_BASE since cleanup() uses it
-        // Create a unique project dir under /tmp/rch
+        let cache_base = unique_test_dir("cleanup-old");
+        fs::create_dir_all(&cache_base).unwrap();
+
         let project_name = format!("test-cleanup-{}", std::process::id());
-        let project_dir = PathBuf::from(CACHE_BASE).join(&project_name);
+        let project_dir = cache_base.join(&project_name);
         let hash_dir = project_dir.join("oldhash");
 
         // Create cache directory
         fs::create_dir_all(&hash_dir).unwrap();
         fs::write(hash_dir.join("data.txt"), "test data").unwrap();
 
-        // Note: We can't easily set mtime in pure Rust without dependencies.
-        // We'll test with max_age of 0 which should remove everything.
+        // Ensure the directory is older than our max_age=0 threshold.
+        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // With max_age=0, all caches should be removed
-        let result = cleanup(0).await;
+        let result = cleanup_in(&cache_base, 0).await;
         assert!(result.is_ok(), "cleanup should succeed");
 
-        // The hash_dir should be removed
-        // Note: This may have already been cleaned up or not depending on actual mtime
-        // We can at least verify cleanup didn't error
+        assert!(!hash_dir.exists(), "old cache should be removed");
+        assert!(!project_dir.exists(), "empty project dir should be removed");
 
-        // Cleanup our test project dir if it still exists
-        let _ = fs::remove_dir_all(&project_dir);
+        let _ = fs::remove_dir_all(&cache_base);
         println!("TEST PASS: test_cleanup_removes_old_caches");
     }
 
     #[tokio::test]
-    #[ignore = "Flaky: requires exclusive access to /tmp/rch, parallel tests interfere"]
     async fn test_cleanup_keeps_recent_caches() {
         println!("TEST START: test_cleanup_keeps_recent_caches");
 
+        let cache_base = unique_test_dir("cleanup-keep");
+        fs::create_dir_all(&cache_base).unwrap();
+
         let project_name = format!("test-keep-{}", std::process::id());
-        let project_dir = PathBuf::from(CACHE_BASE).join(&project_name);
+        let project_dir = cache_base.join(&project_name);
         let hash_dir = project_dir.join("recenthash");
 
         // Create cache directory
@@ -383,37 +401,37 @@ mod tests {
         fs::write(hash_dir.join("data.txt"), "test data").unwrap();
 
         // Cleanup with 1000 hours max age (very generous, should keep recent)
-        let result = cleanup(1000).await;
+        let result = cleanup_in(&cache_base, 1000).await;
         assert!(result.is_ok(), "cleanup should succeed");
 
         // The hash_dir should still exist (it was just created)
         assert!(hash_dir.exists(), "recent cache should not be removed");
 
         // Cleanup
-        let _ = fs::remove_dir_all(&project_dir);
+        let _ = fs::remove_dir_all(&cache_base);
         println!("TEST PASS: test_cleanup_keeps_recent_caches");
     }
 
     #[tokio::test]
-    #[ignore = "Flaky: requires exclusive access to /tmp/rch, parallel tests interfere"]
     async fn test_cleanup_removes_empty_project_dirs() {
         println!("TEST START: test_cleanup_removes_empty_project_dirs");
 
+        let cache_base = unique_test_dir("cleanup-empty-project");
+        fs::create_dir_all(&cache_base).unwrap();
+
         let project_name = format!("test-empty-{}", std::process::id());
-        let project_dir = PathBuf::from(CACHE_BASE).join(&project_name);
+        let project_dir = cache_base.join(&project_name);
 
         // Create empty project directory (no hash subdirs)
         fs::create_dir_all(&project_dir).unwrap();
 
         // With max_age=0, cleanup should try to remove empty project dir
-        let result = cleanup(0).await;
+        let result = cleanup_in(&cache_base, 0).await;
         assert!(result.is_ok(), "cleanup should succeed");
 
-        // The project_dir might be removed if it's empty
-        // (or it might fail if the test runs quickly and mtime is recent)
+        assert!(!project_dir.exists(), "empty project dir should be removed");
 
-        // Cleanup if still exists
-        let _ = fs::remove_dir_all(&project_dir);
+        let _ = fs::remove_dir_all(&cache_base);
         println!("TEST PASS: test_cleanup_removes_empty_project_dirs");
     }
 
@@ -423,21 +441,21 @@ mod tests {
     async fn test_cleanup_handles_file_instead_of_dir() {
         println!("TEST START: test_cleanup_handles_file_instead_of_dir");
 
-        let project_name = format!("test-corrupt-{}", std::process::id());
-        let project_path = PathBuf::from(CACHE_BASE).join(&project_name);
+        let cache_base = unique_test_dir("cleanup-file-instead");
+        fs::create_dir_all(&cache_base).unwrap();
 
-        // Ensure CACHE_BASE exists
-        fs::create_dir_all(CACHE_BASE).unwrap();
+        let project_name = format!("test-corrupt-{}", std::process::id());
+        let project_path = cache_base.join(&project_name);
 
         // Create a file where a directory is expected
         fs::write(&project_path, "not a directory").unwrap();
 
         // Cleanup should not crash
-        let result = cleanup(0).await;
+        let result = cleanup_in(&cache_base, 0).await;
         assert!(result.is_ok(), "cleanup should handle file gracefully");
 
         // Cleanup
-        let _ = fs::remove_file(&project_path);
+        let _ = fs::remove_dir_all(&cache_base);
         println!("TEST PASS: test_cleanup_handles_file_instead_of_dir");
     }
 
@@ -445,8 +463,11 @@ mod tests {
     async fn test_cleanup_handles_file_in_project_dir() {
         println!("TEST START: test_cleanup_handles_file_in_project_dir");
 
+        let cache_base = unique_test_dir("cleanup-file-in-project");
+        fs::create_dir_all(&cache_base).unwrap();
+
         let project_name = format!("test-file-in-proj-{}", std::process::id());
-        let project_dir = PathBuf::from(CACHE_BASE).join(&project_name);
+        let project_dir = cache_base.join(&project_name);
 
         fs::create_dir_all(&project_dir).unwrap();
 
@@ -458,11 +479,11 @@ mod tests {
         fs::create_dir_all(&hash_dir).unwrap();
 
         // Cleanup should not crash on the file
-        let result = cleanup(0).await;
+        let result = cleanup_in(&cache_base, 0).await;
         assert!(result.is_ok(), "cleanup should handle mixed content");
 
         // Cleanup
-        let _ = fs::remove_dir_all(&project_dir);
+        let _ = fs::remove_dir_all(&cache_base);
         println!("TEST PASS: test_cleanup_handles_file_in_project_dir");
     }
 
@@ -472,8 +493,11 @@ mod tests {
 
         #[cfg(unix)]
         {
+            let cache_base = unique_test_dir("cleanup-symlink");
+            fs::create_dir_all(&cache_base).unwrap();
+
             let project_name = format!("test-symlink-{}", std::process::id());
-            let project_dir = PathBuf::from(CACHE_BASE).join(&project_name);
+            let project_dir = cache_base.join(&project_name);
 
             fs::create_dir_all(&project_dir).unwrap();
 
@@ -482,11 +506,11 @@ mod tests {
             let _ = std::os::unix::fs::symlink("/tmp", &link_path);
 
             // Cleanup should handle symlinks gracefully
-            let result = cleanup(0).await;
+            let result = cleanup_in(&cache_base, 0).await;
             assert!(result.is_ok(), "cleanup should handle symlinks");
 
             // Cleanup
-            let _ = fs::remove_dir_all(&project_dir);
+            let _ = fs::remove_dir_all(&cache_base);
         }
 
         println!("TEST PASS: test_cleanup_handles_symlink");
@@ -498,7 +522,8 @@ mod tests {
 
         // We can't easily create permission-denied scenarios without root
         // But we test that cleanup doesn't panic on general errors
-        let result = cleanup(168).await; // Default 1 week
+        let cache_base = unique_test_dir("cleanup-permissions");
+        let result = cleanup_in(&cache_base, 168).await; // Default 1 week
         assert!(result.is_ok(), "cleanup should succeed");
 
         println!("TEST PASS: test_cleanup_handles_permission_errors_gracefully");
@@ -510,8 +535,11 @@ mod tests {
     async fn test_concurrent_cleanup_calls() {
         println!("TEST START: test_concurrent_cleanup_calls");
 
+        let cache_base = unique_test_dir("cleanup-concurrent");
+        fs::create_dir_all(&cache_base).unwrap();
+
         let project_name = format!("test-concurrent-{}", std::process::id());
-        let project_dir = PathBuf::from(CACHE_BASE).join(&project_name);
+        let project_dir = cache_base.join(&project_name);
 
         // Create multiple hash dirs
         for i in 0..5 {
@@ -521,8 +549,12 @@ mod tests {
         }
 
         // Run multiple cleanups concurrently
+        let cache_base_for_tasks = cache_base.clone();
         let handles: Vec<_> = (0..3)
-            .map(|_| tokio::spawn(async { cleanup(1000).await }))
+            .map(|_| {
+                let cache_base = cache_base_for_tasks.clone();
+                tokio::spawn(async move { cleanup_in(&cache_base, 1000).await })
+            })
             .collect();
 
         for handle in handles {
@@ -531,7 +563,7 @@ mod tests {
         }
 
         // Cleanup
-        let _ = fs::remove_dir_all(&project_dir);
+        let _ = fs::remove_dir_all(&cache_base);
         println!("TEST PASS: test_concurrent_cleanup_calls");
     }
 
@@ -539,11 +571,15 @@ mod tests {
     async fn test_cleanup_during_cache_creation() {
         println!("TEST START: test_cleanup_during_cache_creation");
 
+        let cache_base = unique_test_dir("cleanup-race-create");
+        fs::create_dir_all(&cache_base).unwrap();
+
         let project_name = format!("test-race-{}", std::process::id());
-        let project_dir = PathBuf::from(CACHE_BASE).join(&project_name);
+        let project_dir = cache_base.join(&project_name);
 
         // Start cleanup in background
-        let cleanup_handle = tokio::spawn(async { cleanup(1000).await });
+        let cache_base_for_task = cache_base.clone();
+        let cleanup_handle = tokio::spawn(async move { cleanup_in(&cache_base_for_task, 1000).await });
 
         // Simultaneously create a new cache
         let hash_dir = project_dir.join("newhash");
@@ -555,7 +591,7 @@ mod tests {
         assert!(result.is_ok(), "cleanup should succeed during race");
 
         // Cleanup
-        let _ = fs::remove_dir_all(&project_dir);
+        let _ = fs::remove_dir_all(&cache_base);
         println!("TEST PASS: test_cleanup_during_cache_creation");
     }
 
@@ -566,18 +602,21 @@ mod tests {
         // This tests the race condition comment in the code about
         // optimistically removing project dirs
 
+        let cache_base = unique_test_dir("cleanup-race-empty");
+        fs::create_dir_all(&cache_base).unwrap();
+
         let project_name = format!("test-race-empty-{}", std::process::id());
-        let project_dir = PathBuf::from(CACHE_BASE).join(&project_name);
+        let project_dir = cache_base.join(&project_name);
 
         // Create project dir only (no hash dirs)
         fs::create_dir_all(&project_dir).unwrap();
 
         // Cleanup should handle the empty project gracefully
-        let result = cleanup(0).await;
+        let result = cleanup_in(&cache_base, 0).await;
         assert!(result.is_ok(), "cleanup should handle empty project");
 
         // Cleanup
-        let _ = fs::remove_dir_all(&project_dir);
+        let _ = fs::remove_dir_all(&cache_base);
         println!("TEST PASS: test_cleanup_empty_hash_then_nonempty_race");
     }
 
@@ -586,7 +625,8 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_max_age_zero() {
         println!("TEST START: test_cleanup_max_age_zero");
-        let result = cleanup(0).await;
+        let cache_base = unique_test_dir("cleanup-max-age-zero");
+        let result = cleanup_in(&cache_base, 0).await;
         assert!(result.is_ok(), "max_age=0 should work");
         println!("TEST PASS: test_cleanup_max_age_zero");
     }
@@ -594,7 +634,8 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_max_age_large() {
         println!("TEST START: test_cleanup_max_age_large");
-        let result = cleanup(u64::MAX / 3600).await;
+        let cache_base = unique_test_dir("cleanup-max-age-large");
+        let result = cleanup_in(&cache_base, u64::MAX / 3600).await;
         assert!(result.is_ok(), "large max_age should work");
         println!("TEST PASS: test_cleanup_max_age_large");
     }
@@ -602,7 +643,8 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_max_age_one_hour() {
         println!("TEST START: test_cleanup_max_age_one_hour");
-        let result = cleanup(1).await;
+        let cache_base = unique_test_dir("cleanup-max-age-one-hour");
+        let result = cleanup_in(&cache_base, 1).await;
         assert!(result.is_ok(), "1 hour max_age should work");
         println!("TEST PASS: test_cleanup_max_age_one_hour");
     }
@@ -610,7 +652,8 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_max_age_one_week() {
         println!("TEST START: test_cleanup_max_age_one_week");
-        let result = cleanup(168).await; // 7 * 24 = 168 hours
+        let cache_base = unique_test_dir("cleanup-max-age-one-week");
+        let result = cleanup_in(&cache_base, 168).await; // 7 * 24 = 168 hours
         assert!(result.is_ok(), "1 week max_age should work");
         println!("TEST PASS: test_cleanup_max_age_one_week");
     }
@@ -637,8 +680,11 @@ mod tests {
     async fn test_cleanup_handles_nested_directories() {
         println!("TEST START: test_cleanup_handles_nested_directories");
 
+        let cache_base = unique_test_dir("cleanup-nested");
+        fs::create_dir_all(&cache_base).unwrap();
+
         let project_name = format!("test-nested-{}", std::process::id());
-        let project_dir = PathBuf::from(CACHE_BASE).join(&project_name);
+        let project_dir = cache_base.join(&project_name);
         let hash_dir = project_dir.join("hash");
         let nested_dir = hash_dir.join("target").join("debug").join("deps");
 
@@ -647,11 +693,11 @@ mod tests {
         fs::write(nested_dir.join("file.o"), "object file").unwrap();
 
         // Cleanup should handle nested dirs
-        let result = cleanup(0).await;
+        let result = cleanup_in(&cache_base, 0).await;
         assert!(result.is_ok(), "cleanup should handle nested directories");
 
         // Cleanup
-        let _ = fs::remove_dir_all(&project_dir);
+        let _ = fs::remove_dir_all(&cache_base);
         println!("TEST PASS: test_cleanup_handles_nested_directories");
     }
 
@@ -659,25 +705,25 @@ mod tests {
     async fn test_cleanup_multiple_projects() {
         println!("TEST START: test_cleanup_multiple_projects");
 
+        let cache_base = unique_test_dir("cleanup-multi-project");
+        fs::create_dir_all(&cache_base).unwrap();
+
         let base_name = format!("test-multi-{}", std::process::id());
 
         // Create multiple project directories
         for i in 0..3 {
-            let project_dir = PathBuf::from(CACHE_BASE).join(format!("{}-{}", base_name, i));
+            let project_dir = cache_base.join(format!("{}-{}", base_name, i));
             let hash_dir = project_dir.join("hash");
             fs::create_dir_all(&hash_dir).unwrap();
             fs::write(hash_dir.join("data.txt"), "data").unwrap();
         }
 
         // Cleanup should process all projects
-        let result = cleanup(1000).await;
+        let result = cleanup_in(&cache_base, 1000).await;
         assert!(result.is_ok(), "cleanup should handle multiple projects");
 
         // Cleanup
-        for i in 0..3 {
-            let project_dir = PathBuf::from(CACHE_BASE).join(format!("{}-{}", base_name, i));
-            let _ = fs::remove_dir_all(&project_dir);
-        }
+        let _ = fs::remove_dir_all(&cache_base);
         println!("TEST PASS: test_cleanup_multiple_projects");
     }
 
@@ -685,8 +731,11 @@ mod tests {
     async fn test_cleanup_multiple_hashes_per_project() {
         println!("TEST START: test_cleanup_multiple_hashes_per_project");
 
+        let cache_base = unique_test_dir("cleanup-multi-hash");
+        fs::create_dir_all(&cache_base).unwrap();
+
         let project_name = format!("test-multihash-{}", std::process::id());
-        let project_dir = PathBuf::from(CACHE_BASE).join(&project_name);
+        let project_dir = cache_base.join(&project_name);
 
         // Create multiple hash directories
         for i in 0..5 {
@@ -696,11 +745,11 @@ mod tests {
         }
 
         // Cleanup should handle multiple hashes
-        let result = cleanup(1000).await;
+        let result = cleanup_in(&cache_base, 1000).await;
         assert!(result.is_ok(), "cleanup should handle multiple hashes");
 
         // Cleanup
-        let _ = fs::remove_dir_all(&project_dir);
+        let _ = fs::remove_dir_all(&cache_base);
         println!("TEST PASS: test_cleanup_multiple_hashes_per_project");
     }
 }

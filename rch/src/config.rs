@@ -5,10 +5,11 @@ use directories::ProjectDirs;
 use rch_common::{
     ConfigValueSource, OutputVisibility, RchConfig, SelfTestFailureAction, SelfTestWorkers,
 };
+use rch_common::types::validate_remote_base;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use tracing::debug;
+use tracing::{debug, warn};
 
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
@@ -639,7 +640,7 @@ fn apply_layer(
         && remote_base != &defaults.transfer.remote_base
     {
         // Validate and normalize the remote_base path
-        match rch_common::validate_remote_base(remote_base) {
+        match validate_remote_base(remote_base) {
             Ok(validated) => {
                 config.transfer.remote_base = validated;
                 set_source(sources, "transfer.remote_base", source.clone());

@@ -2,11 +2,12 @@
 
 import { useMemo, useState } from 'react';
 import { AnimatePresence } from 'motion/react';
-import type { WorkerStatusInfo } from '@/lib/types';
+import type { SpeedScoreView, WorkerStatusInfo } from '@/lib/types';
 import { WorkerCard } from './worker-card';
 
 interface WorkersGridProps {
   workers: WorkerStatusInfo[];
+  speedScores?: Map<string, SpeedScoreView>;
 }
 
 type WorkerSort = 'status' | 'slots' | 'speed';
@@ -19,7 +20,7 @@ const statusOrder: Record<WorkerStatusInfo['status'], number> = {
   disabled: 4,
 };
 
-export function WorkersGrid({ workers }: WorkersGridProps) {
+export function WorkersGrid({ workers, speedScores }: WorkersGridProps) {
   if (workers.length === 0) {
     return (
       <div className="text-center py-12 text-muted-foreground">
@@ -80,7 +81,11 @@ export function WorkersGrid({ workers }: WorkersGridProps) {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         <AnimatePresence mode="popLayout">
           {sortedWorkers.map((worker) => (
-            <WorkerCard key={worker.id} worker={worker} />
+            <WorkerCard
+              key={worker.id}
+              worker={worker}
+              speedScoreView={speedScores?.get(worker.id) ?? null}
+            />
           ))}
         </AnimatePresence>
       </div>
