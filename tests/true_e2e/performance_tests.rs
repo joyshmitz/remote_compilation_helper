@@ -147,25 +147,6 @@ fn get_test_worker(config: &TestWorkersConfig) -> Option<&rch_common::e2e::TestW
     config.enabled_workers().first().copied()
 }
 
-/// Helper to create a connected SSH client.
-async fn get_connected_client(
-    config: &TestWorkersConfig,
-    worker_entry: &rch_common::e2e::TestWorkerEntry,
-) -> Option<SshClient> {
-    let worker_config = worker_entry.to_worker_config();
-    let options = SshOptions {
-        connect_timeout: Duration::from_secs(config.settings.ssh_connection_timeout_secs),
-        known_hosts: KnownHostsPolicy::Add,
-        ..Default::default()
-    };
-
-    let mut client = SshClient::new(worker_config, options);
-    match client.connect().await {
-        Ok(()) => Some(client),
-        Err(_) => None,
-    }
-}
-
 // =============================================================================
 // Hook Classification Performance Tests
 // =============================================================================
@@ -233,6 +214,7 @@ async fn test_hook_classification_non_compile() {
                 ("cmd".to_string(), cmd.to_string()),
                 ("classification".to_string(), "non_compile".to_string()),
                 ("mean_us".to_string(), stats.mean_us.to_string()),
+                ("p50_us".to_string(), stats.p50_us.to_string()),
                 ("p95_us".to_string(), stats.p95_us.to_string()),
                 ("p99_us".to_string(), stats.p99_us.to_string()),
                 ("max_us".to_string(), stats.max_us.to_string()),
@@ -330,6 +312,7 @@ async fn test_hook_classification_compile() {
                 ("cmd".to_string(), cmd.to_string()),
                 ("classification".to_string(), "compile".to_string()),
                 ("mean_us".to_string(), stats.mean_us.to_string()),
+                ("p50_us".to_string(), stats.p50_us.to_string()),
                 ("p95_us".to_string(), stats.p95_us.to_string()),
                 ("p99_us".to_string(), stats.p99_us.to_string()),
                 ("max_us".to_string(), stats.max_us.to_string()),
@@ -415,6 +398,7 @@ async fn test_hook_classification_complex_commands() {
                 ("phase".to_string(), "measure".to_string()),
                 ("cmd_len".to_string(), cmd.len().to_string()),
                 ("mean_us".to_string(), stats.mean_us.to_string()),
+                ("p50_us".to_string(), stats.p50_us.to_string()),
                 ("p95_us".to_string(), stats.p95_us.to_string()),
                 ("max_us".to_string(), stats.max_us.to_string()),
             ],
@@ -697,6 +681,7 @@ async fn test_classification_timing_consistency() {
                 ("phase".to_string(), "stats".to_string()),
                 ("cmd".to_string(), cmd.to_string()),
                 ("mean_us".to_string(), stats.mean_us.to_string()),
+                ("p50_us".to_string(), stats.p50_us.to_string()),
                 ("stddev_us".to_string(), format!("{:.1}", stats.stddev_us)),
                 ("cv".to_string(), format!("{:.2}", cv)),
                 ("min_us".to_string(), stats.min_us.to_string()),
