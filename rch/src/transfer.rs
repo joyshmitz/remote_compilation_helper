@@ -24,6 +24,31 @@ fn use_mock_transport(worker: &WorkerConfig) -> bool {
     mock::is_mock_enabled() || mock::is_mock_worker(worker)
 }
 
+/// Parse a .rchignore file and return patterns.
+///
+/// Format is similar to .gitignore:
+/// - One pattern per line
+/// - Lines starting with # are comments
+/// - Empty lines and whitespace-only lines are ignored
+/// - Leading/trailing whitespace is trimmed from patterns
+///
+/// Note: Unlike .gitignore, negation patterns (starting with !) are not
+/// supported and will be treated as literal patterns.
+pub fn parse_rchignore(path: &Path) -> std::io::Result<Vec<String>> {
+    let content = std::fs::read_to_string(path)?;
+    Ok(parse_rchignore_content(&content))
+}
+
+/// Parse .rchignore content (for testing).
+pub fn parse_rchignore_content(content: &str) -> Vec<String> {
+    content
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| line.to_string())
+        .collect()
+}
+
 /// Transfer pipeline for remote compilation.
 pub struct TransferPipeline {
     /// Local project root.
@@ -111,6 +136,37 @@ impl TransferPipeline {
         })
     }
 
+    /// Get the effective exclude patterns by merging config defaults with .rchignore.
+    ///
+    /// Merge order (deterministic):
+    /// 1. Default exclude patterns (from config)
+    /// 2. User config exclude patterns (already in transfer_config)
+    /// 3. Project-local .rchignore patterns (if present)
+    fn get_effective_excludes(&self) -> Vec<String> {
+        let mut excludes = self.transfer_config.exclude_patterns.clone();
+
+        // Read and merge .rchignore if present
+        let rchignore_path = self.project_root.join(".rchignore");
+        if let Ok(patterns) = parse_rchignore(&rchignore_path) {
+            let original_count = excludes.len();
+            for pattern in patterns {
+                if !excludes.contains(&pattern) {
+                    excludes.push(pattern);
+                }
+            }
+            let added = excludes.len() - original_count;
+            if added > 0 {
+                info!(
+                    "Loaded {} pattern(s) from .rchignore (total: {})",
+                    added,
+                    excludes.len()
+                );
+            }
+        }
+
+        excludes
+    }
+
     /// Get the remote project path on the worker.
     pub fn remote_path(&self) -> String {
         format!(
@@ -125,13 +181,16 @@ impl TransferPipeline {
         let escaped_remote_path = escape(Cow::from(&remote_path));
         let destination = format!("{}@{}:{}", worker.user, worker.host, escaped_remote_path);
 
+        // Get effective excludes (config defaults + .rchignore)
+        let effective_excludes = self.get_effective_excludes();
+
         if use_mock_transport(worker) {
             let rsync = MockRsync::new(MockRsyncConfig::from_env());
             let result = rsync
                 .sync_to_remote(
                     &self.project_root.display().to_string(),
                     &destination,
-                    &self.transfer_config.exclude_patterns,
+                    &effective_excludes,
                 )
                 .await?;
             return Ok(SyncResult {
@@ -147,6 +206,8 @@ impl TransferPipeline {
             remote_path,
             worker.id
         );
+
+        debug!("Effective exclude patterns: {:?}", effective_excludes);
 
         // Build rsync command with excludes
         let mut cmd = Command::new("rsync");
@@ -169,8 +230,8 @@ impl TransferPipeline {
         cmd.arg("--rsync-path")
             .arg(format!("mkdir -p {} && rsync", escaped_remote_path));
 
-        // Add exclude patterns
-        for pattern in &self.transfer_config.exclude_patterns {
+        // Add exclude patterns (config defaults + .rchignore)
+        for pattern in &effective_excludes {
             cmd.arg("--exclude").arg(pattern);
         }
 
@@ -234,13 +295,16 @@ impl TransferPipeline {
         let escaped_remote_path = escape(Cow::from(&remote_path));
         let destination = format!("{}@{}:{}", worker.user, worker.host, escaped_remote_path);
 
+        // Get effective excludes (config defaults + .rchignore)
+        let effective_excludes = self.get_effective_excludes();
+
         if use_mock_transport(worker) {
             let rsync = MockRsync::new(MockRsyncConfig::from_env());
             let result = rsync
                 .sync_to_remote(
                     &self.project_root.display().to_string(),
                     &destination,
-                    &self.transfer_config.exclude_patterns,
+                    &effective_excludes,
                 )
                 .await?;
             return Ok(SyncResult {
@@ -256,6 +320,8 @@ impl TransferPipeline {
             remote_path,
             worker.id
         );
+
+        debug!("Effective exclude patterns: {:?}", effective_excludes);
 
         let mut cmd = Command::new("rsync");
         // Force C locale for consistent output parsing
@@ -278,8 +344,8 @@ impl TransferPipeline {
         cmd.arg("--rsync-path")
             .arg(format!("mkdir -p {} && rsync", escaped_remote_path));
 
-        // Add exclude patterns
-        for pattern in &self.transfer_config.exclude_patterns {
+        // Add exclude patterns (config defaults + .rchignore)
+        for pattern in &effective_excludes {
             cmd.arg("--exclude").arg(pattern);
         }
 
@@ -1286,5 +1352,145 @@ mod tests {
         );
 
         assert_eq!(pipeline.remote_path(), "/home/builder/.rch/project/def456");
+    }
+
+    // ==========================================================================
+    // .rchignore Parser Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_parse_rchignore_content_basic() {
+        let content = "target/\n.git/objects/\nnode_modules/";
+        let patterns = parse_rchignore_content(content);
+        assert_eq!(patterns, vec!["target/", ".git/objects/", "node_modules/"]);
+    }
+
+    #[test]
+    fn test_parse_rchignore_content_with_comments() {
+        let content = r#"# Build artifacts
+target/
+# Git internals
+.git/objects/
+# Node stuff
+node_modules/"#;
+        let patterns = parse_rchignore_content(content);
+        assert_eq!(patterns, vec!["target/", ".git/objects/", "node_modules/"]);
+    }
+
+    #[test]
+    fn test_parse_rchignore_content_with_blank_lines() {
+        let content = r#"
+target/
+
+.git/objects/
+
+
+node_modules/
+"#;
+        let patterns = parse_rchignore_content(content);
+        assert_eq!(patterns, vec!["target/", ".git/objects/", "node_modules/"]);
+    }
+
+    #[test]
+    fn test_parse_rchignore_content_trims_whitespace() {
+        let content = "  target/  \n\t.git/objects/\t\n   node_modules/   ";
+        let patterns = parse_rchignore_content(content);
+        assert_eq!(patterns, vec!["target/", ".git/objects/", "node_modules/"]);
+    }
+
+    #[test]
+    fn test_parse_rchignore_content_empty() {
+        let content = "";
+        let patterns = parse_rchignore_content(content);
+        assert!(patterns.is_empty());
+    }
+
+    #[test]
+    fn test_parse_rchignore_content_only_comments() {
+        let content = "# This is a comment\n# Another comment";
+        let patterns = parse_rchignore_content(content);
+        assert!(patterns.is_empty());
+    }
+
+    #[test]
+    fn test_parse_rchignore_content_preserves_negation_literal() {
+        // Note: Unlike .gitignore, negation is not supported, ! is literal
+        let content = "target/\n!important.txt\n.git/";
+        let patterns = parse_rchignore_content(content);
+        assert_eq!(patterns, vec!["target/", "!important.txt", ".git/"]);
+    }
+
+    #[test]
+    fn test_parse_rchignore_file_not_found() {
+        let result = parse_rchignore(Path::new("/nonexistent/.rchignore"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_effective_excludes_without_rchignore() {
+        // When no .rchignore exists, should return config defaults
+        let config = TransferConfig::default();
+        let default_count = config.exclude_patterns.len();
+
+        let pipeline = TransferPipeline::new(
+            PathBuf::from("/nonexistent/project"),
+            "project".to_string(),
+            "hash".to_string(),
+            config,
+        );
+
+        let effective = pipeline.get_effective_excludes();
+        assert_eq!(effective.len(), default_count);
+    }
+
+    #[test]
+    fn test_get_effective_excludes_with_rchignore() {
+        // Create a temp dir with .rchignore
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let rchignore_path = temp_dir.path().join(".rchignore");
+        std::fs::write(&rchignore_path, "large_data/\nsecrets/").expect("write .rchignore");
+
+        let config = TransferConfig::default();
+        let default_count = config.exclude_patterns.len();
+
+        let pipeline = TransferPipeline::new(
+            temp_dir.path().to_path_buf(),
+            "project".to_string(),
+            "hash".to_string(),
+            config,
+        );
+
+        let effective = pipeline.get_effective_excludes();
+        // Should have defaults + 2 new patterns
+        assert_eq!(effective.len(), default_count + 2);
+        assert!(effective.contains(&"large_data/".to_string()));
+        assert!(effective.contains(&"secrets/".to_string()));
+    }
+
+    #[test]
+    fn test_get_effective_excludes_deduplicates() {
+        // Create a temp dir with .rchignore that overlaps with defaults
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let rchignore_path = temp_dir.path().join(".rchignore");
+        // "target/" is already in defaults
+        std::fs::write(&rchignore_path, "target/\ncustom/").expect("write .rchignore");
+
+        let config = TransferConfig::default();
+        let default_count = config.exclude_patterns.len();
+
+        let pipeline = TransferPipeline::new(
+            temp_dir.path().to_path_buf(),
+            "project".to_string(),
+            "hash".to_string(),
+            config,
+        );
+
+        let effective = pipeline.get_effective_excludes();
+        // Should have defaults + 1 new pattern (target/ is already there)
+        assert_eq!(effective.len(), default_count + 1);
+        assert!(effective.contains(&"custom/".to_string()));
+        // target/ should appear only once
+        let target_count = effective.iter().filter(|p| *p == "target/").count();
+        assert_eq!(target_count, 1);
     }
 }

@@ -650,7 +650,10 @@ fn test_help_json_outputs_valid_json() {
 
     // Should have expected structure
     assert!(parsed.get("name").is_some(), "Missing 'name' field");
-    assert!(parsed.get("subcommands").is_some(), "Missing 'subcommands' field");
+    assert!(
+        parsed.get("subcommands").is_some(),
+        "Missing 'subcommands' field"
+    );
     assert!(parsed.get("version").is_some(), "Missing 'version' field");
 
     crate::test_log!("TEST PASS: test_help_json_outputs_valid_json");
@@ -682,7 +685,10 @@ fn test_help_json_with_subcommand() {
     // Should have nested subcommands
     let subcommands = parsed.get("subcommands").and_then(|v| v.as_array());
     assert!(subcommands.is_some(), "workers should have subcommands");
-    assert!(!subcommands.unwrap().is_empty(), "workers should have subcommands");
+    assert!(
+        !subcommands.unwrap().is_empty(),
+        "workers should have subcommands"
+    );
 
     crate::test_log!("TEST PASS: test_help_json_with_subcommand");
 }
@@ -734,9 +740,15 @@ fn test_capabilities_lists_supported_runtimes() {
         .filter_map(|r| r.get("name").and_then(|n| n.as_str()))
         .collect();
 
-    assert!(runtime_names.contains(&"rust"), "Should support rust runtime");
+    assert!(
+        runtime_names.contains(&"rust"),
+        "Should support rust runtime"
+    );
     assert!(runtime_names.contains(&"bun"), "Should support bun runtime");
-    assert!(runtime_names.contains(&"node"), "Should support node runtime");
+    assert!(
+        runtime_names.contains(&"node"),
+        "Should support node runtime"
+    );
 
     crate::test_log!("TEST PASS: test_capabilities_lists_supported_runtimes");
 }
@@ -764,10 +776,22 @@ fn test_capabilities_lists_all_commands() {
 
     // Verify key commands are listed
     assert!(command_names.contains(&"init"), "Should list init command");
-    assert!(command_names.contains(&"daemon"), "Should list daemon command");
-    assert!(command_names.contains(&"workers"), "Should list workers command");
-    assert!(command_names.contains(&"status"), "Should list status command");
-    assert!(command_names.contains(&"config"), "Should list config command");
+    assert!(
+        command_names.contains(&"daemon"),
+        "Should list daemon command"
+    );
+    assert!(
+        command_names.contains(&"workers"),
+        "Should list workers command"
+    );
+    assert!(
+        command_names.contains(&"status"),
+        "Should list status command"
+    );
+    assert!(
+        command_names.contains(&"config"),
+        "Should list config command"
+    );
 
     crate::test_log!("TEST PASS: test_capabilities_lists_all_commands");
 }

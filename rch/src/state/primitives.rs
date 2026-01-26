@@ -445,6 +445,10 @@ mod tests {
         info!("TEST START: {}", name);
     }
 
+    fn log_test_pass(name: &str) {
+        info!("TEST PASS: {}", name);
+    }
+
     #[test]
     fn test_atomic_write_creates_file() {
         log_test_start("test_atomic_write_creates_file");
@@ -453,6 +457,7 @@ mod tests {
 
         atomic_write(&path, b"hello").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
+        log_test_pass("test_atomic_write_creates_file");
     }
 
     #[test]
@@ -464,6 +469,7 @@ mod tests {
         atomic_write(&path, b"original").unwrap();
         atomic_write(&path, b"updated").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "updated");
+        log_test_pass("test_atomic_write_overwrites");
     }
 
     #[test]
@@ -474,6 +480,7 @@ mod tests {
 
         atomic_write(&path, b"nested").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "nested");
+        log_test_pass("test_atomic_write_creates_parent_dirs");
     }
 
     #[test]
@@ -491,6 +498,7 @@ mod tests {
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "tmp"))
             .collect();
         assert!(tmp_files.is_empty(), "Temp files should be cleaned up");
+        log_test_pass("test_atomic_write_no_temp_files_left");
     }
 
     #[test]
@@ -502,6 +510,7 @@ mod tests {
         let result = create_if_missing(&path, "[general]").unwrap();
         assert_eq!(result, IdempotentResult::Created);
         assert_eq!(fs::read_to_string(&path).unwrap(), "[general]");
+        log_test_pass("test_create_if_missing_creates");
     }
 
     #[test]
@@ -518,6 +527,7 @@ mod tests {
 
         // Original content preserved
         assert_eq!(fs::read_to_string(&path).unwrap(), "content1");
+        log_test_pass("test_create_if_missing_idempotent");
     }
 
     #[test]
@@ -528,6 +538,7 @@ mod tests {
 
         let result = update_if_changed(&path, "v1", false).unwrap();
         assert_eq!(result, IdempotentResult::Created);
+        log_test_pass("test_update_if_changed_creates");
     }
 
     #[test]
@@ -540,6 +551,7 @@ mod tests {
         let result = update_if_changed(&path, "v2", false).unwrap();
         assert_eq!(result, IdempotentResult::Updated);
         assert_eq!(fs::read_to_string(&path).unwrap(), "v2");
+        log_test_pass("test_update_if_changed_updates");
     }
 
     #[test]
@@ -551,6 +563,7 @@ mod tests {
         update_if_changed(&path, "same", false).unwrap();
         let result = update_if_changed(&path, "same", false).unwrap();
         assert_eq!(result, IdempotentResult::Unchanged);
+        log_test_pass("test_update_if_changed_unchanged");
     }
 
     #[test]
@@ -562,6 +575,7 @@ mod tests {
         let result = append_line_if_missing(&path, "line1").unwrap();
         assert_eq!(result, IdempotentResult::Created);
         assert!(fs::read_to_string(&path).unwrap().contains("line1"));
+        log_test_pass("test_append_line_if_missing_creates");
     }
 
     #[test]
@@ -577,6 +591,7 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("existing"));
         assert!(content.contains("new"));
+        log_test_pass("test_append_line_if_missing_appends");
     }
 
     #[test]
@@ -592,6 +607,7 @@ mod tests {
         // Should only appear once
         let content = fs::read_to_string(&path).unwrap();
         assert_eq!(content.matches("line").count(), 1);
+        log_test_pass("test_append_line_if_missing_idempotent");
     }
 
     #[test]
@@ -603,6 +619,7 @@ mod tests {
         let result = ensure_directory(&path).unwrap();
         assert_eq!(result, IdempotentResult::Created);
         assert!(path.is_dir());
+        log_test_pass("test_ensure_directory_creates");
     }
 
     #[test]
@@ -614,6 +631,19 @@ mod tests {
         ensure_directory(&path).unwrap();
         let result = ensure_directory(&path).unwrap();
         assert_eq!(result, IdempotentResult::AlreadyExists);
+        log_test_pass("test_ensure_directory_idempotent");
+    }
+
+    #[test]
+    fn test_ensure_directory_errors_on_file() {
+        log_test_start("test_ensure_directory_errors_on_file");
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("not_a_dir");
+
+        fs::write(&path, "data").unwrap();
+        let result = ensure_directory(&path);
+        assert!(result.is_err(), "Expected error when path is a file");
+        log_test_pass("test_ensure_directory_errors_on_file");
     }
 
     #[cfg(unix)]
@@ -628,6 +658,7 @@ mod tests {
         let result = ensure_symlink(&link, &target).unwrap();
         assert_eq!(result, IdempotentResult::Created);
         assert_eq!(fs::read_link(&link).unwrap(), target);
+        log_test_pass("test_ensure_symlink_creates");
     }
 
     #[cfg(unix)]
@@ -642,6 +673,28 @@ mod tests {
         ensure_symlink(&link, &target).unwrap();
         let result = ensure_symlink(&link, &target).unwrap();
         assert_eq!(result, IdempotentResult::AlreadyExists);
+        log_test_pass("test_ensure_symlink_idempotent");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_ensure_symlink_updates_target() {
+        log_test_start("test_ensure_symlink_updates_target");
+        let tmp = TempDir::new().unwrap();
+        let target_a = tmp.path().join("target_a");
+        let target_b = tmp.path().join("target_b");
+        let link = tmp.path().join("link");
+
+        fs::write(&target_a, "a").unwrap();
+        fs::write(&target_b, "b").unwrap();
+
+        let created = ensure_symlink(&link, &target_a).unwrap();
+        assert_eq!(created, IdempotentResult::Created);
+
+        let updated = ensure_symlink(&link, &target_b).unwrap();
+        assert_eq!(updated, IdempotentResult::Created);
+        assert_eq!(fs::read_link(&link).unwrap(), target_b);
+        log_test_pass("test_ensure_symlink_updates_target");
     }
 
     #[test]
@@ -655,5 +708,6 @@ mod tests {
         assert_eq!(format!("{}", IdempotentResult::Updated), "updated");
         assert_eq!(format!("{}", IdempotentResult::Unchanged), "unchanged");
         assert_eq!(format!("{}", IdempotentResult::DryRun), "dry-run");
+        log_test_pass("test_idempotent_result_display");
     }
 }

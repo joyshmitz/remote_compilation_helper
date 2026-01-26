@@ -808,7 +808,7 @@ mod tests {
         let ascii_result = sparkline(&values, plain_ctx);
 
         // ASCII uses single-byte characters
-        assert!(ascii_result.chars().all(|c| c.is_ascii()));
+        assert!(ascii_result.is_ascii());
     }
 
     // ==================== TransferCounters tests ====================

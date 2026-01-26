@@ -612,30 +612,25 @@ pub fn state_to_exit_code(state: &RchState) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    use std::time::Duration;
+    use tempfile::TempDir;
     use tracing::info;
+    use uuid::Uuid;
 
     fn log_test_start(name: &str) {
         info!("TEST START: {}", name);
     }
 
-    #[test]
-    fn test_install_status_display() {
-        log_test_start("test_install_status_display");
-        assert_eq!(format!("{}", InstallStatus::Ready), "ready");
-        assert_eq!(format!("{}", InstallStatus::NeedsSetup), "needs setup");
-        assert_eq!(format!("{}", InstallStatus::NotInstalled), "not installed");
-        assert_eq!(format!("{}", InstallStatus::Degraded), "degraded");
-        assert_eq!(
-            format!("{}", InstallStatus::NeedsMigration),
-            "needs migration"
-        );
+    fn log_test_pass(name: &str) {
+        info!("TEST PASS: {}", name);
     }
 
-    #[test]
-    fn test_state_serialization() {
-        log_test_start("test_state_serialization");
-        let state = RchState {
-            status: InstallStatus::Ready,
+    fn build_test_state(status: InstallStatus) -> RchState {
+        RchState {
+            status,
             components: ComponentStates {
                 user_config: ConfigState {
                     path: PathBuf::from("/test"),
@@ -679,12 +674,49 @@ mod tests {
             issues: vec![],
             detected_at: chrono::Utc::now(),
             rch_version: "0.1.0".to_string(),
-        };
+        }
+    }
+
+    #[test]
+    fn test_install_status_display() {
+        log_test_start("test_install_status_display");
+        assert_eq!(format!("{}", InstallStatus::Ready), "ready");
+        assert_eq!(format!("{}", InstallStatus::NeedsSetup), "needs setup");
+        assert_eq!(format!("{}", InstallStatus::NotInstalled), "not installed");
+        assert_eq!(format!("{}", InstallStatus::Degraded), "degraded");
+        assert_eq!(
+            format!("{}", InstallStatus::NeedsMigration),
+            "needs migration"
+        );
+        log_test_pass("test_install_status_display");
+    }
+
+    #[test]
+    fn test_state_serialization() {
+        log_test_start("test_state_serialization");
+        let state = build_test_state(InstallStatus::Ready);
 
         // Should serialize to JSON without error
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("ready"));
         assert!(json.contains("user_config"));
+        log_test_pass("test_state_serialization");
+    }
+
+    #[test]
+    fn test_state_serialization_round_trip_file() {
+        log_test_start("test_state_serialization_round_trip_file");
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("state.json");
+
+        let state = build_test_state(InstallStatus::Ready);
+        let json = serde_json::to_string(&state).unwrap();
+        atomic_write(&path, json.as_bytes()).unwrap();
+
+        let loaded: RchState = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(loaded.status, InstallStatus::Ready);
+        assert_eq!(loaded.components.workers.worker_count, 2);
+        log_test_pass("test_state_serialization_round_trip_file");
     }
 
     #[test]
@@ -738,5 +770,65 @@ mod tests {
         };
 
         assert_eq!(state_to_exit_code(&ready_state), exit_codes::OK);
+        log_test_pass("test_state_to_exit_code");
+    }
+
+    #[test]
+    fn test_state_to_exit_code_prefers_critical_issue() {
+        log_test_start("test_state_to_exit_code_prefers_critical_issue");
+        let mut state = build_test_state(InstallStatus::Ready);
+        state.issues.push(StateIssue {
+            severity: IssueSeverity::Critical,
+            component: "daemon".to_string(),
+            message: "daemon down".to_string(),
+            remediation: "start daemon".to_string(),
+            exit_code: exit_codes::DAEMON_DOWN,
+        });
+
+        assert_eq!(state_to_exit_code(&state), exit_codes::DAEMON_DOWN);
+        log_test_pass("test_state_to_exit_code_prefers_critical_issue");
+    }
+
+    #[test]
+    fn test_concurrent_state_access_with_lock() {
+        log_test_start("test_concurrent_state_access_with_lock");
+        let tmp = TempDir::new().unwrap();
+        let state_path = Arc::new(tmp.path().join("state_counter.txt"));
+        let lock_name = Arc::new(format!("state-lock-{}", Uuid::new_v4()));
+
+        let threads = 4;
+        let start_barrier = Arc::new(Barrier::new(threads));
+        let mut handles = Vec::new();
+
+        for i in 0..threads {
+            let state_path = Arc::clone(&state_path);
+            let lock_name = Arc::clone(&lock_name);
+            let start = Arc::clone(&start_barrier);
+
+            handles.push(thread::spawn(move || {
+                start.wait();
+                let _lock = ConfigLock::acquire_with_timeout(
+                    &lock_name,
+                    Duration::from_secs(2),
+                    &format!("thread-{i}"),
+                )
+                .expect("lock acquisition failed");
+                let current = fs::read_to_string(&*state_path)
+                    .ok()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let next = current + 1;
+                atomic_write(&state_path, next.to_string().as_bytes())
+                    .expect("atomic write failed");
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("thread panicked");
+        }
+
+        let final_value: usize = fs::read_to_string(&*state_path).unwrap().parse().unwrap();
+        assert_eq!(final_value, threads);
+        log_test_pass("test_concurrent_state_access_with_lock");
     }
 }

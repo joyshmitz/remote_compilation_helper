@@ -431,6 +431,10 @@ mod tests {
         info!("TEST START: {}", name);
     }
 
+    fn log_test_pass(name: &str) {
+        info!("TEST PASS: {}", name);
+    }
+
     #[test]
     fn test_lock_acquisition_and_release() {
         log_test_start("test_lock_acquisition_and_release");
@@ -440,6 +444,7 @@ mod tests {
         drop(lock);
         // Should be able to acquire again after release
         let _lock2 = ConfigLock::acquire_in_dir(&lock_dir, "test_lock", "testing").unwrap();
+        log_test_pass("test_lock_acquisition_and_release");
     }
 
     #[test]
@@ -449,6 +454,7 @@ mod tests {
         let lock_dir = tmp.path().join("locks");
         let lock = ConfigLock::try_acquire_in_dir(&lock_dir, "try_test", "testing").unwrap();
         assert!(lock.is_some());
+        log_test_pass("test_try_acquire_success");
     }
 
     #[test]
@@ -463,6 +469,7 @@ mod tests {
         // Second attempt should return None
         let lock2 = ConfigLock::try_acquire_in_dir(&lock_dir, "contended", "second").unwrap();
         assert!(lock2.is_none());
+        log_test_pass("test_try_acquire_contended");
     }
 
     #[test]
@@ -477,6 +484,7 @@ mod tests {
         let info = holder.unwrap();
         assert_eq!(info.pid, std::process::id());
         assert_eq!(info.operation, "test operation");
+        log_test_pass("test_lock_holder");
     }
 
     #[test]
@@ -488,6 +496,7 @@ mod tests {
 
         let holder = ConfigLock::lock_holder_in_dir(&lock_dir, "nonexistent").unwrap();
         assert!(holder.is_none());
+        log_test_pass("test_no_lock_holder_when_unlocked");
     }
 
     #[test]
@@ -506,6 +515,61 @@ mod tests {
         assert_eq!(parsed.pid, 12345);
         assert_eq!(parsed.hostname, "testhost");
         assert_eq!(parsed.operation, "test");
+        log_test_pass("test_lock_info_serialization");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_is_stale_lock_detects_missing_process() {
+        use std::fs::File;
+
+        log_test_start("test_is_stale_lock_detects_missing_process");
+        let tmp = TempDir::new().unwrap();
+        let lock_dir = tmp.path().join("locks");
+        fs::create_dir_all(&lock_dir).unwrap();
+        let path = lock_dir.join("stale_proc.lock");
+
+        let info = LockInfo {
+            pid: 9_999_999,
+            hostname: "testhost".to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            operation: "stale-proc".to_string(),
+        };
+
+        let mut file = File::create(&path).unwrap();
+        serde_json::to_writer(&mut file, &info).unwrap();
+        file.sync_all().unwrap();
+
+        let stale = ConfigLock::is_stale_lock(&path).unwrap();
+        assert!(stale, "Missing process should mark lock as stale");
+        log_test_pass("test_is_stale_lock_detects_missing_process");
+    }
+
+    #[test]
+    fn test_is_stale_lock_detects_old_timestamp() {
+        use std::fs::File;
+
+        log_test_start("test_is_stale_lock_detects_old_timestamp");
+        let tmp = TempDir::new().unwrap();
+        let lock_dir = tmp.path().join("locks");
+        fs::create_dir_all(&lock_dir).unwrap();
+        let path = lock_dir.join("stale_age.lock");
+
+        let old_time = chrono::Utc::now() - chrono::Duration::hours(2);
+        let info = LockInfo {
+            pid: std::process::id(),
+            hostname: "testhost".to_string(),
+            created_at: old_time.to_rfc3339(),
+            operation: "stale-age".to_string(),
+        };
+
+        let mut file = File::create(&path).unwrap();
+        serde_json::to_writer(&mut file, &info).unwrap();
+        file.sync_all().unwrap();
+
+        let stale = ConfigLock::is_stale_lock(&path).unwrap();
+        assert!(stale, "Old timestamp should mark lock as stale");
+        log_test_pass("test_is_stale_lock_detects_old_timestamp");
     }
 
     /// Helper that uses create_new without stale lock check (avoids race in is_stale_lock)

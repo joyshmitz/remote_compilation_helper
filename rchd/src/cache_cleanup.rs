@@ -237,7 +237,10 @@ impl CacheCleanupScheduler {
             })
         } else {
             let error_msg = format!("Cleanup command failed with exit code {}", result.exit_code);
-            warn!("Cache cleanup failed on worker {}: {}", config.id, error_msg);
+            warn!(
+                "Cache cleanup failed on worker {}: {}",
+                config.id, error_msg
+            );
             Ok(CleanupResult {
                 worker_id: config.id,
                 success: false,

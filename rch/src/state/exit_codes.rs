@@ -107,6 +107,10 @@ mod tests {
         info!("TEST START: {}", name);
     }
 
+    fn log_test_pass(name: &str) {
+        info!("TEST PASS: {}", name);
+    }
+
     #[test]
     fn test_exit_code_values() {
         log_test_start("test_exit_code_values");
@@ -123,6 +127,7 @@ mod tests {
         assert_eq!(ALREADY_CURRENT, 103);
         assert_eq!(LOCKED, 104);
         assert_eq!(NEEDS_MIGRATION, 105);
+        log_test_pass("test_exit_code_values");
     }
 
     #[test]
@@ -133,6 +138,7 @@ mod tests {
         assert!(message(DAEMON_DOWN).contains("daemon"));
         assert!(message(NO_WORKERS).contains("workers"));
         assert_eq!(message(999), "Unknown error");
+        log_test_pass("test_message");
     }
 
     #[test]
@@ -141,6 +147,7 @@ mod tests {
         assert!(is_success(OK));
         assert!(!is_success(ERROR));
         assert!(!is_success(NEEDS_SETUP));
+        log_test_pass("test_is_success");
     }
 
     #[test]
@@ -152,5 +159,18 @@ mod tests {
         assert!(!is_setup_required(OK));
         assert!(!is_setup_required(ERROR));
         assert!(!is_setup_required(DAEMON_DOWN));
+        log_test_pass("test_is_setup_required");
+    }
+
+    #[test]
+    fn test_signal_like_codes_are_failures() {
+        log_test_start("test_signal_like_codes_are_failures");
+        let signal_like_codes = [128, 130, 137];
+        for code in signal_like_codes {
+            assert!(!is_success(code));
+            assert!(!is_setup_required(code));
+            assert_eq!(message(code), "Unknown error");
+        }
+        log_test_pass("test_signal_like_codes_are_failures");
     }
 }

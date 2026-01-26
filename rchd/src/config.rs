@@ -497,6 +497,33 @@ log_level = "debug"
     }
 
     #[test]
+    fn test_daemon_config_parses_cache_cleanup_section() {
+        init_test_logging();
+
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("daemon.toml");
+
+        let config_content = r#"
+[cache_cleanup]
+enabled = false
+interval_secs = 7200
+max_cache_age_hours = 48
+min_free_gb = 20
+idle_threshold_secs = 300
+remote_base = "/var/rch-builds"
+"#;
+        std::fs::write(&config_path, config_content).unwrap();
+
+        let config = load_daemon_config(Some(&config_path)).unwrap();
+        assert!(!config.cache_cleanup.enabled);
+        assert_eq!(config.cache_cleanup.interval_secs, 7200);
+        assert_eq!(config.cache_cleanup.max_cache_age_hours, 48);
+        assert_eq!(config.cache_cleanup.min_free_gb, 20);
+        assert_eq!(config.cache_cleanup.idle_threshold_secs, 300);
+        assert_eq!(config.cache_cleanup.remote_base, "/var/rch-builds");
+    }
+
+    #[test]
     fn test_daemon_config_loading_missing_file_uses_defaults() {
         init_test_logging();
 

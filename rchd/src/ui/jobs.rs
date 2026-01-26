@@ -324,6 +324,111 @@ fn pipe(ctx: OutputContext) -> &'static str {
 mod tests {
     use super::*;
 
+    // ==================== format_elapsed tests ====================
+
+    #[test]
+    fn test_format_elapsed_sub_10_seconds() {
+        assert_eq!(format_elapsed(Duration::from_secs_f64(1.23)), "1.23s");
+        assert_eq!(format_elapsed(Duration::from_secs_f64(5.5)), "5.50s");
+        assert_eq!(format_elapsed(Duration::from_secs_f64(9.99)), "9.99s");
+    }
+
+    #[test]
+    fn test_format_elapsed_10_seconds_and_above() {
+        assert_eq!(format_elapsed(Duration::from_secs_f64(10.0)), "10.0s");
+        assert_eq!(format_elapsed(Duration::from_secs_f64(44.25)), "44.2s");
+        assert_eq!(format_elapsed(Duration::from_secs_f64(100.0)), "100.0s");
+    }
+
+    #[test]
+    fn test_format_elapsed_zero() {
+        assert_eq!(format_elapsed(Duration::ZERO), "0.00s");
+    }
+
+    // ==================== pad_command tests ====================
+
+    #[test]
+    fn test_pad_command_short() {
+        let cmd = "cargo build";
+        assert_eq!(pad_command(cmd), cmd);
+    }
+
+    #[test]
+    fn test_pad_command_exactly_60() {
+        let cmd = "a".repeat(60);
+        assert_eq!(pad_command(&cmd), cmd);
+    }
+
+    #[test]
+    fn test_pad_command_long_truncates() {
+        let cmd = "a".repeat(100);
+        let result = pad_command(&cmd);
+        assert!(result.len() <= 60);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_pad_command_unicode() {
+        // Unicode command with emojis
+        let cmd = "🚀".repeat(70);
+        let result = pad_command(&cmd);
+        assert!(result.chars().count() <= 60);
+    }
+
+    // ==================== pipe tests ====================
+
+    #[test]
+    fn test_pipe_unicode() {
+        let ctx = OutputContext::interactive();
+        assert_eq!(pipe(ctx), "│");
+    }
+
+    #[test]
+    fn test_pipe_ascii() {
+        let ctx = OutputContext::plain();
+        assert_eq!(pipe(ctx), "|");
+    }
+
+    // ==================== JobPhase tests ====================
+
+    #[test]
+    fn test_job_phase_labels() {
+        assert_eq!(JobPhase::TransferUp.label(), "SYNC");
+        assert_eq!(JobPhase::Build.label(), "BUILD");
+        assert_eq!(JobPhase::TransferDown.label(), "PULL");
+        assert_eq!(JobPhase::Other.label(), "PROG");
+    }
+
+    #[test]
+    fn test_job_phase_equality() {
+        assert_eq!(JobPhase::Build, JobPhase::Build);
+        assert_ne!(JobPhase::Build, JobPhase::TransferUp);
+    }
+
+    // ==================== JobLifecycleMode tests ====================
+
+    #[test]
+    fn test_lifecycle_mode_equality() {
+        assert_eq!(JobLifecycleMode::Compact, JobLifecycleMode::Compact);
+        assert_eq!(JobLifecycleMode::Detailed, JobLifecycleMode::Detailed);
+        assert_ne!(JobLifecycleMode::Compact, JobLifecycleMode::Detailed);
+    }
+
+    // ==================== JobLifecycleLog tests ====================
+
+    #[test]
+    fn test_lifecycle_log_default_mode() {
+        let log = JobLifecycleLog::with_context(OutputContext::plain());
+        assert_eq!(log.mode, JobLifecycleMode::Compact);
+    }
+
+    #[test]
+    fn test_lifecycle_log_with_mode() {
+        let log = JobLifecycleLog::with_context(OutputContext::plain())
+            .with_mode(JobLifecycleMode::Detailed);
+        assert_eq!(log.mode, JobLifecycleMode::Detailed);
+    }
+
     #[test]
     fn start_line_contains_timestamp_and_job_id() {
         let mut log = JobLifecycleLog::with_context(OutputContext::plain());
@@ -342,6 +447,39 @@ mod tests {
     }
 
     #[test]
+    fn test_start_detailed_mode_shows_source() {
+        let mut log = JobLifecycleLog::with_context(OutputContext::plain())
+            .with_mode(JobLifecycleMode::Detailed);
+        let lines = log
+            .render(JobEvent::Start(JobStart {
+                job_id: "j-test".to_string(),
+                source: Some("my-source".to_string()),
+                command_summary: "cargo test".to_string(),
+                worker_id: "worker1".to_string(),
+            }))
+            .expect("start renders");
+        // Detailed mode adds source line
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].contains("src: my-source"));
+    }
+
+    #[test]
+    fn test_start_no_source() {
+        let mut log = JobLifecycleLog::with_context(OutputContext::plain())
+            .with_mode(JobLifecycleMode::Detailed);
+        let lines = log
+            .render(JobEvent::Start(JobStart {
+                job_id: "j-test".to_string(),
+                source: None,
+                command_summary: "cargo test".to_string(),
+                worker_id: "worker1".to_string(),
+            }))
+            .expect("start renders");
+        // No source, so only 1 line even in detailed mode
+        assert_eq!(lines.len(), 1);
+    }
+
+    #[test]
     fn progress_is_rate_limited_per_job() {
         let mut log = JobLifecycleLog::with_context(OutputContext::plain());
         let ev = JobEvent::Progress(JobProgress {
@@ -355,5 +493,190 @@ mod tests {
         assert!(log.render(ev.clone()).is_some());
         // Second call should be suppressed due to 1/s limiter.
         assert!(log.render(ev).is_none());
+    }
+
+    #[test]
+    fn test_progress_different_jobs_not_limited() {
+        let mut log = JobLifecycleLog::with_context(OutputContext::plain());
+
+        let ev1 = JobEvent::Progress(JobProgress {
+            job_id: "job-1".to_string(),
+            phase: JobPhase::Build,
+            elapsed: Duration::from_secs(1),
+            message: "Building".to_string(),
+            resource_usage: None,
+        });
+
+        let ev2 = JobEvent::Progress(JobProgress {
+            job_id: "job-2".to_string(),
+            phase: JobPhase::Build,
+            elapsed: Duration::from_secs(1),
+            message: "Building".to_string(),
+            resource_usage: None,
+        });
+
+        assert!(log.render(ev1).is_some());
+        assert!(log.render(ev2).is_some()); // Different job, should render
+    }
+
+    #[test]
+    fn test_progress_contains_phase() {
+        let mut log = JobLifecycleLog::with_context(OutputContext::plain());
+        let lines = log
+            .render(JobEvent::Progress(JobProgress {
+                job_id: "j-test".to_string(),
+                phase: JobPhase::TransferUp,
+                elapsed: Duration::from_secs(5),
+                message: "Uploading files".to_string(),
+                resource_usage: None,
+            }))
+            .expect("progress renders");
+        assert!(lines[0].contains("SYNC"));
+    }
+
+    #[test]
+    fn test_done_renders() {
+        let mut log = JobLifecycleLog::with_context(OutputContext::plain());
+        let lines = log
+            .render(JobEvent::Done(JobDone {
+                job_id: "j-done".to_string(),
+                elapsed: Duration::from_secs(30),
+                artifacts: Some(5),
+                note: Some("cached".to_string()),
+            }))
+            .expect("done renders");
+        assert!(lines[0].contains("DONE"));
+        assert!(lines[0].contains("5 artifacts"));
+        assert!(lines[0].contains("cached"));
+    }
+
+    #[test]
+    fn test_done_no_artifacts_no_note() {
+        let mut log = JobLifecycleLog::with_context(OutputContext::plain());
+        let lines = log
+            .render(JobEvent::Done(JobDone {
+                job_id: "j-done".to_string(),
+                elapsed: Duration::from_secs(10),
+                artifacts: None,
+                note: None,
+            }))
+            .expect("done renders");
+        assert!(lines[0].contains("DONE"));
+        assert!(!lines[0].contains("artifacts"));
+    }
+
+    #[test]
+    fn test_fail_renders() {
+        let mut log = JobLifecycleLog::with_context(OutputContext::plain());
+        let lines = log
+            .render(JobEvent::Fail(JobFail {
+                job_id: "j-fail".to_string(),
+                elapsed: Duration::from_secs(15),
+                error_type: Some("CompilationError".to_string()),
+                worker_state: Some("busy".to_string()),
+                remediation: None,
+            }))
+            .expect("fail renders");
+        assert!(lines[0].contains("FAIL"));
+        assert!(lines[0].contains("CompilationError"));
+    }
+
+    #[test]
+    fn test_fail_detailed_mode_shows_remediation() {
+        let mut log = JobLifecycleLog::with_context(OutputContext::plain())
+            .with_mode(JobLifecycleMode::Detailed);
+        let lines = log
+            .render(JobEvent::Fail(JobFail {
+                job_id: "j-fail".to_string(),
+                elapsed: Duration::from_secs(15),
+                error_type: None,
+                worker_state: None,
+                remediation: Some("Retry later".to_string()),
+            }))
+            .expect("fail renders");
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].contains("fix: Retry later"));
+    }
+
+    #[test]
+    fn test_fail_no_extras() {
+        let mut log = JobLifecycleLog::with_context(OutputContext::plain());
+        let lines = log
+            .render(JobEvent::Fail(JobFail {
+                job_id: "j-fail".to_string(),
+                elapsed: Duration::from_secs(5),
+                error_type: None,
+                worker_state: None,
+                remediation: None,
+            }))
+            .expect("fail renders");
+        assert!(lines[0].contains("FAIL"));
+    }
+
+    // ==================== colorize_segment tests ====================
+
+    #[test]
+    fn test_colorize_with_color_support() {
+        let log = JobLifecycleLog::with_context(OutputContext::interactive());
+        let result = log.colorize_segment(JobEventKind::Start, "TEST");
+        assert!(result.contains("\x1b[")); // Contains ANSI escape
+        assert!(result.contains("TEST"));
+    }
+
+    #[test]
+    fn test_colorize_without_color_support() {
+        let log = JobLifecycleLog::with_context(OutputContext::plain());
+        let result = log.colorize_segment(JobEventKind::Start, "TEST");
+        assert_eq!(result, "TEST"); // No ANSI escapes
+    }
+
+    // ==================== Event struct tests ====================
+
+    #[test]
+    fn test_job_start_fields() {
+        let start = JobStart {
+            job_id: "j-123".to_string(),
+            source: Some("src".to_string()),
+            command_summary: "cmd".to_string(),
+            worker_id: "w1".to_string(),
+        };
+        assert_eq!(start.job_id, "j-123");
+        assert_eq!(start.source.unwrap(), "src");
+    }
+
+    #[test]
+    fn test_job_progress_fields() {
+        let progress = JobProgress {
+            job_id: "j-123".to_string(),
+            phase: JobPhase::Build,
+            elapsed: Duration::from_secs(10),
+            message: "msg".to_string(),
+            resource_usage: Some("cpu: 100%".to_string()),
+        };
+        assert_eq!(progress.phase, JobPhase::Build);
+        assert!(progress.resource_usage.is_some());
+    }
+
+    #[test]
+    fn test_job_done_fields() {
+        let done = JobDone {
+            job_id: "j-123".to_string(),
+            elapsed: Duration::from_secs(60),
+            artifacts: Some(10),
+            note: Some("note".to_string()),
+        };
+        assert_eq!(done.artifacts, Some(10));
+    }
+
+    #[test]
+    fn test_job_fail_fields() {
+        let fail = JobFail {
+            job_id: "j-123".to_string(),
+            elapsed: Duration::from_secs(30),
+            error_type: Some("E001".to_string()),
+            worker_state: Some("down".to_string()),
+            remediation: Some("fix".to_string()),
+        };
+        assert_eq!(fail.error_type.unwrap(), "E001");
     }
 }

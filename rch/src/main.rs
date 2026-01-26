@@ -1427,7 +1427,10 @@ fn handle_help_json_early(subcommand: Option<&str>) -> Result<()> {
             let mut current_cmd = &cmd;
 
             for part in &parts {
-                match current_cmd.get_subcommands().find(|s| s.get_name() == *part) {
+                match current_cmd
+                    .get_subcommands()
+                    .find(|s| s.get_name() == *part)
+                {
                     Some(sub) => current_cmd = sub,
                     None => {
                         eprintln!("Unknown subcommand: {subcmd_name}");
@@ -1564,7 +1567,12 @@ fn handle_capabilities() -> Result<()> {
             RuntimeCapability {
                 name: "bun".to_string(),
                 description: "Bun JavaScript/TypeScript runtime".to_string(),
-                extensions: vec!["js".to_string(), "ts".to_string(), "jsx".to_string(), "tsx".to_string()],
+                extensions: vec![
+                    "js".to_string(),
+                    "ts".to_string(),
+                    "jsx".to_string(),
+                    "tsx".to_string(),
+                ],
                 example_commands: vec![
                     "bun build".to_string(),
                     "bun test".to_string(),
