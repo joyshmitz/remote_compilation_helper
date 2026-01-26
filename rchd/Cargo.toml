@@ -23,6 +23,7 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 toml = { workspace = true }
 directories = { workspace = true }
+notify = { workspace = true }
 openssh = { workspace = true }
 chrono = { workspace = true }
 humantime = { workspace = true }

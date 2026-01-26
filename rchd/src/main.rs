@@ -15,6 +15,7 @@ mod health;
 mod history;
 mod http_api;
 mod metrics;
+mod reload;
 mod selection;
 mod self_test;
 mod telemetry;
@@ -32,6 +33,9 @@ use tokio::net::UnixListener;
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::interval;
 use tracing::{info, warn};
+
+#[cfg(unix)]
+use tokio::signal::unix::{SignalKind, signal};
 
 use benchmark_queue::BenchmarkQueue;
 use events::EventBus;
@@ -81,6 +85,10 @@ struct Cli {
     /// Emit worker selection routing decisions to stderr
     #[arg(long)]
     debug_routing: bool,
+
+    /// Disable hot-reload of configuration files
+    #[arg(long)]
+    no_hot_reload: bool,
 }
 
 /// Shared daemon context passed to all API handlers.
@@ -401,6 +409,34 @@ async fn main() -> Result<()> {
     );
     banner.show();
 
+    // Start config hot-reload watcher (unless disabled)
+    let reload_tx = if !cli.no_hot_reload {
+        match reload::start_config_watcher(
+            worker_pool.clone(),
+            cli.workers_config.clone(),
+        )
+        .await
+        {
+            Ok((handle, tx)) => {
+                info!("Configuration hot-reload enabled");
+                // Store handle to keep watcher alive
+                let _reload_handle = handle;
+                Some(tx)
+            }
+            Err(e) => {
+                warn!("Failed to start config watcher: {}", e);
+                None
+            }
+        }
+    } else {
+        info!("Configuration hot-reload disabled");
+        None
+    };
+
+    // Set up SIGHUP handler for manual reload (Unix only)
+    #[cfg(unix)]
+    let mut sighup = signal(SignalKind::hangup()).expect("Failed to register SIGHUP handler");
+
     // Shutdown channel
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
 
@@ -426,6 +462,34 @@ async fn main() -> Result<()> {
             _ = shutdown_rx.recv() => {
                 info!("Shutdown signal received");
                 break;
+            }
+            #[cfg(unix)]
+            _ = sighup.recv() => {
+                info!("SIGHUP received, triggering configuration reload");
+                if let Some(ref tx) = reload_tx {
+                    if let Err(e) = tx.send(reload::ReloadMessage::ManualReload).await {
+                        warn!("Failed to trigger reload: {}", e);
+                    }
+                } else {
+                    // Hot-reload disabled, perform inline reload
+                    match reload::reload_workers(
+                        &worker_pool,
+                        cli.workers_config.as_deref(),
+                        true,
+                    ).await {
+                        Ok(result) => {
+                            if result.has_changes() {
+                                info!("SIGHUP reload: {} added, {} updated, {} removed",
+                                    result.added, result.updated, result.removed);
+                            } else {
+                                info!("SIGHUP reload: no configuration changes");
+                            }
+                        }
+                        Err(e) => {
+                            warn!("SIGHUP reload failed: {}", e);
+                        }
+                    }
+                }
             }
         }
     }
