@@ -12,12 +12,15 @@ pub mod config;
 pub mod discovery;
 pub mod e2e;
 pub mod errors;
+pub mod hooks;
 pub mod logging;
 pub mod mock;
 pub mod mock_worker;
 pub mod patterns;
 #[cfg(test)]
 mod patterns_security_test;
+#[cfg(test)]
+mod proptest_tests;
 pub mod protocol;
 pub mod remote_compilation;
 pub mod remote_verification;
@@ -42,12 +45,13 @@ pub use test_change::{TestChangeGuard, TestCodeChange};
 pub use toolchain::{ToolchainInfo, wrap_command_with_color, wrap_command_with_toolchain};
 pub use types::{
     BuildLocation, BuildRecord, BuildStats, CircuitBreakerConfig, CircuitState, CircuitStats,
-    ColorMode, CompilationConfig, CompilationMetrics, CompilationTimer, CompilationTimingBreakdown,
-    EnvironmentConfig, FairnessConfig, GeneralConfig, MetricsAggregator, OutputConfig,
-    OutputVisibility, RchConfig, ReleaseRequest, RequiredRuntime, SelectedWorker, SelectionConfig,
-    SelectionReason, SelectionRequest, SelectionResponse, SelectionStrategy, SelectionWeightConfig,
-    SelfTestConfig, SelfTestFailureAction, SelfTestWorkers, TransferConfig, WorkerCapabilities,
-    WorkerConfig, WorkerId, WorkerStatus, default_socket_path,
+    ColorMode, CommandTimingBreakdown, CompilationConfig, CompilationMetrics, CompilationTimer,
+    CompilationTimingBreakdown, EnvironmentConfig, FairnessConfig, GeneralConfig,
+    MetricsAggregator, OutputConfig, OutputVisibility, RchConfig, ReleaseRequest, RequiredRuntime,
+    SelectedWorker, SelectionConfig, SelectionReason, SelectionRequest, SelectionResponse,
+    SelectionStrategy, SelectionWeightConfig, SelfHealingConfig, SelfTestConfig,
+    SelfTestFailureAction, SelfTestWorkers, TransferConfig, WorkerCapabilities, WorkerConfig,
+    WorkerId, WorkerStatus, default_socket_path,
 };
 
 // Config module re-exports
@@ -70,3 +74,6 @@ pub use errors::{ErrorCategory, ErrorCode, ErrorEntry};
 
 // API module re-exports (unified API types for CLI and daemon)
 pub use api::{API_VERSION, ApiError, ApiResponse, ErrorContext, LegacyErrorCode};
+
+// Hooks module re-exports (daemon self-healing)
+pub use hooks::{HookResult, is_claude_code_installed, verify_and_install_claude_code_hook};

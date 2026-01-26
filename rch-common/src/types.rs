@@ -55,7 +55,7 @@ pub enum CircuitState {
 }
 
 /// Required runtime for command execution.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum RequiredRuntime {
     /// No specific runtime required (default).
@@ -452,6 +452,8 @@ pub struct RchConfig {
     #[serde(default)]
     pub output: OutputConfig,
     #[serde(default)]
+    pub self_healing: SelfHealingConfig,
+    #[serde(default)]
     pub self_test: SelfTestConfig,
     /// Worker selection algorithm configuration.
     #[serde(default)]
@@ -472,19 +474,11 @@ pub struct GeneralConfig {
 }
 
 /// Environment variable passthrough configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EnvironmentConfig {
     /// Allowlist of environment variables to forward to remote workers.
     #[serde(default)]
     pub allowlist: Vec<String>,
-}
-
-impl Default for EnvironmentConfig {
-    fn default() -> Self {
-        Self {
-            allowlist: Vec::new(),
-        }
-    }
 }
 
 impl Default for GeneralConfig {
@@ -597,6 +591,42 @@ impl Default for OutputConfig {
             visibility: OutputVisibility::None,
             first_run_complete: false,
             color_mode: ColorMode::default(),
+        }
+    }
+}
+
+// ============================================================================
+// Self-Healing Configuration
+// ============================================================================
+
+fn default_autostart_cooldown_secs() -> u64 {
+    30
+}
+
+fn default_autostart_timeout_secs() -> u64 {
+    3
+}
+
+/// Self-healing behaviors for the hook and daemon.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfHealingConfig {
+    /// Whether the hook should attempt to auto-start the daemon.
+    #[serde(default = "default_true")]
+    pub hook_starts_daemon: bool,
+    /// Cooldown between auto-start attempts in seconds.
+    #[serde(default = "default_autostart_cooldown_secs")]
+    pub auto_start_cooldown_secs: u64,
+    /// Time to wait for the daemon socket after spawning in seconds.
+    #[serde(default = "default_autostart_timeout_secs")]
+    pub auto_start_timeout_secs: u64,
+}
+
+impl Default for SelfHealingConfig {
+    fn default() -> Self {
+        Self {
+            hook_starts_daemon: default_true(),
+            auto_start_cooldown_secs: default_autostart_cooldown_secs(),
+            auto_start_timeout_secs: default_autostart_timeout_secs(),
         }
     }
 }
@@ -1249,6 +1279,54 @@ pub struct BuildRecord {
     pub location: BuildLocation,
     /// Bytes transferred (if remote).
     pub bytes_transferred: Option<u64>,
+    /// Optional timing breakdown for the pipeline.
+    #[serde(default)]
+    pub timing: Option<CommandTimingBreakdown>,
+}
+
+/// Input payload for recording a completed build.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildRecordInput {
+    /// When the build started (ISO 8601 timestamp).
+    pub started_at: String,
+    /// When the build completed (ISO 8601 timestamp).
+    pub completed_at: String,
+    /// Project identifier (usually directory name or hash).
+    pub project_id: String,
+    /// Worker that executed the build (None if local).
+    pub worker_id: Option<String>,
+    /// Full command executed.
+    pub command: String,
+    /// Exit code (0 = success).
+    pub exit_code: i32,
+    /// Duration in milliseconds.
+    pub duration_ms: u64,
+    /// Build location (local or remote).
+    pub location: BuildLocation,
+    /// Bytes transferred (if remote).
+    pub bytes_transferred: Option<u64>,
+    /// Optional timing breakdown for the pipeline.
+    #[serde(default)]
+    pub timing: Option<CommandTimingBreakdown>,
+}
+
+impl BuildRecordInput {
+    /// Convert input payload into a build record with a supplied ID.
+    pub fn into_record(self, id: u64) -> BuildRecord {
+        BuildRecord {
+            id,
+            started_at: self.started_at,
+            completed_at: self.completed_at,
+            project_id: self.project_id,
+            worker_id: self.worker_id,
+            command: self.command,
+            exit_code: self.exit_code,
+            duration_ms: self.duration_ms,
+            location: self.location,
+            bytes_transferred: self.bytes_transferred,
+            timing: self.timing,
+        }
+    }
 }
 
 /// Aggregate statistics for build history.
@@ -1290,6 +1368,34 @@ pub struct CompilationTimingBreakdown {
     /// Total end-to-end latency.
     #[serde(with = "duration_millis")]
     pub total: Duration,
+}
+
+/// Timing breakdown for a single command pipeline.
+///
+/// Uses optional durations so missing phases serialize as `null`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CommandTimingBreakdown {
+    /// Time spent classifying the command.
+    #[serde(with = "option_duration_millis")]
+    pub classify: Option<Duration>,
+    /// Time spent selecting a worker.
+    #[serde(with = "option_duration_millis")]
+    pub select: Option<Duration>,
+    /// Time spent syncing source files to the worker.
+    #[serde(with = "option_duration_millis")]
+    pub sync_up: Option<Duration>,
+    /// Time spent executing the remote command.
+    #[serde(with = "option_duration_millis")]
+    pub exec: Option<Duration>,
+    /// Time spent syncing artifacts back.
+    #[serde(with = "option_duration_millis")]
+    pub sync_down: Option<Duration>,
+    /// Time spent on cleanup (slot release, bookkeeping).
+    #[serde(with = "option_duration_millis")]
+    pub cleanup: Option<Duration>,
+    /// Total end-to-end time for the pipeline.
+    #[serde(with = "option_duration_millis")]
+    pub total: Option<Duration>,
 }
 
 mod duration_millis {
@@ -2194,6 +2300,37 @@ mod tests {
         assert_eq!(parsed.rsync_up, timing.rsync_up);
         assert_eq!(parsed.remote_build, timing.remote_build);
         assert_eq!(parsed.rsync_down, timing.rsync_down);
+        assert_eq!(parsed.total, timing.total);
+    }
+
+    #[test]
+    fn test_command_timing_breakdown_serialization() {
+        let timing = CommandTimingBreakdown {
+            classify: Some(Duration::from_millis(2)),
+            select: None,
+            sync_up: Some(Duration::from_millis(120)),
+            exec: Some(Duration::from_millis(900)),
+            sync_down: None,
+            cleanup: Some(Duration::from_millis(5)),
+            total: Some(Duration::from_millis(1027)),
+        };
+
+        let json = serde_json::to_string(&timing).unwrap();
+        assert!(json.contains("\"classify\":2"));
+        assert!(json.contains("\"select\":null"));
+        assert!(json.contains("\"sync_up\":120"));
+        assert!(json.contains("\"exec\":900"));
+        assert!(json.contains("\"sync_down\":null"));
+        assert!(json.contains("\"cleanup\":5"));
+        assert!(json.contains("\"total\":1027"));
+
+        let parsed: CommandTimingBreakdown = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.classify, timing.classify);
+        assert_eq!(parsed.select, timing.select);
+        assert_eq!(parsed.sync_up, timing.sync_up);
+        assert_eq!(parsed.exec, timing.exec);
+        assert_eq!(parsed.sync_down, timing.sync_down);
+        assert_eq!(parsed.cleanup, timing.cleanup);
         assert_eq!(parsed.total, timing.total);
     }
 

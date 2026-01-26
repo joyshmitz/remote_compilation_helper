@@ -23,6 +23,13 @@ struct MockOverrides {
     enabled: Option<bool>,
     ssh_config: Option<MockConfig>,
     rsync_config: Option<MockRsyncConfig>,
+    /// Active "override scopes" to reduce cross-test flakiness.
+    ///
+    /// Some workspace tests run in parallel and share these global overrides.
+    /// We treat `set_mock_enabled_override(Some(_))` + `clear_mock_overrides()`
+    /// as a push/pop pair so one test can't accidentally disable mock mode
+    /// while another is still running.
+    active_scopes: usize,
 }
 
 fn overrides() -> &'static Mutex<MockOverrides> {
@@ -32,7 +39,11 @@ fn overrides() -> &'static Mutex<MockOverrides> {
 
 /// Set or clear the mock enabled override (test helper).
 pub fn set_mock_enabled_override(enabled: Option<bool>) {
-    overrides().lock().unwrap().enabled = enabled;
+    let mut guard = overrides().lock().unwrap();
+    if enabled.is_some() {
+        guard.active_scopes = guard.active_scopes.saturating_add(1);
+    }
+    guard.enabled = enabled;
 }
 
 /// Set or clear the mock SSH config override (test helper).
@@ -48,9 +59,14 @@ pub fn set_mock_rsync_config_override(config: Option<MockRsyncConfig>) {
 /// Clear all mock overrides.
 pub fn clear_mock_overrides() {
     let mut guard = overrides().lock().unwrap();
-    guard.enabled = None;
-    guard.ssh_config = None;
-    guard.rsync_config = None;
+    if guard.active_scopes > 0 {
+        guard.active_scopes -= 1;
+    }
+    if guard.active_scopes == 0 {
+        guard.enabled = None;
+        guard.ssh_config = None;
+        guard.rsync_config = None;
+    }
 }
 
 /// Check if mock mode is enabled via override or environment variable.
