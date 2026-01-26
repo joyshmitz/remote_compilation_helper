@@ -422,6 +422,15 @@ exclude_patterns = [
     "*.rmeta",
 ]
 
+# Optional: project-local excludes
+#
+# If a project root contains a `.rchignore` file, its patterns are appended to
+# the effective exclude list (defaults + config). Format:
+# - one pattern per line
+# - `#` comments and blank lines ignored
+# - leading/trailing whitespace trimmed
+# - negation (`!pattern`) is NOT supported (treated as literal)
+
 # Output settings
 [output]
 stream_mode = "realtime"         # realtime, buffered, summary
@@ -468,6 +477,9 @@ include_patterns = [            # Force-include files
 exclude_patterns = [            # Additional excludes
     "benches/data/",
 ]
+
+# Alternatively (or additionally), add a `.rchignore` file in the project root.
+# Its patterns are merged deterministically into the transfer excludes.
 
 [environment]
 allowlist = ["RUSTFLAGS", "CARGO_TARGET_DIR"]
