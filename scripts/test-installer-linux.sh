@@ -142,7 +142,7 @@ log_json "verify" "Version output OK" "{\"rch\":\"$rch_version\",\"rchd\":\"$rch
 
 # Basic CLI smoke tests (no daemon/service required).
 "${tmp_bin}/rch" --help >/dev/null 2>&1 || die "rch --help failed"
-"${tmp_bin}/rch" completions bash >/dev/null 2>&1 || die "rch completions bash failed"
+"${tmp_bin}/rch" completions generate bash >/dev/null 2>&1 || die "rch completions generate bash failed"
 "${tmp_bin}/rch" workers list >/dev/null 2>&1 || die "rch workers list failed"
 
 log_json "verify" "CLI smoke tests OK" '{"result":"pass"}'

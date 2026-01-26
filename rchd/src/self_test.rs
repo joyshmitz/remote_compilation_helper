@@ -600,11 +600,318 @@ pub fn default_history_path() -> Result<PathBuf> {
 mod tests {
     use super::*;
 
+    // ==================== parse_duration tests ====================
+
     #[test]
     fn test_parse_duration_minutes() {
         let duration = parse_duration("5m").expect("parse duration");
         assert_eq!(duration, Duration::from_secs(300));
     }
+
+    #[test]
+    fn test_parse_duration_hours() {
+        let duration = parse_duration("2h").expect("parse duration");
+        assert_eq!(duration, Duration::from_secs(7200));
+    }
+
+    #[test]
+    fn test_parse_duration_days() {
+        let duration = parse_duration("1d").expect("parse duration");
+        assert_eq!(duration, Duration::from_secs(86400));
+    }
+
+    #[test]
+    fn test_parse_duration_seconds() {
+        let duration = parse_duration("30s").expect("parse duration");
+        assert_eq!(duration, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_parse_duration_combined() {
+        let duration = parse_duration("1h 30m").expect("parse duration");
+        assert_eq!(duration, Duration::from_secs(5400));
+    }
+
+    #[test]
+    fn test_parse_duration_invalid() {
+        assert!(parse_duration("invalid").is_none());
+        assert!(parse_duration("").is_none());
+    }
+
+    // ==================== SelfTestRunOptions tests ====================
+
+    #[test]
+    fn test_self_test_run_options_default() {
+        let options = SelfTestRunOptions::default();
+        assert_eq!(options.run_type, SelfTestRunType::Manual);
+        assert!(options.worker_ids.is_none());
+        assert!(options.project_path.is_none());
+        assert_eq!(
+            options.timeout,
+            Duration::from_secs(DEFAULT_SELF_TEST_TIMEOUT_SECS)
+        );
+        assert!(options.release_mode);
+    }
+
+    #[test]
+    fn test_self_test_run_options_custom() {
+        let options = SelfTestRunOptions {
+            run_type: SelfTestRunType::Scheduled,
+            worker_ids: Some(vec![WorkerId::new("w1")]),
+            project_path: Some(PathBuf::from("/tmp/project")),
+            timeout: Duration::from_secs(60),
+            release_mode: false,
+        };
+        assert_eq!(options.run_type, SelfTestRunType::Scheduled);
+        assert!(options.worker_ids.is_some());
+        assert!(options.project_path.is_some());
+        assert!(!options.release_mode);
+    }
+
+    // ==================== SelfTestHistory tests ====================
+
+    #[test]
+    fn test_self_test_history_new() {
+        let history = SelfTestHistory::new(10, 50);
+        assert_eq!(history.capacity, 10);
+        assert_eq!(history.result_capacity, 50);
+        assert!(history.persistence_path.is_none());
+    }
+
+    #[test]
+    fn test_self_test_history_with_persistence() {
+        let history =
+            SelfTestHistory::new(10, 50).with_persistence(PathBuf::from("/tmp/history.jsonl"));
+        assert!(history.persistence_path.is_some());
+        assert_eq!(
+            history.persistence_path.as_ref().unwrap().to_str().unwrap(),
+            "/tmp/history.jsonl"
+        );
+    }
+
+    #[test]
+    fn test_self_test_history_next_id() {
+        let history = SelfTestHistory::new(10, 50);
+        assert_eq!(history.next_id(), 1);
+        assert_eq!(history.next_id(), 2);
+        assert_eq!(history.next_id(), 3);
+    }
+
+    #[test]
+    fn test_self_test_history_push_and_latest_run() {
+        let history = SelfTestHistory::new(10, 50);
+        assert!(history.latest_run().is_none());
+
+        let run = SelfTestRunRecord {
+            id: 1,
+            run_type: SelfTestRunType::Manual,
+            started_at: "2024-01-01T00:00:00Z".to_string(),
+            completed_at: "2024-01-01T00:01:00Z".to_string(),
+            workers_tested: 2,
+            workers_passed: 2,
+            workers_failed: 0,
+            duration_ms: 60000,
+        };
+        history.push_run(run.clone());
+
+        let latest = history.latest_run();
+        assert!(latest.is_some());
+        assert_eq!(latest.unwrap().id, 1);
+    }
+
+    #[test]
+    fn test_self_test_history_recent_runs() {
+        let history = SelfTestHistory::new(10, 50);
+
+        for i in 1..=5 {
+            history.push_run(SelfTestRunRecord {
+                id: i,
+                run_type: SelfTestRunType::Manual,
+                started_at: format!("2024-01-0{}T00:00:00Z", i),
+                completed_at: format!("2024-01-0{}T00:01:00Z", i),
+                workers_tested: 1,
+                workers_passed: 1,
+                workers_failed: 0,
+                duration_ms: 1000,
+            });
+        }
+
+        let recent = history.recent_runs(3);
+        assert_eq!(recent.len(), 3);
+        // Recent returns in reverse order (newest first)
+        assert_eq!(recent[0].id, 5);
+        assert_eq!(recent[1].id, 4);
+        assert_eq!(recent[2].id, 3);
+    }
+
+    #[test]
+    fn test_self_test_history_capacity_eviction() {
+        let history = SelfTestHistory::new(3, 50);
+
+        for i in 1..=5 {
+            history.push_run(SelfTestRunRecord {
+                id: i,
+                run_type: SelfTestRunType::Manual,
+                started_at: "2024-01-01T00:00:00Z".to_string(),
+                completed_at: "2024-01-01T00:01:00Z".to_string(),
+                workers_tested: 1,
+                workers_passed: 1,
+                workers_failed: 0,
+                duration_ms: 1000,
+            });
+        }
+
+        let recent = history.recent_runs(10);
+        // Should only keep 3 most recent
+        assert_eq!(recent.len(), 3);
+        assert_eq!(recent[0].id, 5);
+        assert_eq!(recent[2].id, 3);
+    }
+
+    #[test]
+    fn test_self_test_history_results_for_runs() {
+        let history = SelfTestHistory::new(10, 50);
+
+        history.push_result(SelfTestResultRecord {
+            run_id: 1,
+            worker_id: "w1".to_string(),
+            passed: true,
+            local_hash: Some("abc".to_string()),
+            remote_hash: Some("abc".to_string()),
+            local_time_ms: Some(100),
+            remote_time_ms: Some(200),
+            error: None,
+        });
+
+        history.push_result(SelfTestResultRecord {
+            run_id: 2,
+            worker_id: "w2".to_string(),
+            passed: false,
+            local_hash: None,
+            remote_hash: None,
+            local_time_ms: None,
+            remote_time_ms: None,
+            error: Some("connection failed".to_string()),
+        });
+
+        history.push_result(SelfTestResultRecord {
+            run_id: 1,
+            worker_id: "w3".to_string(),
+            passed: true,
+            local_hash: Some("def".to_string()),
+            remote_hash: Some("def".to_string()),
+            local_time_ms: Some(150),
+            remote_time_ms: Some(250),
+            error: None,
+        });
+
+        let results = history.results_for_runs(&[1]);
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.run_id == 1));
+
+        let results = history.results_for_runs(&[2]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].worker_id, "w2");
+
+        let results = history.results_for_runs(&[1, 2]);
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn test_self_test_history_result_capacity_eviction() {
+        let history = SelfTestHistory::new(10, 3);
+
+        for i in 1..=5 {
+            history.push_result(SelfTestResultRecord {
+                run_id: i,
+                worker_id: format!("w{}", i),
+                passed: true,
+                local_hash: None,
+                remote_hash: None,
+                local_time_ms: None,
+                remote_time_ms: None,
+                error: None,
+            });
+        }
+
+        let results = history.results_for_runs(&[1, 2, 3, 4, 5]);
+        // Should only keep 3 most recent results
+        assert_eq!(results.len(), 3);
+    }
+
+    // ==================== SelfTestRunType tests ====================
+
+    #[test]
+    fn test_self_test_run_type_equality() {
+        assert_eq!(SelfTestRunType::Manual, SelfTestRunType::Manual);
+        assert_eq!(SelfTestRunType::Scheduled, SelfTestRunType::Scheduled);
+        assert_ne!(SelfTestRunType::Manual, SelfTestRunType::Scheduled);
+    }
+
+    #[test]
+    fn test_self_test_run_type_serialization() {
+        let manual = serde_json::to_string(&SelfTestRunType::Manual).unwrap();
+        assert_eq!(manual, "\"manual\"");
+
+        let scheduled = serde_json::to_string(&SelfTestRunType::Scheduled).unwrap();
+        assert_eq!(scheduled, "\"scheduled\"");
+    }
+
+    #[test]
+    fn test_self_test_run_type_deserialization() {
+        let manual: SelfTestRunType = serde_json::from_str("\"manual\"").unwrap();
+        assert_eq!(manual, SelfTestRunType::Manual);
+
+        let scheduled: SelfTestRunType = serde_json::from_str("\"scheduled\"").unwrap();
+        assert_eq!(scheduled, SelfTestRunType::Scheduled);
+    }
+
+    // ==================== Record serialization tests ====================
+
+    #[test]
+    fn test_self_test_run_record_serialization() {
+        let record = SelfTestRunRecord {
+            id: 42,
+            run_type: SelfTestRunType::Scheduled,
+            started_at: "2024-01-01T00:00:00Z".to_string(),
+            completed_at: "2024-01-01T00:01:00Z".to_string(),
+            workers_tested: 3,
+            workers_passed: 2,
+            workers_failed: 1,
+            duration_ms: 60000,
+        };
+
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(json.contains("\"id\":42"));
+        assert!(json.contains("\"scheduled\""));
+        assert!(json.contains("\"workers_passed\":2"));
+
+        let deserialized: SelfTestRunRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.id, 42);
+        assert_eq!(deserialized.workers_failed, 1);
+    }
+
+    #[test]
+    fn test_self_test_result_record_serialization() {
+        let record = SelfTestResultRecord {
+            run_id: 1,
+            worker_id: "test-worker".to_string(),
+            passed: true,
+            local_hash: Some("abc123".to_string()),
+            remote_hash: Some("abc123".to_string()),
+            local_time_ms: Some(100),
+            remote_time_ms: Some(200),
+            error: None,
+        };
+
+        let json = serde_json::to_string(&record).unwrap();
+        let deserialized: SelfTestResultRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.worker_id, "test-worker");
+        assert!(deserialized.passed);
+        assert!(deserialized.error.is_none());
+    }
+
+    // ==================== SelfTestService tests ====================
 
     #[test]
     fn test_status_next_run_interval() {
@@ -619,5 +926,59 @@ mod tests {
         let service = SelfTestService::new(pool, config, history);
         let status = service.status();
         assert!(status.next_run.is_some());
+    }
+
+    #[test]
+    fn test_status_disabled() {
+        let pool = WorkerPool::new();
+        let history = Arc::new(SelfTestHistory::new(5, 5));
+        let config = SelfTestConfig {
+            enabled: false,
+            ..Default::default()
+        };
+
+        let service = SelfTestService::new(pool, config, history);
+        let status = service.status();
+        assert!(!status.enabled);
+    }
+
+    #[test]
+    fn test_service_history_clone() {
+        let pool = WorkerPool::new();
+        let history = Arc::new(SelfTestHistory::new(5, 5));
+        let config = SelfTestConfig::default();
+
+        let service = SelfTestService::new(pool, config, history.clone());
+        let service_history = service.history();
+
+        // Should be the same Arc
+        assert!(Arc::ptr_eq(&history, &service_history));
+    }
+
+    // ==================== SelfTestStatus tests ====================
+
+    #[test]
+    fn test_self_test_status_serialization() {
+        let status = SelfTestStatus {
+            enabled: true,
+            schedule: Some("0 0 * * *".to_string()),
+            interval: None,
+            last_run: None,
+            next_run: Some("2024-01-02T00:00:00Z".to_string()),
+        };
+
+        let json = serde_json::to_string(&status).unwrap();
+        let deserialized: SelfTestStatus = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.enabled);
+        assert_eq!(deserialized.schedule.unwrap(), "0 0 * * *");
+    }
+
+    // ==================== Constants tests ====================
+
+    #[test]
+    fn test_default_constants() {
+        assert_eq!(DEFAULT_RUN_CAPACITY, 100);
+        assert_eq!(DEFAULT_RESULT_CAPACITY, 500);
+        assert_eq!(DEFAULT_SELF_TEST_TIMEOUT_SECS, 300);
     }
 }

@@ -233,9 +233,8 @@ impl DaemonBanner {
 mod tests {
     use super::*;
 
-    #[test]
-    fn build_info_includes_commit() {
-        let banner = DaemonBanner::new(
+    fn test_banner() -> DaemonBanner {
+        DaemonBanner::new(
             "0.1.0",
             Some("debug".to_string()),
             Some("x86_64-unknown-linux-gnu".to_string()),
@@ -249,10 +248,162 @@ mod tests {
             1234,
             Local::now(),
             Duration::from_millis(10),
-        );
+        )
+    }
 
+    fn banner_with_options(
+        telemetry: bool,
+        metrics_port: u16,
+        otel: bool,
+        commit: Option<String>,
+    ) -> DaemonBanner {
+        DaemonBanner::new(
+            "1.0.0",
+            None,
+            None,
+            commit,
+            "/var/run/rch.sock",
+            4,
+            32,
+            metrics_port,
+            telemetry,
+            otel,
+            5678,
+            Local::now(),
+            Duration::from_millis(150),
+        )
+    }
+
+    #[test]
+    fn build_info_includes_commit() {
+        let banner = test_banner();
         let info = banner.build_info();
         assert!(info.contains("commit"));
         assert!(info.contains("abcdef12"));
+    }
+
+    // ==================== commit_short tests ====================
+
+    #[test]
+    fn test_commit_short_truncates_to_8_chars() {
+        let banner = test_banner();
+        let short = banner.commit_short();
+        assert_eq!(short, "abcdef12");
+    }
+
+    #[test]
+    fn test_commit_short_no_commit() {
+        let banner = banner_with_options(true, 9100, true, None);
+        let short = banner.commit_short();
+        assert_eq!(short, "unknown");
+    }
+
+    #[test]
+    fn test_commit_short_short_hash() {
+        let banner = banner_with_options(true, 9100, true, Some("abc".to_string()));
+        let short = banner.commit_short();
+        assert_eq!(short, "abc");
+    }
+
+    // ==================== build_info tests ====================
+
+    #[test]
+    fn test_build_info_with_profile_and_target() {
+        let banner = test_banner();
+        let info = banner.build_info();
+        assert!(info.contains("profile debug"));
+        assert!(info.contains("target x86_64-unknown-linux-gnu"));
+    }
+
+    #[test]
+    fn test_build_info_without_profile_or_target() {
+        let banner = banner_with_options(true, 9100, true, Some("deadbeef".to_string()));
+        let info = banner.build_info();
+        assert!(!info.contains("profile"));
+        assert!(!info.contains("target"));
+        assert!(info.contains("commit deadbeef"));
+    }
+
+    // ==================== features_summary tests ====================
+
+    #[test]
+    fn test_features_summary_all_enabled() {
+        let banner = banner_with_options(true, 9100, true, None);
+        let summary = banner.features_summary();
+        assert!(summary.contains("telemetry"));
+        assert!(summary.contains("metrics"));
+        assert!(summary.contains("otel"));
+        assert!(!summary.contains("off"));
+    }
+
+    #[test]
+    fn test_features_summary_all_disabled() {
+        let banner = banner_with_options(false, 0, false, None);
+        let summary = banner.features_summary();
+        assert!(summary.contains("telemetry off"));
+        assert!(summary.contains("metrics off"));
+        assert!(summary.contains("otel off"));
+    }
+
+    #[test]
+    fn test_features_summary_mixed() {
+        let banner = banner_with_options(true, 0, false, None);
+        let summary = banner.features_summary();
+        assert!(!summary.contains("telemetry off"));
+        assert!(summary.contains("metrics off"));
+        assert!(summary.contains("otel off"));
+    }
+
+    // ==================== startup_ms tests ====================
+
+    #[test]
+    fn test_startup_ms() {
+        let banner = test_banner();
+        assert_eq!(banner.startup_ms(), 10);
+    }
+
+    #[test]
+    fn test_startup_ms_larger_value() {
+        let banner = banner_with_options(true, 9100, true, None);
+        assert_eq!(banner.startup_ms(), 150);
+    }
+
+    // ==================== show_plain tests ====================
+
+    #[test]
+    fn test_show_plain_does_not_panic() {
+        let banner = test_banner();
+        // Just verify it doesn't panic - output goes to stderr
+        banner.show_plain();
+    }
+
+    #[test]
+    fn test_show_plain_with_metrics_disabled() {
+        let banner = banner_with_options(false, 0, false, None);
+        banner.show_plain();
+    }
+
+    // ==================== show tests ====================
+
+    #[test]
+    fn test_show_does_not_panic() {
+        let banner = test_banner();
+        // This should fall back to plain in test environment
+        banner.show();
+    }
+
+    // ==================== DaemonBanner construction tests ====================
+
+    #[test]
+    fn test_daemon_banner_fields() {
+        let banner = test_banner();
+        assert_eq!(banner.version, "0.1.0");
+        assert_eq!(banner.socket_path, "/tmp/rch.sock");
+        assert_eq!(banner.workers, 2);
+        assert_eq!(banner.total_slots, 16);
+        assert_eq!(banner.metrics_port, 9100);
+        assert!(banner.telemetry_enabled);
+        assert!(banner.otel_enabled);
+        assert_eq!(banner.pid, 1234);
     }
 }

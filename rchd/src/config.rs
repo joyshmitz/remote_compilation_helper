@@ -44,6 +44,10 @@ pub struct DaemonConfig {
     /// Log level (trace, debug, info, warn, error).
     #[serde(default = "default_log_level")]
     pub log_level: String,
+
+    /// Worker cache cleanup settings.
+    #[serde(default)]
+    pub cache_cleanup: CacheCleanupConfig,
 }
 
 impl Default for DaemonConfig {
@@ -55,6 +59,74 @@ impl Default for DaemonConfig {
             max_jobs_per_slot: 1,
             connection_pooling: true,
             log_level: "info".to_string(),
+            cache_cleanup: CacheCleanupConfig::default(),
+        }
+    }
+}
+
+/// Configuration for automatic cache cleanup on workers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheCleanupConfig {
+    /// Enable automatic cache cleanup.
+    #[serde(default = "default_cleanup_enabled")]
+    pub enabled: bool,
+
+    /// Cleanup check interval in seconds.
+    #[serde(default = "default_cleanup_interval")]
+    pub interval_secs: u64,
+
+    /// Maximum cache age in hours before pruning.
+    #[serde(default = "default_max_cache_age")]
+    pub max_cache_age_hours: u64,
+
+    /// Minimum free disk space in GB to maintain.
+    /// Cleanup is triggered more aggressively when below this threshold.
+    #[serde(default = "default_min_free_gb")]
+    pub min_free_gb: u64,
+
+    /// Minimum idle time (seconds) for worker before cleanup is allowed.
+    /// Prevents cleanup from interfering with active builds.
+    #[serde(default = "default_idle_threshold")]
+    pub idle_threshold_secs: u64,
+
+    /// Remote base directory for cache (must match transfer.remote_base).
+    #[serde(default = "default_remote_base")]
+    pub remote_base: String,
+}
+
+fn default_cleanup_enabled() -> bool {
+    true
+}
+
+fn default_cleanup_interval() -> u64 {
+    3600 // 1 hour
+}
+
+fn default_max_cache_age() -> u64 {
+    72 // 3 days
+}
+
+fn default_min_free_gb() -> u64 {
+    10 // 10 GB minimum free space
+}
+
+fn default_idle_threshold() -> u64 {
+    60 // 1 minute idle before cleanup
+}
+
+fn default_remote_base() -> String {
+    "/tmp/rch".to_string()
+}
+
+impl Default for CacheCleanupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_cleanup_enabled(),
+            interval_secs: default_cleanup_interval(),
+            max_cache_age_hours: default_max_cache_age(),
+            min_free_gb: default_min_free_gb(),
+            idle_threshold_secs: default_idle_threshold(),
+            remote_base: default_remote_base(),
         }
     }
 }

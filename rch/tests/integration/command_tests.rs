@@ -626,3 +626,148 @@ fn test_rch_output_format_env_var() {
     );
     crate::test_log!("TEST PASS: test_rch_output_format_env_var");
 }
+
+// =============================================================================
+// Machine Discovery Flags Tests (--help-json, --capabilities)
+// =============================================================================
+
+#[test]
+fn test_help_json_outputs_valid_json() {
+    init_test_logging();
+    crate::test_log!("TEST START: test_help_json_outputs_valid_json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rch"))
+        .arg("--help-json")
+        .output()
+        .expect("Failed to run rch --help-json");
+
+    assert!(output.status.success(), "rch --help-json failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should be valid JSON
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("--help-json should output valid JSON");
+
+    // Should have expected structure
+    assert!(parsed.get("name").is_some(), "Missing 'name' field");
+    assert!(parsed.get("subcommands").is_some(), "Missing 'subcommands' field");
+    assert!(parsed.get("version").is_some(), "Missing 'version' field");
+
+    crate::test_log!("TEST PASS: test_help_json_outputs_valid_json");
+}
+
+#[test]
+fn test_help_json_with_subcommand() {
+    init_test_logging();
+    crate::test_log!("TEST START: test_help_json_with_subcommand");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rch"))
+        .args(["--help-json", "workers"])
+        .output()
+        .expect("Failed to run rch --help-json workers");
+
+    assert!(output.status.success(), "rch --help-json workers failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("--help-json workers should output valid JSON");
+
+    // Should be for the workers subcommand
+    assert_eq!(
+        parsed.get("name").and_then(|v| v.as_str()),
+        Some("workers"),
+        "Should be 'workers' subcommand"
+    );
+
+    // Should have nested subcommands
+    let subcommands = parsed.get("subcommands").and_then(|v| v.as_array());
+    assert!(subcommands.is_some(), "workers should have subcommands");
+    assert!(!subcommands.unwrap().is_empty(), "workers should have subcommands");
+
+    crate::test_log!("TEST PASS: test_help_json_with_subcommand");
+}
+
+#[test]
+fn test_capabilities_outputs_valid_json() {
+    init_test_logging();
+    crate::test_log!("TEST START: test_capabilities_outputs_valid_json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rch"))
+        .arg("--capabilities")
+        .output()
+        .expect("Failed to run rch --capabilities");
+
+    assert!(output.status.success(), "rch --capabilities failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("--capabilities should output valid JSON");
+
+    // Should have expected structure
+    assert!(parsed.get("version").is_some(), "Missing 'version' field");
+    assert!(parsed.get("runtimes").is_some(), "Missing 'runtimes' field");
+    assert!(parsed.get("commands").is_some(), "Missing 'commands' field");
+    assert!(parsed.get("features").is_some(), "Missing 'features' field");
+
+    crate::test_log!("TEST PASS: test_capabilities_outputs_valid_json");
+}
+
+#[test]
+fn test_capabilities_lists_supported_runtimes() {
+    init_test_logging();
+    crate::test_log!("TEST START: test_capabilities_lists_supported_runtimes");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rch"))
+        .arg("--capabilities")
+        .output()
+        .expect("Failed to run rch --capabilities");
+
+    assert!(output.status.success(), "rch --capabilities failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let runtimes = parsed.get("runtimes").and_then(|v| v.as_array()).unwrap();
+
+    // Should list rust, bun, and node runtimes
+    let runtime_names: Vec<&str> = runtimes
+        .iter()
+        .filter_map(|r| r.get("name").and_then(|n| n.as_str()))
+        .collect();
+
+    assert!(runtime_names.contains(&"rust"), "Should support rust runtime");
+    assert!(runtime_names.contains(&"bun"), "Should support bun runtime");
+    assert!(runtime_names.contains(&"node"), "Should support node runtime");
+
+    crate::test_log!("TEST PASS: test_capabilities_lists_supported_runtimes");
+}
+
+#[test]
+fn test_capabilities_lists_all_commands() {
+    init_test_logging();
+    crate::test_log!("TEST START: test_capabilities_lists_all_commands");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rch"))
+        .arg("--capabilities")
+        .output()
+        .expect("Failed to run rch --capabilities");
+
+    assert!(output.status.success(), "rch --capabilities failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let commands = parsed.get("commands").and_then(|v| v.as_array()).unwrap();
+
+    let command_names: Vec<&str> = commands
+        .iter()
+        .filter_map(|c| c.get("name").and_then(|n| n.as_str()))
+        .collect();
+
+    // Verify key commands are listed
+    assert!(command_names.contains(&"init"), "Should list init command");
+    assert!(command_names.contains(&"daemon"), "Should list daemon command");
+    assert!(command_names.contains(&"workers"), "Should list workers command");
+    assert!(command_names.contains(&"status"), "Should list status command");
+    assert!(command_names.contains(&"config"), "Should list config command");
+
+    crate::test_log!("TEST PASS: test_capabilities_lists_all_commands");
+}

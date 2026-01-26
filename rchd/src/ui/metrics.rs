@@ -524,3 +524,348 @@ fn rich_override() -> Option<bool> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Datelike;
+    use std::collections::VecDeque;
+
+    // ==================== delta_counter tests ====================
+
+    #[test]
+    fn test_delta_counter_positive_delta() {
+        assert_eq!(delta_counter(100.0, 50.0), 50);
+    }
+
+    #[test]
+    fn test_delta_counter_zero_delta() {
+        assert_eq!(delta_counter(100.0, 100.0), 0);
+    }
+
+    #[test]
+    fn test_delta_counter_baseline_higher_returns_current() {
+        // When current < baseline (counter wrapped), return current
+        assert_eq!(delta_counter(50.0, 100.0), 50);
+    }
+
+    #[test]
+    fn test_delta_counter_rounds_correctly() {
+        assert_eq!(delta_counter(100.6, 50.0), 51);
+        assert_eq!(delta_counter(100.4, 50.0), 50);
+    }
+
+    // ==================== parse_timestamp tests ====================
+
+    #[test]
+    fn test_parse_timestamp_valid_rfc3339() {
+        let result = parse_timestamp("2024-01-15T10:30:00Z");
+        assert!(result.is_some());
+        let ts = result.unwrap();
+        assert_eq!(ts.year(), 2024);
+        assert_eq!(ts.month(), 1);
+        assert_eq!(ts.day(), 15);
+    }
+
+    #[test]
+    fn test_parse_timestamp_with_offset() {
+        let result = parse_timestamp("2024-01-15T10:30:00+05:00");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_parse_timestamp_invalid_format() {
+        assert!(parse_timestamp("not-a-timestamp").is_none());
+        assert!(parse_timestamp("2024/01/15").is_none());
+        assert!(parse_timestamp("").is_none());
+    }
+
+    // ==================== average_ms tests ====================
+
+    #[test]
+    fn test_average_ms_empty_returns_none() {
+        assert!(average_ms(&[]).is_none());
+    }
+
+    #[test]
+    fn test_average_ms_single_value() {
+        assert_eq!(average_ms(&[100]), Some(100.0));
+    }
+
+    #[test]
+    fn test_average_ms_multiple_values() {
+        assert_eq!(average_ms(&[100, 200, 300]), Some(200.0));
+    }
+
+    #[test]
+    fn test_average_ms_with_zeros() {
+        assert_eq!(average_ms(&[0, 100, 200]), Some(100.0));
+    }
+
+    // ==================== percentile_ms tests ====================
+
+    #[test]
+    fn test_percentile_ms_empty_returns_none() {
+        assert!(percentile_ms(&[], 0.5).is_none());
+    }
+
+    #[test]
+    fn test_percentile_ms_p50() {
+        let values = vec![10, 20, 30, 40, 50];
+        assert_eq!(percentile_ms(&values, 0.5), Some(30.0));
+    }
+
+    #[test]
+    fn test_percentile_ms_p0() {
+        let values = vec![10, 20, 30, 40, 50];
+        assert_eq!(percentile_ms(&values, 0.0), Some(10.0));
+    }
+
+    #[test]
+    fn test_percentile_ms_p100() {
+        let values = vec![10, 20, 30, 40, 50];
+        assert_eq!(percentile_ms(&values, 1.0), Some(50.0));
+    }
+
+    #[test]
+    fn test_percentile_ms_p95_interpolation() {
+        // With 5 values, index 4 * 0.95 = 3.8, rounds to 4
+        let values = vec![10, 20, 30, 40, 50];
+        assert_eq!(percentile_ms(&values, 0.95), Some(50.0));
+    }
+
+    // ==================== format_duration_ms tests ====================
+
+    #[test]
+    fn test_format_duration_ms_milliseconds() {
+        assert_eq!(format_duration_ms(500.0), "500ms");
+        assert_eq!(format_duration_ms(50.0), "50ms");
+        assert_eq!(format_duration_ms(999.0), "999ms");
+    }
+
+    #[test]
+    fn test_format_duration_ms_seconds() {
+        assert_eq!(format_duration_ms(1000.0), "1.0s");
+        assert_eq!(format_duration_ms(1500.0), "1.5s");
+        assert_eq!(format_duration_ms(60000.0), "60.0s");
+    }
+
+    #[test]
+    fn test_format_duration_ms_zero() {
+        assert_eq!(format_duration_ms(0.0), "0ms");
+    }
+
+    // ==================== format_interval tests ====================
+
+    #[test]
+    fn test_format_interval_seconds() {
+        assert_eq!(format_interval(Duration::from_secs(30)), "30s");
+        assert_eq!(format_interval(Duration::from_secs(45)), "45s");
+    }
+
+    #[test]
+    fn test_format_interval_minutes() {
+        assert_eq!(format_interval(Duration::from_secs(60)), "1m");
+        assert_eq!(format_interval(Duration::from_secs(300)), "5m");
+        assert_eq!(format_interval(Duration::from_secs(900)), "15m");
+    }
+
+    #[test]
+    fn test_format_interval_hours() {
+        assert_eq!(format_interval(Duration::from_secs(3600)), "1h");
+        assert_eq!(format_interval(Duration::from_secs(7200)), "2h");
+    }
+
+    // ==================== format_bytes tests ====================
+
+    #[test]
+    fn test_format_bytes_bytes() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(500), "500 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+    }
+
+    #[test]
+    fn test_format_bytes_kilobytes() {
+        assert_eq!(format_bytes(1024), "1.0 KB");
+        assert_eq!(format_bytes(1536), "1.5 KB");
+        assert_eq!(format_bytes(10240), "10.0 KB");
+    }
+
+    #[test]
+    fn test_format_bytes_megabytes() {
+        assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
+        assert_eq!(format_bytes(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    #[test]
+    fn test_format_bytes_gigabytes() {
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0 GB");
+        assert_eq!(format_bytes(2 * 1024 * 1024 * 1024), "2.0 GB");
+    }
+
+    // ==================== trend_arrow tests ====================
+
+    #[test]
+    fn test_trend_arrow_no_previous() {
+        let ctx = OutputContext::plain();
+        assert_eq!(trend_arrow(None, Some(100.0), ctx), Icons::arrow_right(ctx));
+    }
+
+    #[test]
+    fn test_trend_arrow_no_current() {
+        let ctx = OutputContext::plain();
+        assert_eq!(trend_arrow(Some(100.0), None, ctx), Icons::arrow_right(ctx));
+    }
+
+    #[test]
+    fn test_trend_arrow_stable() {
+        let ctx = OutputContext::plain();
+        // Within threshold (5%)
+        assert_eq!(
+            trend_arrow(Some(100.0), Some(102.0), ctx),
+            Icons::arrow_right(ctx)
+        );
+    }
+
+    #[test]
+    fn test_trend_arrow_increasing() {
+        let ctx = OutputContext::plain();
+        // Above threshold
+        assert_eq!(
+            trend_arrow(Some(100.0), Some(110.0), ctx),
+            Icons::arrow_up(ctx)
+        );
+    }
+
+    #[test]
+    fn test_trend_arrow_decreasing() {
+        let ctx = OutputContext::plain();
+        // Below threshold (negative)
+        assert_eq!(
+            trend_arrow(Some(100.0), Some(90.0), ctx),
+            Icons::arrow_down(ctx)
+        );
+    }
+
+    #[test]
+    fn test_trend_arrow_zero_previous() {
+        let ctx = OutputContext::plain();
+        assert_eq!(
+            trend_arrow(Some(0.0), Some(100.0), ctx),
+            Icons::arrow_right(ctx)
+        );
+    }
+
+    // ==================== sparkline tests ====================
+
+    #[test]
+    fn test_sparkline_empty() {
+        let values: VecDeque<f64> = VecDeque::new();
+        let ctx = OutputContext::plain();
+        assert_eq!(sparkline(&values, ctx), "");
+    }
+
+    #[test]
+    fn test_sparkline_single_value() {
+        let mut values = VecDeque::new();
+        values.push_back(50.0);
+        let ctx = OutputContext::plain();
+        let result = sparkline(&values, ctx);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_sparkline_uniform_values() {
+        let mut values = VecDeque::new();
+        values.push_back(100.0);
+        values.push_back(100.0);
+        values.push_back(100.0);
+        let ctx = OutputContext::plain();
+        let result = sparkline(&values, ctx);
+        // All values same, should all be mid-level
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_sparkline_increasing() {
+        let mut values = VecDeque::new();
+        values.push_back(0.0);
+        values.push_back(50.0);
+        values.push_back(100.0);
+        let ctx = OutputContext::plain();
+        let result = sparkline(&values, ctx);
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_sparkline_unicode_vs_ascii() {
+        let mut values = VecDeque::new();
+        values.push_back(0.0);
+        values.push_back(100.0);
+
+        let plain_ctx = OutputContext::plain();
+        let ascii_result = sparkline(&values, plain_ctx);
+
+        // ASCII uses single-byte characters
+        assert!(ascii_result.chars().all(|c| c.is_ascii()));
+    }
+
+    // ==================== TransferCounters tests ====================
+
+    #[test]
+    fn test_transfer_counters_default() {
+        let tc = TransferCounters::default();
+        assert_eq!(tc.up, 0.0);
+        assert_eq!(tc.down, 0.0);
+    }
+
+    // ==================== MetricsSnapshot tests ====================
+
+    #[test]
+    fn test_metrics_snapshot_default() {
+        let snapshot = MetricsSnapshot::default();
+        assert_eq!(snapshot.total_jobs, 0);
+        assert_eq!(snapshot.success_jobs, 0);
+        assert_eq!(snapshot.failed_jobs, 0);
+        assert!(snapshot.cache_hits.is_none());
+        assert!(snapshot.avg_ms.is_none());
+    }
+
+    // ==================== MetricsDashboard tests ====================
+
+    #[test]
+    fn test_metrics_dashboard_new() {
+        let dashboard = MetricsDashboard::new(Duration::from_secs(60));
+        assert_eq!(dashboard.refresh_interval, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_metrics_dashboard_zero_interval_uses_default() {
+        let dashboard = MetricsDashboard::new(Duration::ZERO);
+        assert_eq!(
+            dashboard.refresh_interval,
+            Duration::from_secs(DEFAULT_INTERVAL_SECS)
+        );
+    }
+
+    #[test]
+    fn test_metrics_dashboard_with_context() {
+        let ctx = OutputContext::plain();
+        let dashboard = MetricsDashboard::with_context(ctx, Duration::from_secs(120));
+        assert_eq!(dashboard.refresh_interval, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn test_metrics_dashboard_reset_window() {
+        let mut dashboard = MetricsDashboard::new(Duration::from_secs(60));
+        dashboard.avg_history.push_back(100.0);
+        dashboard.avg_history.push_back(200.0);
+        dashboard.queue_peak = 10;
+
+        dashboard.reset_window();
+
+        assert!(dashboard.avg_history.is_empty());
+        assert_eq!(dashboard.queue_peak, 0);
+    }
+}

@@ -9,6 +9,7 @@ mod alerts;
 mod api;
 mod benchmark_queue;
 mod benchmark_scheduler;
+mod cache_cleanup;
 mod config;
 mod events;
 mod health;
@@ -268,6 +269,22 @@ async fn main() -> Result<()> {
     if let Err(e) = self_test_service.clone().start().await {
         warn!("Failed to start self-test scheduler: {}", e);
     }
+
+    // Load daemon config for cache cleanup settings
+    let daemon_config = match config::load_daemon_config(None) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            warn!("Failed to load daemon config: {}, using defaults", e);
+            config::DaemonConfig::default()
+        }
+    };
+
+    // Start cache cleanup scheduler
+    let cache_cleanup_scheduler = Arc::new(cache_cleanup::CacheCleanupScheduler::new(
+        worker_pool.clone(),
+        daemon_config.cache_cleanup,
+    ));
+    let _cache_cleanup_handle = cache_cleanup_scheduler.start();
 
     // Remove existing socket if present
     if cli.socket.exists() {

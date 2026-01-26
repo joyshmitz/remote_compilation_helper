@@ -15,6 +15,7 @@ TOON_INTEGRATION_BRIEF.md
 cov_*.out
 rustc-ice-*.txt
 *.snap.new
+*.wip
 sweep_*.png
 test_screenshot.png
 perf.data
