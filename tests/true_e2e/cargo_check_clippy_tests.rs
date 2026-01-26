@@ -252,7 +252,10 @@ async fn test_cargo_check_clean() {
                 vec![
                     ("phase".to_string(), "execute_remote".to_string()),
                     ("exit_code".to_string(), result.exit_code.to_string()),
-                    ("duration_ms".to_string(), remote_duration.as_millis().to_string()),
+                    (
+                        "duration_ms".to_string(),
+                        remote_duration.as_millis().to_string(),
+                    ),
                 ],
             );
 
@@ -496,7 +499,10 @@ async fn test_cargo_check_with_errors() {
                     ("phase".to_string(), "verify".to_string()),
                     ("expected".to_string(), "non-zero".to_string()),
                     ("actual".to_string(), result.exit_code.to_string()),
-                    ("has_compile_error".to_string(), has_compile_error.to_string()),
+                    (
+                        "has_compile_error".to_string(),
+                        has_compile_error.to_string(),
+                    ),
                 ],
             );
 
@@ -712,7 +718,10 @@ async fn test_cargo_clippy_clean() {
                 vec![
                     ("phase".to_string(), "execute_remote".to_string()),
                     ("exit_code".to_string(), result.exit_code.to_string()),
-                    ("duration_ms".to_string(), remote_duration.as_millis().to_string()),
+                    (
+                        "duration_ms".to_string(),
+                        remote_duration.as_millis().to_string(),
+                    ),
                 ],
             );
 
@@ -834,8 +843,7 @@ async fn test_cargo_clippy_with_warnings() {
             // Check for clippy warnings
             let has_warnings = output.contains("warning:")
                 || output.contains("clippy::")
-                || output.contains("generated")
-                    && output.contains("warning");
+                || output.contains("generated") && output.contains("warning");
 
             logger.log_with_context(
                 LogLevel::Info,
@@ -898,7 +906,10 @@ async fn test_cargo_clippy_deny_warnings() {
         vec![
             ("phase".to_string(), "setup".to_string()),
             ("fixture".to_string(), "clippy_warnings".to_string()),
-            ("expected".to_string(), "non-zero exit (warnings as errors)".to_string()),
+            (
+                "expected".to_string(),
+                "non-zero exit (warnings as errors)".to_string(),
+            ),
         ],
     );
 

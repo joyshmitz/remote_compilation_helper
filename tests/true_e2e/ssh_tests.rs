@@ -209,7 +209,12 @@ fn ssh_agent_key_count() -> Option<usize> {
         return Some(0);
     }
 
-    Some(stdout.lines().filter(|line| !line.trim().is_empty()).count())
+    Some(
+        stdout
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count(),
+    )
 }
 
 fn log_phase(
@@ -445,7 +450,10 @@ async fn run_key_auth_test(test_name: &str, key_type: KeyType) {
                 vec![
                     ("worker".to_string(), worker_entry.id.clone()),
                     ("key_type".to_string(), key_type.as_str().to_string()),
-                    ("auth_duration_ms".to_string(), auth_duration.as_millis().to_string()),
+                    (
+                        "auth_duration_ms".to_string(),
+                        auth_duration.as_millis().to_string(),
+                    ),
                 ],
             );
         }
@@ -606,7 +614,10 @@ async fn test_ssh_agent_authentication() {
                 "SSH agent authentication succeeded",
                 vec![
                     ("worker".to_string(), worker_entry.id.clone()),
-                    ("auth_duration_ms".to_string(), auth_duration.as_millis().to_string()),
+                    (
+                        "auth_duration_ms".to_string(),
+                        auth_duration.as_millis().to_string(),
+                    ),
                 ],
             );
         }
@@ -725,7 +736,10 @@ async fn test_ssh_wrong_key_rejection() {
         "SSH authentication failed as expected",
         vec![
             ("worker".to_string(), worker_entry.id.clone()),
-            ("error".to_string(), result.err().map(|e| e.to_string()).unwrap_or_default()),
+            (
+                "error".to_string(),
+                result.err().map(|e| e.to_string()).unwrap_or_default(),
+            ),
         ],
     );
 
@@ -790,7 +804,10 @@ async fn test_ssh_connection_timeout() {
         "Connection attempt completed",
         vec![
             ("success".to_string(), result.is_ok().to_string()),
-            ("actual_wait_ms".to_string(), elapsed.as_millis().to_string()),
+            (
+                "actual_wait_ms".to_string(),
+                elapsed.as_millis().to_string(),
+            ),
             (
                 "error_type".to_string(),
                 result
@@ -803,7 +820,10 @@ async fn test_ssh_connection_timeout() {
     );
 
     // Should fail
-    assert!(result.is_err(), "Connection to unreachable host should fail");
+    assert!(
+        result.is_err(),
+        "Connection to unreachable host should fail"
+    );
 
     // Should timeout within reasonable bounds (timeout + buffer)
     let max_expected = Duration::from_secs(timeout_secs + 5);
@@ -858,7 +878,10 @@ async fn test_ssh_pool_reuse() {
         LogSource::Custom("ssh".to_string()),
         "pool",
         "Connection pool stats (before first connection)",
-        vec![("active".to_string(), pool.active_connections().await.to_string())],
+        vec![(
+            "active".to_string(),
+            pool.active_connections().await.to_string(),
+        )],
     );
 
     let first_start = Instant::now();
@@ -875,8 +898,14 @@ async fn test_ssh_pool_reuse() {
         "pool",
         "First connection established",
         vec![
-            ("duration_ms".to_string(), first_duration.as_millis().to_string()),
-            ("active".to_string(), pool.active_connections().await.to_string()),
+            (
+                "duration_ms".to_string(),
+                first_duration.as_millis().to_string(),
+            ),
+            (
+                "active".to_string(),
+                pool.active_connections().await.to_string(),
+            ),
         ],
     );
 
@@ -896,8 +925,14 @@ async fn test_ssh_pool_reuse() {
         "pool",
         "Second connection (reused)",
         vec![
-            ("duration_ms".to_string(), second_duration.as_millis().to_string()),
-            ("active".to_string(), pool.active_connections().await.to_string()),
+            (
+                "duration_ms".to_string(),
+                second_duration.as_millis().to_string(),
+            ),
+            (
+                "active".to_string(),
+                pool.active_connections().await.to_string(),
+            ),
             ("reused".to_string(), reused_ptr.to_string()),
             (
                 "reused_fast".to_string(),
@@ -908,7 +943,10 @@ async fn test_ssh_pool_reuse() {
 
     // Pool should have only 1 active connection (reused)
     let active = pool.active_connections().await;
-    assert_eq!(active, 1, "Pool should reuse connection, not create new one");
+    assert_eq!(
+        active, 1,
+        "Pool should reuse connection, not create new one"
+    );
     assert!(reused_ptr, "Pool should reuse the same connection instance");
 
     // Second connection should be faster (reused)
@@ -928,7 +966,10 @@ async fn test_ssh_pool_reuse() {
         LogSource::Custom("ssh".to_string()),
         "pool",
         "Pool closed",
-        vec![("active".to_string(), pool.active_connections().await.to_string())],
+        vec![(
+            "active".to_string(),
+            pool.active_connections().await.to_string(),
+        )],
     );
 
     assert_eq!(
@@ -989,7 +1030,10 @@ async fn test_ssh_pool_no_leaks() {
             "Connection iteration",
             vec![
                 ("iteration".to_string(), i.to_string()),
-                ("active".to_string(), pool.active_connections().await.to_string()),
+                (
+                    "active".to_string(),
+                    pool.active_connections().await.to_string(),
+                ),
             ],
         );
     }
@@ -1051,7 +1095,10 @@ async fn test_ssh_health_check() {
 
     // Health check should pass
     let health_start = Instant::now();
-    let healthy = client.health_check().await.expect("Health check should complete");
+    let healthy = client
+        .health_check()
+        .await
+        .expect("Health check should complete");
     let health_duration = health_start.elapsed();
 
     log_phase(
@@ -1063,7 +1110,10 @@ async fn test_ssh_health_check() {
         vec![
             ("worker".to_string(), worker_entry.id.clone()),
             ("healthy".to_string(), healthy.to_string()),
-            ("duration_ms".to_string(), health_duration.as_millis().to_string()),
+            (
+                "duration_ms".to_string(),
+                health_duration.as_millis().to_string(),
+            ),
         ],
     );
 
@@ -1172,14 +1222,14 @@ async fn test_ssh_multiple_workers() {
         vec![
             ("total_workers".to_string(), enabled.len().to_string()),
             ("successful".to_string(), successful.to_string()),
-            ("pool_active".to_string(), pool.active_connections().await.to_string()),
+            (
+                "pool_active".to_string(),
+                pool.active_connections().await.to_string(),
+            ),
         ],
     );
 
-    assert!(
-        successful >= 1,
-        "At least one worker should be reachable"
-    );
+    assert!(successful >= 1, "At least one worker should be reachable");
 
     pool.close_all().await.ok();
     logger.info("SSH multiple workers test passed");
@@ -1220,15 +1270,24 @@ async fn test_ssh_reconnection() {
 
     // First connection
     logger.info("Establishing first connection");
-    client.connect().await.expect("First connect should succeed");
+    client
+        .connect()
+        .await
+        .expect("First connect should succeed");
     assert!(client.is_connected(), "Should be connected");
 
-    let result1 = client.execute("echo 'first'").await.expect("First command should work");
+    let result1 = client
+        .execute("echo 'first'")
+        .await
+        .expect("First command should work");
     assert!(result1.stdout.contains("first"));
 
     // Disconnect
     logger.info("Disconnecting");
-    client.disconnect().await.expect("Disconnect should succeed");
+    client
+        .disconnect()
+        .await
+        .expect("Disconnect should succeed");
     assert!(!client.is_connected(), "Should be disconnected");
 
     // Reconnect
@@ -1236,7 +1295,10 @@ async fn test_ssh_reconnection() {
     client.connect().await.expect("Reconnect should succeed");
     assert!(client.is_connected(), "Should be connected again");
 
-    let result2 = client.execute("echo 'second'").await.expect("Second command should work");
+    let result2 = client
+        .execute("echo 'second'")
+        .await
+        .expect("Second command should work");
     assert!(result2.stdout.contains("second"));
 
     log_phase(

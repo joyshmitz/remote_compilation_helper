@@ -237,7 +237,10 @@ async fn test_exit_code_cargo_build_success() {
     };
 
     let fixture_dir = hello_world_fixture_dir();
-    let remote_path = format!("{}/exit_code_build_success", config.settings.remote_work_dir);
+    let remote_path = format!(
+        "{}/exit_code_build_success",
+        config.settings.remote_work_dir
+    );
 
     // Phase: Local baseline
     let local_exit_code = run_local_command("cargo", &["build"], &fixture_dir);
@@ -267,7 +270,10 @@ async fn test_exit_code_cargo_build_success() {
     }
 
     // Phase: Remote execution
-    let build_cmd = format!("cd {} && cargo build 2>&1; echo \"EXIT_CODE:$?\"", remote_path);
+    let build_cmd = format!(
+        "cd {} && cargo build 2>&1; echo \"EXIT_CODE:$?\"",
+        remote_path
+    );
     let remote_result = client.execute(&build_cmd).await;
 
     let remote_exit_code = match &remote_result {
@@ -314,8 +320,7 @@ async fn test_exit_code_cargo_build_success() {
     assert!(
         codes_match,
         "Local ({}) and remote ({}) exit codes should match",
-        local_code,
-        remote_exit_code
+        local_code, remote_exit_code
     );
 
     // Cleanup
@@ -572,8 +577,7 @@ async fn test_exit_code_cargo_build_error() {
     assert!(
         codes_match,
         "Exit codes should match: local={}, remote={}",
-        local_code,
-        remote_exit_code
+        local_code, remote_exit_code
     );
 
     // Cleanup
@@ -634,7 +638,10 @@ async fn test_exit_code_cargo_test_failures() {
         return;
     }
 
-    let remote_path = format!("{}/exit_code_test_failures", config.settings.remote_work_dir);
+    let remote_path = format!(
+        "{}/exit_code_test_failures",
+        config.settings.remote_work_dir
+    );
 
     // Phase: Local baseline
     let local_exit_code = run_local_command("cargo", &["test"], &fixture_dir);
@@ -768,7 +775,10 @@ async fn test_exit_code_rustc_success() {
         return;
     }
 
-    let remote_path = format!("{}/exit_code_rustc_success", config.settings.remote_work_dir);
+    let remote_path = format!(
+        "{}/exit_code_rustc_success",
+        config.settings.remote_work_dir
+    );
 
     // Phase: Local baseline - compile valid.rs
     let local_exit_code = run_local_command(

@@ -255,7 +255,10 @@ async fn test_cargo_test_pass() {
                     ("actual".to_string(), result.exit_code.to_string()),
                     ("match".to_string(), (result.exit_code == 0).to_string()),
                     ("tests_passed".to_string(), tests_passed.to_string()),
-                    ("duration_ms".to_string(), remote_duration.as_millis().to_string()),
+                    (
+                        "duration_ms".to_string(),
+                        remote_duration.as_millis().to_string(),
+                    ),
                 ],
             );
 
@@ -386,10 +389,7 @@ async fn test_cargo_test_fail() {
                 result.exit_code
             );
 
-            assert!(
-                has_failures,
-                "Output should contain failure information"
-            );
+            assert!(has_failures, "Output should contain failure information");
         }
         Err(e) => {
             logger.error(format!("Remote cargo test command error: {e}"));
@@ -503,7 +503,10 @@ async fn test_cargo_test_build_error() {
                     ("phase".to_string(), "verify".to_string()),
                     ("expected".to_string(), "non-zero".to_string()),
                     ("actual".to_string(), result.exit_code.to_string()),
-                    ("has_compile_error".to_string(), has_compile_error.to_string()),
+                    (
+                        "has_compile_error".to_string(),
+                        has_compile_error.to_string(),
+                    ),
                     ("error_type".to_string(), "build_error".to_string()),
                 ],
             );
@@ -1078,7 +1081,10 @@ async fn test_cargo_test_thread_control() {
         "Starting cargo test thread control test",
         vec![
             ("phase".to_string(), "setup".to_string()),
-            ("thread_config".to_string(), "RUST_TEST_THREADS=4".to_string()),
+            (
+                "thread_config".to_string(),
+                "RUST_TEST_THREADS=4".to_string(),
+            ),
         ],
     );
 
@@ -1121,7 +1127,10 @@ async fn test_cargo_test_thread_control() {
         "Executing cargo test with thread limit",
         vec![
             ("phase".to_string(), "execute".to_string()),
-            ("cmd".to_string(), "RUST_TEST_THREADS=4 cargo test".to_string()),
+            (
+                "cmd".to_string(),
+                "RUST_TEST_THREADS=4 cargo test".to_string(),
+            ),
         ],
     );
 
@@ -1137,10 +1146,7 @@ async fn test_cargo_test_thread_control() {
                 ],
             );
 
-            assert_eq!(
-                result.exit_code, 0,
-                "Tests with thread limit should pass"
-            );
+            assert_eq!(result.exit_code, 0, "Tests with thread limit should pass");
         }
         Err(e) => {
             logger.error(format!("Command failed: {e}"));
@@ -1240,8 +1246,8 @@ async fn test_cargo_test_workspace() {
             let output = &result.stdout;
 
             // Should test multiple packages
-            let tests_multiple = output.matches("Running").count() >= 1
-                || output.matches("running").count() >= 1;
+            let tests_multiple =
+                output.matches("Running").count() >= 1 || output.matches("running").count() >= 1;
 
             logger.log_with_context(
                 LogLevel::Info,
@@ -1250,8 +1256,14 @@ async fn test_cargo_test_workspace() {
                 vec![
                     ("phase".to_string(), "verify".to_string()),
                     ("exit_code".to_string(), result.exit_code.to_string()),
-                    ("tests_multiple_packages".to_string(), tests_multiple.to_string()),
-                    ("packages_tested".to_string(), "workspace members".to_string()),
+                    (
+                        "tests_multiple_packages".to_string(),
+                        tests_multiple.to_string(),
+                    ),
+                    (
+                        "packages_tested".to_string(),
+                        "workspace members".to_string(),
+                    ),
                 ],
             );
 

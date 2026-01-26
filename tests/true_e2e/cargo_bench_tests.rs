@@ -322,11 +322,9 @@ async fn test_cargo_bench_basic() {
             );
 
             assert_eq!(
-                local_exit,
-                result.exit_code,
+                local_exit, result.exit_code,
                 "Exit code mismatch: local {} vs remote {}",
-                local_exit,
-                result.exit_code
+                local_exit, result.exit_code
             );
 
             // Sync artifacts back

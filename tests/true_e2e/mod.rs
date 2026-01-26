@@ -34,8 +34,9 @@
 //! }
 //! ```
 
-pub mod cargo_build_tests;
+pub mod build_rs_fixture_tests;
 pub mod cargo_bench_tests;
+pub mod cargo_build_tests;
 pub mod cargo_check_clippy_tests;
 pub mod cargo_nextest_tests;
 pub mod cargo_test_tests;
@@ -47,9 +48,9 @@ pub mod ssh_command_tests;
 pub mod ssh_tests;
 
 // Re-export common types for convenience
-pub use config::{ConfigError, ConfigResult, TestWorkersConfig, TestWorkerEntry, TestSettings};
+pub use config::{ConfigError, ConfigResult, TestSettings, TestWorkerEntry, TestWorkersConfig};
+pub use config::{ENV_SKIP_WORKER_CHECK, ENV_TIMEOUT_SECS, ENV_WORKERS_CONFIG};
 pub use config::{expand_path, get_config_path, should_skip_worker_check};
-pub use config::{ENV_WORKERS_CONFIG, ENV_SKIP_WORKER_CHECK, ENV_TIMEOUT_SECS};
 pub use output::{
     BinaryComparison, CapturedOutput, ComparisonResult, NormalizationResult,
     NormalizationTransform, OutputComparison, OutputNormalizer,

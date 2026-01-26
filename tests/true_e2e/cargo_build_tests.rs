@@ -44,6 +44,11 @@ fn rust_workspace_fixture_dir() -> PathBuf {
     PathBuf::from(FIXTURES_DIR).join("rust_workspace")
 }
 
+/// Get the with_build_rs fixture directory.
+fn with_build_rs_fixture_dir() -> PathBuf {
+    PathBuf::from(FIXTURES_DIR).join("with_build_rs")
+}
+
 /// Skip the test if no real workers are available.
 /// Returns the loaded config if workers are available.
 fn require_workers() -> Option<TestWorkersConfig> {
@@ -271,7 +276,10 @@ async fn test_cargo_build_basic() {
                     .map(|r| r.status.code().unwrap_or(-1).to_string())
                     .unwrap_or_else(|_| "error".to_string()),
             ),
-            ("duration_ms".to_string(), local_duration.as_millis().to_string()),
+            (
+                "duration_ms".to_string(),
+                local_duration.as_millis().to_string(),
+            ),
         ],
     );
 
@@ -301,7 +309,10 @@ async fn test_cargo_build_basic() {
                 vec![
                     ("phase".to_string(), "execute_remote".to_string()),
                     ("exit_code".to_string(), result.exit_code.to_string()),
-                    ("duration_ms".to_string(), remote_duration.as_millis().to_string()),
+                    (
+                        "duration_ms".to_string(),
+                        remote_duration.as_millis().to_string(),
+                    ),
                     ("worker".to_string(), worker_entry.id.clone()),
                 ],
             );
@@ -353,7 +364,10 @@ async fn test_cargo_build_basic() {
             if binary_exists {
                 let run_result = std::process::Command::new(&binary_path).output();
 
-                let runs_ok = run_result.as_ref().map(|r| r.status.success()).unwrap_or(false);
+                let runs_ok = run_result
+                    .as_ref()
+                    .map(|r| r.status.success())
+                    .unwrap_or(false);
                 let output = run_result
                     .as_ref()
                     .map(|r| String::from_utf8_lossy(&r.stdout).to_string())
@@ -366,7 +380,10 @@ async fn test_cargo_build_basic() {
                     vec![
                         ("phase".to_string(), "verify".to_string()),
                         ("runs".to_string(), runs_ok.to_string()),
-                        ("output_contains_expected".to_string(), output.contains("Hello").to_string()),
+                        (
+                            "output_contains_expected".to_string(),
+                            output.contains("Hello").to_string(),
+                        ),
                     ],
                 );
 
@@ -393,6 +410,175 @@ async fn test_cargo_build_basic() {
 
     client.disconnect().await.ok();
     logger.info("Basic cargo build test passed");
+    logger.print_summary();
+}
+
+// =============================================================================
+// Test: cargo build on fixture with build.rs
+// =============================================================================
+
+/// Test: cargo build + run on a project that uses build.rs to generate code.
+///
+/// Expected:
+/// - build succeeds remotely (build.rs runs)
+/// - artifacts sync back
+/// - local binary runs and confirms build.rs-generated symbols are linked
+#[tokio::test]
+async fn test_cargo_build_with_build_rs_fixture() {
+    let logger = TestLoggerBuilder::new("test_cargo_build_with_build_rs_fixture")
+        .print_realtime(true)
+        .build();
+
+    logger.log_with_context(
+        LogLevel::Info,
+        LogSource::Custom("test".to_string()),
+        "Starting cargo build test for build.rs fixture",
+        vec![
+            ("phase".to_string(), "setup".to_string()),
+            ("fixture".to_string(), "with_build_rs".to_string()),
+        ],
+    );
+
+    let Some(config) = require_workers() else {
+        logger.warn("Test skipped: no workers available");
+        return;
+    };
+
+    let Some(worker_entry) = get_test_worker(&config) else {
+        logger.warn("Test skipped: no enabled worker found");
+        return;
+    };
+
+    let worker_config = worker_entry.to_worker_config();
+    let Some(mut client) = get_connected_client(&config, worker_entry).await else {
+        logger.error("Failed to connect to worker");
+        return;
+    };
+
+    let fixture_dir = with_build_rs_fixture_dir();
+    let remote_path = format!("{}/with_build_rs_build", config.settings.remote_work_dir);
+
+    // Phase: Setup - sync fixture to remote
+    logger.log_with_context(
+        LogLevel::Info,
+        LogSource::Custom("test".to_string()),
+        "Syncing fixture to remote",
+        vec![
+            ("phase".to_string(), "setup".to_string()),
+            ("local_path".to_string(), fixture_dir.display().to_string()),
+            ("remote_path".to_string(), remote_path.clone()),
+            ("worker".to_string(), worker_entry.id.clone()),
+        ],
+    );
+
+    if let Err(e) =
+        sync_fixture_to_remote(&mut client, &worker_config, &fixture_dir, &remote_path).await
+    {
+        logger.error(format!("Failed to sync fixture: {e}"));
+        client.disconnect().await.ok();
+        panic!("Failed to sync fixture to remote: {e}");
+    }
+
+    // Phase: Execute remote cargo build
+    let remote_cmd = format!("cd {} && cargo build", remote_path);
+    logger.log_with_context(
+        LogLevel::Info,
+        LogSource::Custom("test".to_string()),
+        "Executing remote cargo build",
+        vec![
+            ("phase".to_string(), "execute_remote".to_string()),
+            ("command".to_string(), remote_cmd.clone()),
+        ],
+    );
+
+    let remote_start = Instant::now();
+    match client.execute(&remote_cmd).await {
+        Ok(result) => {
+            let remote_duration = remote_start.elapsed();
+            logger.log_with_context(
+                LogLevel::Info,
+                LogSource::Custom("test".to_string()),
+                "Remote build completed",
+                vec![
+                    ("phase".to_string(), "execute_remote".to_string()),
+                    ("exit_code".to_string(), result.exit_code.to_string()),
+                    (
+                        "duration_ms".to_string(),
+                        remote_duration.as_millis().to_string(),
+                    ),
+                    ("worker".to_string(), worker_entry.id.clone()),
+                ],
+            );
+
+            if !result.success() {
+                logger.log_with_context(
+                    LogLevel::Error,
+                    LogSource::Custom("test".to_string()),
+                    "Remote build failed",
+                    vec![
+                        ("phase".to_string(), "execute_remote".to_string()),
+                        ("stderr".to_string(), result.stderr.clone()),
+                    ],
+                );
+                if config.settings.cleanup_after_test {
+                    let _ = cleanup_remote(&mut client, &remote_path).await;
+                }
+                client.disconnect().await.ok();
+                panic!("Remote cargo build failed: {}", result.stderr);
+            }
+
+            // Sync artifacts back
+            if let Err(e) =
+                sync_artifacts_from_remote(&worker_config, &remote_path, &fixture_dir).await
+            {
+                logger.warn(format!("Failed to sync artifacts back: {e}"));
+            }
+
+            // Verify binary exists
+            let binary_path = fixture_dir.join("target/debug/with_build_rs");
+            assert!(
+                binary_path.exists(),
+                "Binary should exist at {}",
+                binary_path.display()
+            );
+
+            // Verify binary runs and confirms build.rs output is linked
+            let run_output = std::process::Command::new(&binary_path)
+                .output()
+                .expect("Failed to execute built binary");
+            assert!(
+                run_output.status.success(),
+                "Binary should run successfully"
+            );
+            let stdout = String::from_utf8_lossy(&run_output.stdout);
+            assert!(
+                stdout.contains("build.rs ran: true"),
+                "Binary output should confirm build.rs ran, got: {}",
+                stdout
+            );
+            assert!(
+                stdout.contains("Hello from build.rs generated code!"),
+                "Binary output should include generated greeting, got: {}",
+                stdout
+            );
+        }
+        Err(e) => {
+            logger.error(format!("Remote command failed: {e}"));
+            if config.settings.cleanup_after_test {
+                let _ = cleanup_remote(&mut client, &remote_path).await;
+            }
+            client.disconnect().await.ok();
+            panic!("Remote cargo build command failed: {e}");
+        }
+    }
+
+    // Cleanup
+    if config.settings.cleanup_after_test {
+        let _ = cleanup_remote(&mut client, &remote_path).await;
+    }
+
+    client.disconnect().await.ok();
+    logger.info("build.rs fixture cargo build test passed");
     logger.print_summary();
 }
 
@@ -484,7 +670,10 @@ async fn test_cargo_build_release() {
                 vec![
                     ("phase".to_string(), "execute_remote".to_string()),
                     ("exit_code".to_string(), result.exit_code.to_string()),
-                    ("duration_ms".to_string(), remote_duration.as_millis().to_string()),
+                    (
+                        "duration_ms".to_string(),
+                        remote_duration.as_millis().to_string(),
+                    ),
                 ],
             );
 
@@ -627,8 +816,14 @@ async fn test_cargo_build_specific_target() {
         "Executing remote build with --bin",
         vec![
             ("phase".to_string(), "execute_remote".to_string()),
-            ("cmd".to_string(), "cargo build --bin hello_world".to_string()),
-            ("target_specification".to_string(), "--bin hello_world".to_string()),
+            (
+                "cmd".to_string(),
+                "cargo build --bin hello_world".to_string(),
+            ),
+            (
+                "target_specification".to_string(),
+                "--bin hello_world".to_string(),
+            ),
         ],
     );
 
@@ -644,7 +839,10 @@ async fn test_cargo_build_specific_target() {
                 vec![
                     ("phase".to_string(), "execute_remote".to_string()),
                     ("exit_code".to_string(), result.exit_code.to_string()),
-                    ("duration_ms".to_string(), remote_duration.as_millis().to_string()),
+                    (
+                        "duration_ms".to_string(),
+                        remote_duration.as_millis().to_string(),
+                    ),
                 ],
             );
 
@@ -779,7 +977,10 @@ async fn test_cargo_build_workspace() {
                 vec![
                     ("phase".to_string(), "execute_remote".to_string()),
                     ("exit_code".to_string(), result.exit_code.to_string()),
-                    ("duration_ms".to_string(), remote_duration.as_millis().to_string()),
+                    (
+                        "duration_ms".to_string(),
+                        remote_duration.as_millis().to_string(),
+                    ),
                 ],
             );
 
@@ -803,8 +1004,14 @@ async fn test_cargo_build_workspace() {
                 "Workspace build verification",
                 vec![
                     ("phase".to_string(), "verify".to_string()),
-                    ("packages_built".to_string(), "workspace members".to_string()),
-                    ("app_binary_exists".to_string(), app_binary.exists().to_string()),
+                    (
+                        "packages_built".to_string(),
+                        "workspace members".to_string(),
+                    ),
+                    (
+                        "app_binary_exists".to_string(),
+                        app_binary.exists().to_string(),
+                    ),
                 ],
             );
 
@@ -911,7 +1118,10 @@ async fn test_cargo_build_package_specific() {
                 vec![
                     ("phase".to_string(), "execute_remote".to_string()),
                     ("exit_code".to_string(), result.exit_code.to_string()),
-                    ("duration_ms".to_string(), remote_duration.as_millis().to_string()),
+                    (
+                        "duration_ms".to_string(),
+                        remote_duration.as_millis().to_string(),
+                    ),
                 ],
             );
 
@@ -1085,7 +1295,10 @@ async fn test_cargo_build_cleanup() {
     };
 
     let fixture_dir = hello_world_fixture_dir();
-    let remote_path = format!("{}/hello_world_cleanup_test", config.settings.remote_work_dir);
+    let remote_path = format!(
+        "{}/hello_world_cleanup_test",
+        config.settings.remote_work_dir
+    );
 
     // Setup & build
     if let Err(e) =
@@ -1112,7 +1325,10 @@ async fn test_cargo_build_cleanup() {
         vec![
             ("phase".to_string(), "verify".to_string()),
             ("remote_path".to_string(), remote_path.clone()),
-            ("exists_before_cleanup".to_string(), exists_before.to_string()),
+            (
+                "exists_before_cleanup".to_string(),
+                exists_before.to_string(),
+            ),
         ],
     );
 
@@ -1131,9 +1347,15 @@ async fn test_cargo_build_cleanup() {
         "Cleanup check",
         vec![
             ("phase".to_string(), "verify".to_string()),
-            ("exists_before_cleanup".to_string(), exists_before.to_string()),
+            (
+                "exists_before_cleanup".to_string(),
+                exists_before.to_string(),
+            ),
             ("exists_after_cleanup".to_string(), exists_after.to_string()),
-            ("cleanup_successful".to_string(), (!exists_after).to_string()),
+            (
+                "cleanup_successful".to_string(),
+                (!exists_after).to_string(),
+            ),
         ],
     );
 
@@ -1251,7 +1473,8 @@ async fn test_cargo_build_with_features() {
     let _ = client.execute(&clean_cmd).await;
 
     // Phase: Execute - build with verbose feature
-    let build_cmd_with_feature = format!("cd {} && cargo build --features verbose 2>&1", remote_path);
+    let build_cmd_with_feature =
+        format!("cd {} && cargo build --features verbose 2>&1", remote_path);
 
     logger.log_with_context(
         LogLevel::Info,
@@ -1259,7 +1482,10 @@ async fn test_cargo_build_with_features() {
         "Building with feature flag",
         vec![
             ("phase".to_string(), "execute_with_feature".to_string()),
-            ("cmd".to_string(), "cargo build --features verbose".to_string()),
+            (
+                "cmd".to_string(),
+                "cargo build --features verbose".to_string(),
+            ),
             ("feature".to_string(), "verbose".to_string()),
         ],
     );
@@ -1276,7 +1502,10 @@ async fn test_cargo_build_with_features() {
                 vec![
                     ("phase".to_string(), "execute_with_feature".to_string()),
                     ("exit_code".to_string(), result.exit_code.to_string()),
-                    ("duration_ms".to_string(), remote_duration.as_millis().to_string()),
+                    (
+                        "duration_ms".to_string(),
+                        remote_duration.as_millis().to_string(),
+                    ),
                     ("success".to_string(), result.success().to_string()),
                 ],
             );
@@ -1293,10 +1522,7 @@ async fn test_cargo_build_with_features() {
                 );
                 let _ = cleanup_remote(&mut client, &remote_path).await;
                 client.disconnect().await.ok();
-                panic!(
-                    "cargo build --features verbose failed: {}",
-                    result.stderr
-                );
+                panic!("cargo build --features verbose failed: {}", result.stderr);
             }
 
             // Phase: Verify - test that feature is actually compiled in
@@ -1312,7 +1538,10 @@ async fn test_cargo_build_with_features() {
                 "Running tests to verify feature",
                 vec![
                     ("phase".to_string(), "verify".to_string()),
-                    ("cmd".to_string(), "cargo test --features verbose".to_string()),
+                    (
+                        "cmd".to_string(),
+                        "cargo test --features verbose".to_string(),
+                    ),
                 ],
             );
 
@@ -1436,7 +1665,10 @@ async fn test_cargo_build_incremental() {
     };
 
     let fixture_dir = hello_world_fixture_dir();
-    let remote_path = format!("{}/hello_world_incremental", config.settings.remote_work_dir);
+    let remote_path = format!(
+        "{}/hello_world_incremental",
+        config.settings.remote_work_dir
+    );
 
     // Phase: Setup - sync fixture to remote
     logger.log_with_context(
@@ -1486,8 +1718,14 @@ async fn test_cargo_build_incremental() {
         vec![
             ("phase".to_string(), "first_build".to_string()),
             ("success".to_string(), first_success.to_string()),
-            ("duration_ms".to_string(), first_duration.as_millis().to_string()),
-            ("compiled".to_string(), first_output.contains("Compiling").to_string()),
+            (
+                "duration_ms".to_string(),
+                first_duration.as_millis().to_string(),
+            ),
+            (
+                "compiled".to_string(),
+                first_output.contains("Compiling").to_string(),
+            ),
         ],
     );
 
@@ -1532,8 +1770,14 @@ async fn test_cargo_build_incremental() {
         vec![
             ("phase".to_string(), "second_build".to_string()),
             ("success".to_string(), second_success.to_string()),
-            ("duration_ms".to_string(), second_duration.as_millis().to_string()),
-            ("recompiled".to_string(), second_output.contains("Compiling").to_string()),
+            (
+                "duration_ms".to_string(),
+                second_duration.as_millis().to_string(),
+            ),
+            (
+                "recompiled".to_string(),
+                second_output.contains("Compiling").to_string(),
+            ),
         ],
     );
 
@@ -1554,8 +1798,14 @@ async fn test_cargo_build_incremental() {
         vec![
             ("phase".to_string(), "verify".to_string()),
             ("cached".to_string(), is_cached.to_string()),
-            ("first_duration_ms".to_string(), first_duration.as_millis().to_string()),
-            ("second_duration_ms".to_string(), second_duration.as_millis().to_string()),
+            (
+                "first_duration_ms".to_string(),
+                first_duration.as_millis().to_string(),
+            ),
+            (
+                "second_duration_ms".to_string(),
+                second_duration.as_millis().to_string(),
+            ),
         ],
     );
 
@@ -1566,10 +1816,7 @@ async fn test_cargo_build_incremental() {
     }
 
     // Phase: Touch source file and rebuild - should recompile only affected file
-    let touch_cmd = format!(
-        "cd {} && touch src/main.rs && sleep 1",
-        remote_path
-    );
+    let touch_cmd = format!("cd {} && touch src/main.rs && sleep 1", remote_path);
     let _ = client.execute(&touch_cmd).await;
 
     logger.log_with_context(
@@ -1600,8 +1847,14 @@ async fn test_cargo_build_incremental() {
         vec![
             ("phase".to_string(), "third_build".to_string()),
             ("success".to_string(), third_success.to_string()),
-            ("duration_ms".to_string(), third_duration.as_millis().to_string()),
-            ("recompiled".to_string(), third_output.contains("Compiling").to_string()),
+            (
+                "duration_ms".to_string(),
+                third_duration.as_millis().to_string(),
+            ),
+            (
+                "recompiled".to_string(),
+                third_output.contains("Compiling").to_string(),
+            ),
         ],
     );
 
@@ -1621,10 +1874,22 @@ async fn test_cargo_build_incremental() {
         "Incremental rebuild verification",
         vec![
             ("phase".to_string(), "verify".to_string()),
-            ("touched_file_recompiled".to_string(), third_recompiled.to_string()),
-            ("first_duration_ms".to_string(), first_duration.as_millis().to_string()),
-            ("second_duration_ms".to_string(), second_duration.as_millis().to_string()),
-            ("third_duration_ms".to_string(), third_duration.as_millis().to_string()),
+            (
+                "touched_file_recompiled".to_string(),
+                third_recompiled.to_string(),
+            ),
+            (
+                "first_duration_ms".to_string(),
+                first_duration.as_millis().to_string(),
+            ),
+            (
+                "second_duration_ms".to_string(),
+                second_duration.as_millis().to_string(),
+            ),
+            (
+                "third_duration_ms".to_string(),
+                third_duration.as_millis().to_string(),
+            ),
         ],
     );
 

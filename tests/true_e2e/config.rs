@@ -590,10 +590,7 @@ total_slots = 16
     #[test]
     fn test_expand_path_absolute() {
         let expanded = expand_path("/etc/ssh/ssh_host_key").unwrap();
-        assert_eq!(
-            expanded,
-            PathBuf::from("/etc/ssh/ssh_host_key")
-        );
+        assert_eq!(expanded, PathBuf::from("/etc/ssh/ssh_host_key"));
     }
 
     #[test]

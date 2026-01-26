@@ -194,7 +194,12 @@ async fn test_cmd_exit_code() {
     };
 
     // Test various exit codes
-    let test_cases = [(0, "exit 0"), (1, "exit 1"), (42, "exit 42"), (255, "exit 255")];
+    let test_cases = [
+        (0, "exit 0"),
+        (1, "exit 1"),
+        (42, "exit 42"),
+        (255, "exit 255"),
+    ];
 
     for (expected_code, cmd) in test_cases.iter() {
         logger.log_with_context(
@@ -216,7 +221,10 @@ async fn test_cmd_exit_code() {
                     vec![
                         ("expected_code".to_string(), expected_code.to_string()),
                         ("actual_code".to_string(), result.exit_code.to_string()),
-                        ("match".to_string(), (result.exit_code == *expected_code).to_string()),
+                        (
+                            "match".to_string(),
+                            (result.exit_code == *expected_code).to_string(),
+                        ),
                     ],
                 );
 
@@ -423,7 +431,10 @@ async fn test_cmd_environment_variables() {
         LogSource::Custom("ssh".to_string()),
         "SSH command execution",
         vec![
-            ("cmd".to_string(), "export MY_TEST_VAR=... && echo $MY_TEST_VAR".to_string()),
+            (
+                "cmd".to_string(),
+                "export MY_TEST_VAR=... && echo $MY_TEST_VAR".to_string(),
+            ),
             ("env_vars_set".to_string(), "MY_TEST_VAR".to_string()),
         ],
     );
@@ -498,7 +509,10 @@ async fn test_cmd_long_output() {
         LogSource::Custom("ssh".to_string()),
         "SSH command execution",
         vec![
-            ("cmd".to_string(), "seq loop generating ~100KB output".to_string()),
+            (
+                "cmd".to_string(),
+                "seq loop generating ~100KB output".to_string(),
+            ),
             ("expected_lines".to_string(), expected_lines.to_string()),
         ],
     );
@@ -517,7 +531,10 @@ async fn test_cmd_long_output() {
                     ("total_bytes".to_string(), result.stdout.len().to_string()),
                     ("total_lines".to_string(), actual_lines.to_string()),
                     ("duration_ms".to_string(), duration.as_millis().to_string()),
-                    ("truncated".to_string(), (actual_lines < expected_lines).to_string()),
+                    (
+                        "truncated".to_string(),
+                        (actual_lines < expected_lines).to_string(),
+                    ),
                 ],
             );
 
@@ -569,8 +586,7 @@ async fn test_cmd_binary_output() {
     let expected_bytes = 256;
     let cmd = format!(
         "printf '{}' | head -c {}",
-        "\\x00\\x01\\x02\\xff\\xfe\\xfd",
-        expected_bytes
+        "\\x00\\x01\\x02\\xff\\xfe\\xfd", expected_bytes
     );
 
     logger.log_with_context(
@@ -661,8 +677,14 @@ async fn test_cmd_timed_execution() {
                 LogSource::Custom("ssh".to_string()),
                 "Timed execution result",
                 vec![
-                    ("actual_duration_ms".to_string(), duration.as_millis().to_string()),
-                    ("expected_duration_ms".to_string(), (sleep_secs * 1000).to_string()),
+                    (
+                        "actual_duration_ms".to_string(),
+                        duration.as_millis().to_string(),
+                    ),
+                    (
+                        "expected_duration_ms".to_string(),
+                        (sleep_secs * 1000).to_string(),
+                    ),
                     ("exit_code".to_string(), result.exit_code.to_string()),
                 ],
             );
@@ -727,7 +749,10 @@ async fn test_cmd_not_found() {
         "SSH command execution",
         vec![
             ("cmd".to_string(), cmd.to_string()),
-            ("expected".to_string(), "command not found error".to_string()),
+            (
+                "expected".to_string(),
+                "command not found error".to_string(),
+            ),
         ],
     );
 
@@ -886,9 +911,7 @@ async fn test_cmd_mixed_output() {
         LogLevel::Info,
         LogSource::Custom("ssh".to_string()),
         "SSH command execution",
-        vec![
-            ("cmd".to_string(), "mixed stdout/stderr writes".to_string()),
-        ],
+        vec![("cmd".to_string(), "mixed stdout/stderr writes".to_string())],
     );
 
     match client.execute(cmd).await {
@@ -961,9 +984,7 @@ async fn test_cmd_pipe() {
         LogLevel::Info,
         LogSource::Custom("ssh".to_string()),
         "SSH command execution",
-        vec![
-            ("cmd".to_string(), "echo | grep pipe".to_string()),
-        ],
+        vec![("cmd".to_string(), "echo | grep pipe".to_string())],
     );
 
     match client.execute(cmd).await {
@@ -1026,9 +1047,7 @@ async fn test_cmd_subshell() {
         LogLevel::Info,
         LogSource::Custom("ssh".to_string()),
         "SSH command execution",
-        vec![
-            ("cmd".to_string(), "echo with $(date) subshell".to_string()),
-        ],
+        vec![("cmd".to_string(), "echo with $(date) subshell".to_string())],
     );
 
     match client.execute(cmd).await {
