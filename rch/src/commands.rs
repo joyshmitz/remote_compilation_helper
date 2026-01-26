@@ -472,6 +472,7 @@ pub struct ConfigCompilationSection {
 pub struct ConfigTransferSection {
     pub compression_level: u32,
     pub exclude_patterns: Vec<String>,
+    pub remote_base: String,
 }
 
 /// Environment configuration section.
@@ -4135,6 +4136,7 @@ pub fn config_show(show_sources: bool, ctx: &OutputContext) -> Result<()> {
             transfer: ConfigTransferSection {
                 compression_level: config.transfer.compression_level,
                 exclude_patterns: config.transfer.exclude_patterns.clone(),
+                remote_base: config.transfer.remote_base.clone(),
             },
             environment: ConfigEnvironmentSection {
                 allowlist: config.environment.allowlist.clone(),
@@ -4250,6 +4252,15 @@ pub fn config_show(show_sources: bool, ctx: &OutputContext) -> Result<()> {
         println!("    {},", style.value(&format!("\"{}\"", pattern)));
     }
     println!("  ]");
+    println!(
+        "  {} = {}",
+        style.key("remote_base"),
+        format_with_source(
+            "transfer.remote_base",
+            &style.value(&format!("\"{}\"", config.transfer.remote_base)),
+            &value_sources
+        )
+    );
 
     println!("\n{}", style.highlight("[environment]"));
     let allowlist_source = source_label("environment.allowlist", &value_sources);

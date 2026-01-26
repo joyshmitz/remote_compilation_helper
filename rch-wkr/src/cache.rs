@@ -579,7 +579,8 @@ mod tests {
 
         // Start cleanup in background
         let cache_base_for_task = cache_base.clone();
-        let cleanup_handle = tokio::spawn(async move { cleanup_in(&cache_base_for_task, 1000).await });
+        let cleanup_handle =
+            tokio::spawn(async move { cleanup_in(&cache_base_for_task, 1000).await });
 
         // Simultaneously create a new cache
         let hash_dir = project_dir.join("newhash");

@@ -2,10 +2,10 @@
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
+use rch_common::types::validate_remote_base;
 use rch_common::{
     ConfigValueSource, OutputVisibility, RchConfig, SelfTestFailureAction, SelfTestWorkers,
 };
-use rch_common::types::validate_remote_base;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -2077,10 +2077,7 @@ identity_file = "/tmp/id_ed25519"
         info!("TEST: test_merge_transfer_remote_base");
 
         let base = RchConfig::default();
-        info!(
-            "INPUT base: remote_base={}",
-            base.transfer.remote_base
-        );
+        info!("INPUT base: remote_base={}", base.transfer.remote_base);
         assert_eq!(base.transfer.remote_base, "/tmp/rch");
 
         // Overlay with custom remote_base
@@ -2096,10 +2093,7 @@ identity_file = "/tmp/id_ed25519"
 
         let merged = merge_config(base, overlay);
 
-        info!(
-            "RESULT: remote_base={}",
-            merged.transfer.remote_base
-        );
+        info!("RESULT: remote_base={}", merged.transfer.remote_base);
 
         // Custom remote_base should replace default
         assert_eq!(merged.transfer.remote_base, "/var/rch-builds");
@@ -2122,16 +2116,17 @@ identity_file = "/tmp/id_ed25519"
 
         let merged = merge_config(base, overlay);
 
-        info!(
-            "RESULT: remote_base={}",
-            merged.transfer.remote_base
-        );
+        info!("RESULT: remote_base={}", merged.transfer.remote_base);
 
         // Tilde should be expanded to absolute path
-        assert!(merged.transfer.remote_base.starts_with('/'),
-            "remote_base should be absolute after tilde expansion");
-        assert!(!merged.transfer.remote_base.contains('~'),
-            "Tilde should be expanded");
+        assert!(
+            merged.transfer.remote_base.starts_with('/'),
+            "remote_base should be absolute after tilde expansion"
+        );
+        assert!(
+            !merged.transfer.remote_base.contains('~'),
+            "Tilde should be expanded"
+        );
 
         info!("PASS: Tilde-based remote_base is expanded");
     }

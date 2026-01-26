@@ -2665,10 +2665,7 @@ mod tests {
 
     #[test]
     fn test_validate_remote_base_absolute_path() {
-        assert_eq!(
-            validate_remote_base("/tmp/rch").unwrap(),
-            "/tmp/rch"
-        );
+        assert_eq!(validate_remote_base("/tmp/rch").unwrap(), "/tmp/rch");
         assert_eq!(
             validate_remote_base("/var/rch-builds").unwrap(),
             "/var/rch-builds"
@@ -2685,7 +2682,11 @@ mod tests {
         let result = validate_remote_base("~/rch");
         assert!(result.is_ok());
         let path = result.unwrap();
-        assert!(path.starts_with('/'), "Path should be absolute after expansion: {}", path);
+        assert!(
+            path.starts_with('/'),
+            "Path should be absolute after expansion: {}",
+            path
+        );
         assert!(!path.contains('~'), "Tilde should be expanded: {}", path);
     }
 
@@ -2709,23 +2710,14 @@ mod tests {
 
     #[test]
     fn test_validate_remote_base_normalizes_trailing_slash() {
-        assert_eq!(
-            validate_remote_base("/tmp/rch/").unwrap(),
-            "/tmp/rch"
-        );
-        assert_eq!(
-            validate_remote_base("/tmp/rch///").unwrap(),
-            "/tmp/rch"
-        );
+        assert_eq!(validate_remote_base("/tmp/rch/").unwrap(), "/tmp/rch");
+        assert_eq!(validate_remote_base("/tmp/rch///").unwrap(), "/tmp/rch");
     }
 
     #[test]
     fn test_validate_remote_base_root_path() {
         // Root path should be allowed (though unusual)
-        assert_eq!(
-            validate_remote_base("/").unwrap(),
-            "/"
-        );
+        assert_eq!(validate_remote_base("/").unwrap(), "/");
     }
 
     #[test]
