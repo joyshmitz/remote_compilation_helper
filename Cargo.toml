@@ -80,6 +80,9 @@ toml = "0.9.10"
 directories = "6.0"
 dirs = "6.0"
 
+# File watching (for hot-reload)
+notify = "8.0"
+
 # Metrics and Observability
 prometheus = "0.14"
 lazy_static = "1.5"
