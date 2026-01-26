@@ -24,3 +24,8 @@ perf.data.old
 
 # Diagram images (working artifacts)
 *.jpeg
+
+# Alternate target directories (cross-compilation, experiments)
+target_dusty/
+target_dusty_eagle/
+target-upgrade/
