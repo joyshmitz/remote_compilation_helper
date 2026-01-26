@@ -440,55 +440,85 @@ async fn main() -> Result<()> {
     // Shutdown channel
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
 
-    // Main accept loop
-    loop {
-        tokio::select! {
-            accept_result = listener.accept() => {
-                match accept_result {
-                    Ok((stream, _addr)) => {
-                        let ctx = context.clone();
-                        let tx = shutdown_tx.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = api::handle_connection(stream, ctx, tx).await {
-                                warn!("Connection error: {}", e);
-                            }
-                        });
+    // Main accept loop - platform-specific due to SIGHUP handling
+    #[cfg(unix)]
+    {
+        loop {
+            tokio::select! {
+                accept_result = listener.accept() => {
+                    match accept_result {
+                        Ok((stream, _addr)) => {
+                            let ctx = context.clone();
+                            let tx = shutdown_tx.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = api::handle_connection(stream, ctx, tx).await {
+                                    warn!("Connection error: {}", e);
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            warn!("Accept error: {}", e);
+                        }
                     }
-                    Err(e) => {
-                        warn!("Accept error: {}", e);
+                }
+                _ = shutdown_rx.recv() => {
+                    info!("Shutdown signal received");
+                    break;
+                }
+                _ = sighup.recv() => {
+                    info!("SIGHUP received, triggering configuration reload");
+                    if let Some(ref tx) = reload_tx {
+                        if let Err(e) = tx.send(reload::ReloadMessage::ManualReload).await {
+                            warn!("Failed to trigger reload: {}", e);
+                        }
+                    } else {
+                        // Hot-reload disabled, perform inline reload
+                        match reload::reload_workers(
+                            &worker_pool,
+                            cli.workers_config.as_deref(),
+                            true,
+                        ).await {
+                            Ok(result) => {
+                                if result.has_changes() {
+                                    info!("SIGHUP reload: {} added, {} updated, {} removed",
+                                        result.added, result.updated, result.removed);
+                                } else {
+                                    info!("SIGHUP reload: no configuration changes");
+                                }
+                            }
+                            Err(e) => {
+                                warn!("SIGHUP reload failed: {}", e);
+                            }
+                        }
                     }
                 }
             }
-            _ = shutdown_rx.recv() => {
-                info!("Shutdown signal received");
-                break;
-            }
-            #[cfg(unix)]
-            _ = sighup.recv() => {
-                info!("SIGHUP received, triggering configuration reload");
-                if let Some(ref tx) = reload_tx {
-                    if let Err(e) = tx.send(reload::ReloadMessage::ManualReload).await {
-                        warn!("Failed to trigger reload: {}", e);
-                    }
-                } else {
-                    // Hot-reload disabled, perform inline reload
-                    match reload::reload_workers(
-                        &worker_pool,
-                        cli.workers_config.as_deref(),
-                        true,
-                    ).await {
-                        Ok(result) => {
-                            if result.has_changes() {
-                                info!("SIGHUP reload: {} added, {} updated, {} removed",
-                                    result.added, result.updated, result.removed);
-                            } else {
-                                info!("SIGHUP reload: no configuration changes");
-                            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        loop {
+            tokio::select! {
+                accept_result = listener.accept() => {
+                    match accept_result {
+                        Ok((stream, _addr)) => {
+                            let ctx = context.clone();
+                            let tx = shutdown_tx.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = api::handle_connection(stream, ctx, tx).await {
+                                    warn!("Connection error: {}", e);
+                                }
+                            });
                         }
                         Err(e) => {
-                            warn!("SIGHUP reload failed: {}", e);
+                            warn!("Accept error: {}", e);
                         }
                     }
+                }
+                _ = shutdown_rx.recv() => {
+                    info!("Shutdown signal received");
+                    break;
                 }
             }
         }
