@@ -136,6 +136,16 @@ pub struct TransferProgress {
     compression_ratio: Option<f64>,
 }
 
+/// Snapshot of transfer progress stats.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TransferStats {
+    pub bytes_transferred: u64,
+    pub bytes_total: Option<u64>,
+    pub files_transferred: u32,
+    pub files_total: Option<u32>,
+    pub percent: Option<u8>,
+}
+
 impl TransferProgress {
     /// Create a new transfer progress display.
     pub fn new(
@@ -208,6 +218,30 @@ impl TransferProgress {
         }
     }
 
+    /// Apply a final summary from an external source.
+    ///
+    /// Useful when progress lines are unavailable (e.g., mock transport).
+    pub fn apply_summary(&mut self, bytes_transferred: u64, files_transferred: u32) {
+        if bytes_transferred > 0 {
+            self.bytes_transferred = bytes_transferred;
+        }
+        if files_transferred > 0 {
+            self.files_transferred = files_transferred;
+        }
+    }
+
+    /// Snapshot current transfer stats for callers.
+    #[must_use]
+    pub fn stats(&self) -> TransferStats {
+        TransferStats {
+            bytes_transferred: self.bytes_transferred,
+            bytes_total: self.bytes_total,
+            files_transferred: self.files_transferred,
+            files_total: self.files_total,
+            percent: self.percent,
+        }
+    }
+
     /// Finish the progress display and print a summary line.
     pub fn finish(&mut self) {
         if let Some(progress) = &self.progress {
@@ -236,6 +270,22 @@ impl TransferProgress {
             .unwrap_or_default();
 
         eprintln!("{icon} Synced {files} files ({bytes}) in {duration_str} ({speed} avg{ratio})");
+    }
+
+    /// Finish with a failure message.
+    pub fn finish_error(&mut self, message: &str) {
+        if let Some(progress) = &self.progress {
+            progress.clear();
+        }
+
+        if !self.enabled {
+            return;
+        }
+
+        let icon = Icons::cross(self.ctx);
+        let duration = self.start.elapsed();
+        let duration_str = format_duration(duration);
+        eprintln!("{icon} Transfer failed after {duration_str}: {message}");
     }
 
     fn apply_sample(&mut self, sample: ProgressSample) {

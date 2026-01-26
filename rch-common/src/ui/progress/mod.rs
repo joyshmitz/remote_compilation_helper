@@ -19,7 +19,7 @@ use std::time::Instant;
 pub use compile::{BuildPhase, BuildProfile, CompilationProgress, CrateInfo};
 pub use pipeline::{PipelineProgress, PipelineStage, StageStatus};
 pub use spinner::{AnimatedSpinner, SpinnerResult, SpinnerStyle};
-pub use transfer::{TransferDirection, TransferProgress};
+pub use transfer::{TransferDirection, TransferProgress, TransferStats};
 
 const DEFAULT_TERMINAL_WIDTH: u16 = 80;
 const MAX_UPDATES_PER_SEC: u32 = 10;
