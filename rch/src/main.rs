@@ -858,6 +858,20 @@ enum HookAction {
     Uninstall,
     /// Test the hook with a sample command
     Test,
+    /// Show hook status
+    Status,
+}
+
+impl HookAction {
+    /// Return the subcommand name as a string for error messages.
+    fn as_str(&self) -> &'static str {
+        match self {
+            HookAction::Install => "install",
+            HookAction::Uninstall => "uninstall",
+            HookAction::Test => "test",
+            HookAction::Status => "status",
+        }
+    }
 }
 
 #[derive(Subcommand)]

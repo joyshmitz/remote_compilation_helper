@@ -19,6 +19,7 @@ use rch_common::{
     SelectionReason, SshClient, SshOptions, WorkerCapabilities, WorkerConfig, WorkerId,
     classify_command_detailed, discover_all,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -88,7 +89,7 @@ fn print_file_validation(
     }
 }
 /// Worker information for JSON output.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct WorkerInfo {
     pub id: String,
     pub host: String,
@@ -115,7 +116,7 @@ impl From<&WorkerConfig> for WorkerInfo {
 }
 
 /// Workers list response.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct WorkersListResponse {
     pub workers: Vec<WorkerInfo>,
     pub count: usize,
