@@ -24,8 +24,14 @@ log_json() {
     local extra="${3:-{}}"
     local ts
     ts="$(timestamp)"
-    printf '{"ts":"%s","test":"bd-zp4j","phase":"%s","message":"%s",%s}\n' \
-        "$ts" "$phase" "$message" "${extra#\{}" | sed 's/,}$/}/' | tee -a "$LOG_FILE"
+    jq -nc \
+        --arg ts "$ts" \
+        --arg test "bd-zp4j" \
+        --arg phase "$phase" \
+        --arg message "$message" \
+        --argjson extra "$extra" \
+        '{ts:$ts,test:$test,phase:$phase,message:$message} + $extra' \
+        | tee -a "$LOG_FILE"
 }
 
 die() {

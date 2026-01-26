@@ -136,6 +136,31 @@ struct Cli {
     ///   rch --schema daemon status  # Schema for 'daemon status' output
     #[arg(long, global = true)]
     schema: bool,
+
+    /// Emit help text as JSON for machine parsing
+    ///
+    /// Outputs the CLI structure as JSON, including all subcommands, arguments,
+    /// and descriptions. Useful for agents to discover available functionality.
+    ///
+    /// Examples:
+    ///   rch --help-json             # Full CLI structure as JSON
+    ///   rch --help-json workers     # Workers subcommand structure
+    #[arg(long, global = true)]
+    help_json: bool,
+
+    /// List all RCH capabilities for machine discovery
+    ///
+    /// Outputs a JSON object describing all RCH features, supported runtimes,
+    /// and available commands. Enables agents to discover functionality
+    /// without parsing human-readable help text.
+    ///
+    /// Example output includes:
+    ///   - version and build info
+    ///   - supported runtimes (rust, bun, node)
+    ///   - available subcommands with brief descriptions
+    ///   - feature flags and their status
+    #[arg(long)]
+    capabilities: bool,
 }
 
 #[derive(Subcommand)]
@@ -1128,6 +1153,16 @@ async fn main() -> Result<()> {
         return handle_schema_request(&cli.command);
     }
 
+    // Handle --help-json flag: output CLI structure as JSON
+    if cli.help_json {
+        return handle_help_json(&cli.command);
+    }
+
+    // Handle --capabilities flag: output RCH capabilities for machine discovery
+    if cli.capabilities {
+        return handle_capabilities();
+    }
+
     // If no subcommand, we're being invoked as a hook
     match cli.command {
         None => {
@@ -1328,6 +1363,364 @@ fn handle_schema_request(command: &Option<Commands>) -> Result<()> {
     };
 
     println!("{schema_json}");
+    Ok(())
+}
+
+/// JSON structure for --help-json output.
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+struct HelpJsonOutput {
+    name: String,
+    version: String,
+    about: Option<String>,
+    subcommands: Vec<SubcommandHelp>,
+    global_flags: Vec<ArgHelp>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+struct SubcommandHelp {
+    name: String,
+    about: Option<String>,
+    aliases: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    subcommands: Vec<SubcommandHelp>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    arguments: Vec<ArgHelp>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+struct ArgHelp {
+    name: String,
+    short: Option<char>,
+    long: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    help: Option<String>,
+    required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_value: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    possible_values: Vec<String>,
+}
+
+/// Handle --help-json flag: output CLI structure as JSON for machine parsing.
+fn handle_help_json(command: &Option<Commands>) -> Result<()> {
+    let cmd = Cli::command();
+
+    let output = match command {
+        None => {
+            // Full CLI structure
+            build_help_json(&cmd)
+        }
+        Some(subcmd) => {
+            // Find the specific subcommand
+            let subcmd_name = get_command_name(subcmd);
+            if let Some(sub) = cmd.get_subcommands().find(|s| s.get_name() == subcmd_name) {
+                build_help_json(sub)
+            } else {
+                eprintln!("Unknown subcommand: {subcmd_name}");
+                std::process::exit(1);
+            }
+        }
+    };
+
+    let json = serde_json::to_string_pretty(&output)?;
+    println!("{json}");
+    Ok(())
+}
+
+fn get_command_name(cmd: &Commands) -> &'static str {
+    match cmd {
+        Commands::Init { .. } => "init",
+        Commands::Daemon { .. } => "daemon",
+        Commands::Workers { .. } => "workers",
+        Commands::Status { .. } => "status",
+        Commands::Queue { .. } => "queue",
+        Commands::Cancel { .. } => "cancel",
+        Commands::Config { .. } => "config",
+        Commands::Diagnose { .. } => "diagnose",
+        Commands::Hook { .. } => "hook",
+        Commands::Agents { .. } => "agents",
+        Commands::Completions { .. } => "completions",
+        Commands::Doctor { .. } => "doctor",
+        Commands::SelfTest { .. } => "self-test",
+        Commands::Update { .. } => "update",
+        Commands::Fleet { .. } => "fleet",
+        Commands::SpeedScore { .. } => "speedscore",
+        Commands::Dashboard { .. } => "dashboard",
+        Commands::Web { .. } => "web",
+    }
+}
+
+fn build_help_json(cmd: &clap::Command) -> HelpJsonOutput {
+    HelpJsonOutput {
+        name: cmd.get_name().to_string(),
+        version: cmd.get_version().map(|v| v.to_string()).unwrap_or_default(),
+        about: cmd.get_about().map(|a| a.to_string()),
+        subcommands: cmd
+            .get_subcommands()
+            .filter(|s| !s.is_hide_set())
+            .map(build_subcommand_help)
+            .collect(),
+        global_flags: cmd
+            .get_arguments()
+            .filter(|a| a.is_global_set() && a.get_id() != "help" && a.get_id() != "version")
+            .map(build_arg_help)
+            .collect(),
+    }
+}
+
+fn build_subcommand_help(cmd: &clap::Command) -> SubcommandHelp {
+    SubcommandHelp {
+        name: cmd.get_name().to_string(),
+        about: cmd.get_about().map(|a| a.to_string()),
+        aliases: cmd.get_all_aliases().map(|s| s.to_string()).collect(),
+        subcommands: cmd
+            .get_subcommands()
+            .filter(|s| !s.is_hide_set())
+            .map(build_subcommand_help)
+            .collect(),
+        arguments: cmd
+            .get_arguments()
+            .filter(|a| a.get_id() != "help" && a.get_id() != "version")
+            .map(build_arg_help)
+            .collect(),
+    }
+}
+
+fn build_arg_help(arg: &clap::Arg) -> ArgHelp {
+    ArgHelp {
+        name: arg.get_id().to_string(),
+        short: arg.get_short(),
+        long: arg.get_long().map(|s| s.to_string()),
+        help: arg.get_help().map(|h| h.to_string()),
+        required: arg.is_required_set(),
+        default_value: arg
+            .get_default_values()
+            .first()
+            .map(|v| v.to_string_lossy().to_string()),
+        possible_values: arg
+            .get_possible_values()
+            .iter()
+            .map(|v| v.get_name().to_string())
+            .collect(),
+    }
+}
+
+/// JSON structure for --capabilities output.
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+struct CapabilitiesOutput {
+    /// RCH version
+    version: String,
+    /// Build timestamp if available
+    #[serde(skip_serializing_if = "Option::is_none")]
+    build_timestamp: Option<String>,
+    /// Supported compilation runtimes
+    runtimes: Vec<RuntimeCapability>,
+    /// Available CLI commands
+    commands: Vec<CommandCapability>,
+    /// Feature flags and their status
+    features: Vec<FeatureCapability>,
+    /// Supported hook formats
+    hook_formats: Vec<String>,
+    /// Machine-readable output formats
+    output_formats: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+struct RuntimeCapability {
+    name: String,
+    description: String,
+    /// File extensions associated with this runtime
+    extensions: Vec<String>,
+    /// Example commands that trigger this runtime
+    example_commands: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+struct CommandCapability {
+    name: String,
+    description: String,
+    /// Brief category: "setup", "monitoring", "management", "configuration"
+    category: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+struct FeatureCapability {
+    name: String,
+    description: String,
+    enabled: bool,
+}
+
+/// Handle --capabilities flag: output RCH capabilities for machine discovery.
+fn handle_capabilities() -> Result<()> {
+    let output = CapabilitiesOutput {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        build_timestamp: option_env!("RCH_BUILD_TIMESTAMP").map(|s| s.to_string()),
+        runtimes: vec![
+            RuntimeCapability {
+                name: "rust".to_string(),
+                description: "Rust/Cargo compilation".to_string(),
+                extensions: vec!["rs".to_string()],
+                example_commands: vec![
+                    "cargo build".to_string(),
+                    "cargo test".to_string(),
+                    "cargo check".to_string(),
+                    "rustc".to_string(),
+                ],
+            },
+            RuntimeCapability {
+                name: "bun".to_string(),
+                description: "Bun JavaScript/TypeScript runtime".to_string(),
+                extensions: vec!["js".to_string(), "ts".to_string(), "jsx".to_string(), "tsx".to_string()],
+                example_commands: vec![
+                    "bun build".to_string(),
+                    "bun test".to_string(),
+                    "bun run".to_string(),
+                ],
+            },
+            RuntimeCapability {
+                name: "node".to_string(),
+                description: "Node.js JavaScript runtime".to_string(),
+                extensions: vec!["js".to_string(), "ts".to_string(), "mjs".to_string()],
+                example_commands: vec![
+                    "npm run build".to_string(),
+                    "npm test".to_string(),
+                    "npx".to_string(),
+                ],
+            },
+        ],
+        commands: vec![
+            CommandCapability {
+                name: "init".to_string(),
+                description: "Interactive first-time setup wizard".to_string(),
+                category: "setup".to_string(),
+            },
+            CommandCapability {
+                name: "daemon".to_string(),
+                description: "Control the RCH daemon (start/stop/status)".to_string(),
+                category: "management".to_string(),
+            },
+            CommandCapability {
+                name: "workers".to_string(),
+                description: "Manage remote workers (list/probe/setup)".to_string(),
+                category: "management".to_string(),
+            },
+            CommandCapability {
+                name: "status".to_string(),
+                description: "Show system status overview".to_string(),
+                category: "monitoring".to_string(),
+            },
+            CommandCapability {
+                name: "queue".to_string(),
+                description: "View build queue status".to_string(),
+                category: "monitoring".to_string(),
+            },
+            CommandCapability {
+                name: "cancel".to_string(),
+                description: "Cancel running builds".to_string(),
+                category: "management".to_string(),
+            },
+            CommandCapability {
+                name: "config".to_string(),
+                description: "View and modify configuration".to_string(),
+                category: "configuration".to_string(),
+            },
+            CommandCapability {
+                name: "diagnose".to_string(),
+                description: "Diagnose command routing decisions".to_string(),
+                category: "debugging".to_string(),
+            },
+            CommandCapability {
+                name: "hook".to_string(),
+                description: "Manage Claude Code hook integration".to_string(),
+                category: "setup".to_string(),
+            },
+            CommandCapability {
+                name: "agents".to_string(),
+                description: "Manage AI coding agent integrations".to_string(),
+                category: "setup".to_string(),
+            },
+            CommandCapability {
+                name: "completions".to_string(),
+                description: "Generate shell completions".to_string(),
+                category: "setup".to_string(),
+            },
+            CommandCapability {
+                name: "doctor".to_string(),
+                description: "Diagnose and fix system issues".to_string(),
+                category: "debugging".to_string(),
+            },
+            CommandCapability {
+                name: "self-test".to_string(),
+                description: "Run end-to-end self-tests".to_string(),
+                category: "debugging".to_string(),
+            },
+            CommandCapability {
+                name: "update".to_string(),
+                description: "Update RCH binaries".to_string(),
+                category: "management".to_string(),
+            },
+            CommandCapability {
+                name: "fleet".to_string(),
+                description: "Deploy and manage worker fleet".to_string(),
+                category: "management".to_string(),
+            },
+            CommandCapability {
+                name: "speedscore".to_string(),
+                description: "View worker performance scores".to_string(),
+                category: "monitoring".to_string(),
+            },
+            CommandCapability {
+                name: "dashboard".to_string(),
+                description: "Interactive TUI dashboard".to_string(),
+                category: "monitoring".to_string(),
+            },
+            CommandCapability {
+                name: "web".to_string(),
+                description: "Web-based dashboard".to_string(),
+                category: "monitoring".to_string(),
+            },
+        ],
+        features: vec![
+            FeatureCapability {
+                name: "rich-ui".to_string(),
+                description: "Rich terminal UI with colors and formatting".to_string(),
+                enabled: cfg!(feature = "rich-ui"),
+            },
+            FeatureCapability {
+                name: "json-output".to_string(),
+                description: "Machine-readable JSON output via --json flag".to_string(),
+                enabled: true,
+            },
+            FeatureCapability {
+                name: "toon-output".to_string(),
+                description: "TOON protocol output via --format=toon".to_string(),
+                enabled: true,
+            },
+            FeatureCapability {
+                name: "schema-introspection".to_string(),
+                description: "JSON Schema generation via --schema flag".to_string(),
+                enabled: true,
+            },
+            FeatureCapability {
+                name: "shell-completions".to_string(),
+                description: "Tab completion for bash, zsh, fish, etc.".to_string(),
+                enabled: true,
+            },
+            FeatureCapability {
+                name: "tui-dashboard".to_string(),
+                description: "Interactive terminal dashboard".to_string(),
+                enabled: true,
+            },
+        ],
+        hook_formats: vec![
+            "claude-code-pre-tool-use".to_string(),
+            "gemini-cli".to_string(),
+        ],
+        output_formats: vec!["json".to_string(), "toon".to_string(), "human".to_string()],
+    };
+
+    let json = serde_json::to_string_pretty(&output)?;
+    println!("{json}");
     Ok(())
 }
 

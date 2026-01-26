@@ -184,7 +184,9 @@ fn install_claude_code_hook(dry_run: bool) -> Result<IdempotentResult> {
         {
             arr.retain(|hook| {
                 // Keep entries that don't have obsolete rch format
-                let is_obsolete_rch = hook.get("command").and_then(|c| c.as_str())
+                let is_obsolete_rch = hook
+                    .get("command")
+                    .and_then(|c| c.as_str())
                     .map(|c| c.contains("rch"))
                     .unwrap_or(false)
                     && hook.get("matcher").is_none();
