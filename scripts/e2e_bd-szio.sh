@@ -52,11 +52,11 @@ check_dependencies() {
 build_rchd() {
     local rchd_bin="${PROJECT_ROOT}/target/debug/rchd"
     if [[ -x "$rchd_bin" ]]; then
-        log_json "setup" "Using existing rchd binary" "{\"path\":\"$rchd_bin\"}"
+        log_json "setup" "Using existing rchd binary" "{\"path\":\"$rchd_bin\"}" >/dev/null
         echo "$rchd_bin"
         return
     fi
-    log_json "setup" "Building rchd (debug)"
+    log_json "setup" "Building rchd (debug)" >/dev/null
     (cd "$PROJECT_ROOT" && cargo build -p rchd >/dev/null 2>&1) || die "cargo build failed"
     [[ -x "$rchd_bin" ]] || die "rchd binary missing after build"
     echo "$rchd_bin"

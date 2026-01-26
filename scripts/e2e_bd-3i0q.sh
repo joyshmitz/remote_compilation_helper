@@ -55,11 +55,11 @@ check_dependencies() {
 build_rch() {
     local rch_bin="${PROJECT_ROOT}/target/debug/rch"
     if [[ -x "$rch_bin" ]]; then
-        log_json "setup" "Using existing rch binary" "{\"path\":\"$rch_bin\"}"
+        log_json "setup" "Using existing rch binary" "{\"path\":\"$rch_bin\"}" >/dev/null
         echo "$rch_bin"
         return
     fi
-    log_json "setup" "Building rch (debug)"
+    log_json "setup" "Building rch (debug)" >/dev/null
     (cd "$PROJECT_ROOT" && cargo build -p rch >/dev/null 2>&1) || die "cargo build failed"
     [[ -x "$rch_bin" ]] || die "rch binary missing after build"
     echo "$rch_bin"
@@ -123,4 +123,3 @@ main() {
 }
 
 main "$@"
-
