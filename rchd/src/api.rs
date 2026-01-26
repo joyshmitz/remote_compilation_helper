@@ -1222,6 +1222,7 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
         toolchain,
         required_runtime,
         classification_duration_us,
+        hook_pid: None,
     }))
 }
 
