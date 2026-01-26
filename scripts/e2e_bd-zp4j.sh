@@ -21,7 +21,10 @@ timestamp() {
 log_json() {
     local phase="$1"
     local message="$2"
-    local extra="${3:-{}}"
+    local extra="${3:-}"
+    if [[ -z "$extra" ]]; then
+        extra='{}'
+    fi
     local ts
     ts="$(timestamp)"
     jq -nc \
