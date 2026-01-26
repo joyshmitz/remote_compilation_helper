@@ -400,10 +400,14 @@ fn check_codex_cli_hook() -> Result<HookStatus> {
     }
 
     let content = std::fs::read_to_string(&config_path)?;
+    let lines: Vec<&str> = content.lines().collect();
 
-    // Check for rch in hooks section
-    if content.contains("[hooks]") && content.contains("rch") {
-        return Ok(HookStatus::Installed);
+    if let Some((start, end)) = find_toml_section_range(&lines, "hooks") {
+        for line in &lines[start + 1..end] {
+            if is_pre_tool_use_rch(line) {
+                return Ok(HookStatus::Installed);
+            }
+        }
     }
 
     Ok(HookStatus::NotInstalled)
@@ -428,22 +432,51 @@ fn install_codex_cli_hook(dry_run: bool) -> Result<IdempotentResult> {
         return Ok(IdempotentResult::Unchanged);
     }
 
-    let mut content = if config_path.exists() {
+    let content = if config_path.exists() {
         create_backup(&config_path)?;
         std::fs::read_to_string(&config_path)?
     } else {
         String::new()
     };
+    let mut lines: Vec<String> = content.lines().map(|line| line.to_string()).collect();
 
-    // Add hooks section if not present
-    if !content.contains("[hooks]") {
-        content.push_str("\n[hooks]\n");
+    let mut changed = false;
+    if let Some((start, end)) = find_toml_section_range(
+        &lines.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        "hooks",
+    ) {
+        // Update existing pre_tool_use line or insert if missing
+        let mut found = false;
+        for line in &mut lines[start + 1..end] {
+            if is_pre_tool_use_line(line) {
+                if !is_pre_tool_use_rch(line) {
+                    *line = "pre_tool_use = \"rch\"".to_string();
+                    changed = true;
+                }
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            lines.insert(end, "pre_tool_use = \"rch\"".to_string());
+            changed = true;
+        }
+    } else {
+        if !lines.is_empty() && !lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+            lines.push(String::new());
+        }
+        lines.push("[hooks]".to_string());
+        lines.push("pre_tool_use = \"rch\"".to_string());
+        changed = true;
     }
 
-    // Add pre_tool_use hook
-    content.push_str("pre_tool_use = \"rch\"\n");
+    if !changed {
+        return Ok(IdempotentResult::Unchanged);
+    }
 
-    atomic_write(&config_path, content.as_bytes())?;
+    let updated = ensure_trailing_newline(lines.join("\n"));
+    atomic_write(&config_path, updated.as_bytes())?;
 
     Ok(IdempotentResult::Changed)
 }
@@ -470,15 +503,80 @@ fn uninstall_codex_cli_hook(dry_run: bool) -> Result<IdempotentResult> {
     create_backup(&config_path)?;
 
     let content = std::fs::read_to_string(&config_path)?;
-    let new_content: String = content
-        .lines()
-        .filter(|line| !line.contains("rch"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let mut lines: Vec<String> = content.lines().map(|line| line.to_string()).collect();
 
-    atomic_write(&config_path, new_content.as_bytes())?;
+    let mut changed = false;
+    if let Some((start, end)) = find_toml_section_range(
+        &lines.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        "hooks",
+    ) {
+        let mut idx = start + 1;
+        while idx < end {
+            if is_pre_tool_use_rch(&lines[idx]) {
+                lines.remove(idx);
+                changed = true;
+                break;
+            }
+            idx += 1;
+        }
+    }
+
+    if !changed {
+        return Ok(IdempotentResult::Unchanged);
+    }
+
+    let updated = ensure_trailing_newline(lines.join("\n"));
+    atomic_write(&config_path, updated.as_bytes())?;
 
     Ok(IdempotentResult::Changed)
+}
+
+fn find_toml_section_range(lines: &[&str], section: &str) -> Option<(usize, usize)> {
+    let header = format!("[{}]", section);
+    let mut start = None;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed == header {
+            start = Some(idx);
+            continue;
+        }
+
+        if start.is_some() && trimmed.starts_with('[') && trimmed.ends_with(']') {
+            return start.map(|s| (s, idx));
+        }
+    }
+
+    start.map(|s| (s, lines.len()))
+}
+
+fn is_pre_tool_use_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("pre_tool_use")
+}
+
+fn is_pre_tool_use_rch(line: &str) -> bool {
+    let mut stripped = line.split('#').next().unwrap_or("").trim();
+    if !stripped.starts_with("pre_tool_use") {
+        return false;
+    }
+
+    let Some(value) = stripped.splitn(2, '=').nth(1) else {
+        return false;
+    };
+
+    stripped = value.trim();
+    let stripped = stripped.trim_matches('"').trim_matches('\'');
+
+    stripped == "rch"
+}
+
+fn ensure_trailing_newline(content: String) -> String {
+    if content.ends_with('\n') {
+        content
+    } else {
+        format!("{}\n", content)
+    }
 }
 
 // === Continue.dev Hook ===
