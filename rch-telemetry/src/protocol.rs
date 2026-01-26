@@ -502,4 +502,466 @@ mod tests {
         assert!(received.age_secs() >= 0);
         assert!(received.since_received_secs() >= 0);
     }
+
+    // ========================
+    // TestRunRecord tests
+    // ========================
+
+    #[test]
+    fn test_run_record_serialization_roundtrip() {
+        let record = TestRunRecord {
+            project_id: "my-project".to_string(),
+            worker_id: "worker-1".to_string(),
+            command: "cargo test --release".to_string(),
+            kind: "cargo_test".to_string(),
+            exit_code: 0,
+            duration_ms: 12345,
+            completed_at: Utc::now(),
+        };
+
+        let json = record.to_json().unwrap();
+        let parsed = TestRunRecord::from_json(&json).unwrap();
+
+        assert_eq!(parsed.project_id, "my-project");
+        assert_eq!(parsed.worker_id, "worker-1");
+        assert_eq!(parsed.command, "cargo test --release");
+        assert_eq!(parsed.kind, "cargo_test");
+        assert_eq!(parsed.exit_code, 0);
+        assert_eq!(parsed.duration_ms, 12345);
+    }
+
+    #[test]
+    fn test_run_record_new_from_compilation_kind() {
+        use rch_common::CompilationKind;
+
+        let record = TestRunRecord::new(
+            "proj-1".to_string(),
+            "worker-2".to_string(),
+            "cargo nextest run".to_string(),
+            CompilationKind::CargoNextest,
+            0,
+            5000,
+        );
+
+        assert_eq!(record.project_id, "proj-1");
+        assert_eq!(record.worker_id, "worker-2");
+        assert!(record.kind.contains("Nextest") || record.kind.contains("nextest"));
+        assert_eq!(record.exit_code, 0);
+        assert_eq!(record.duration_ms, 5000);
+    }
+
+    #[test]
+    fn test_run_record_various_exit_codes() {
+        // Test success (0)
+        let success = TestRunRecord {
+            project_id: "p".to_string(),
+            worker_id: "w".to_string(),
+            command: "cmd".to_string(),
+            kind: "test".to_string(),
+            exit_code: 0,
+            duration_ms: 100,
+            completed_at: Utc::now(),
+        };
+        let json = success.to_json().unwrap();
+        assert!(json.contains("\"exit_code\":0"));
+
+        // Test failure (101 - Rust test failure)
+        let failure = TestRunRecord {
+            exit_code: 101,
+            ..success.clone()
+        };
+        let json = failure.to_json().unwrap();
+        assert!(json.contains("\"exit_code\":101"));
+
+        // Test build error (1)
+        let build_err = TestRunRecord {
+            exit_code: 1,
+            ..success.clone()
+        };
+        let json = build_err.to_json().unwrap();
+        assert!(json.contains("\"exit_code\":1"));
+    }
+
+    // ========================
+    // TestRunStats tests
+    // ========================
+
+    #[test]
+    fn test_run_stats_default_is_empty() {
+        let stats = TestRunStats::default();
+        assert_eq!(stats.total_runs, 0);
+        assert_eq!(stats.passed_runs, 0);
+        assert_eq!(stats.failed_runs, 0);
+        assert_eq!(stats.build_error_runs, 0);
+        assert_eq!(stats.avg_duration_ms, 0);
+        assert!(stats.runs_by_kind.is_empty());
+    }
+
+    #[test]
+    fn test_run_stats_record_passed() {
+        let mut stats = TestRunStats::default();
+        let record = TestRunRecord {
+            project_id: "p".to_string(),
+            worker_id: "w".to_string(),
+            command: "cargo test".to_string(),
+            kind: "cargo_test".to_string(),
+            exit_code: 0,
+            duration_ms: 1000,
+            completed_at: Utc::now(),
+        };
+
+        stats.record(&record);
+
+        assert_eq!(stats.total_runs, 1);
+        assert_eq!(stats.passed_runs, 1);
+        assert_eq!(stats.failed_runs, 0);
+        assert_eq!(stats.build_error_runs, 0);
+        assert_eq!(stats.avg_duration_ms, 1000);
+        assert_eq!(stats.runs_by_kind.get("cargo_test"), Some(&1));
+    }
+
+    #[test]
+    fn test_run_stats_record_failed() {
+        let mut stats = TestRunStats::default();
+        let record = TestRunRecord {
+            project_id: "p".to_string(),
+            worker_id: "w".to_string(),
+            command: "cargo test".to_string(),
+            kind: "cargo_test".to_string(),
+            exit_code: 101, // Rust test failure
+            duration_ms: 500,
+            completed_at: Utc::now(),
+        };
+
+        stats.record(&record);
+
+        assert_eq!(stats.total_runs, 1);
+        assert_eq!(stats.passed_runs, 0);
+        assert_eq!(stats.failed_runs, 1);
+        assert_eq!(stats.build_error_runs, 0);
+    }
+
+    #[test]
+    fn test_run_stats_record_build_error() {
+        let mut stats = TestRunStats::default();
+        let record = TestRunRecord {
+            project_id: "p".to_string(),
+            worker_id: "w".to_string(),
+            command: "cargo test".to_string(),
+            kind: "cargo_test".to_string(),
+            exit_code: 1, // Build error
+            duration_ms: 200,
+            completed_at: Utc::now(),
+        };
+
+        stats.record(&record);
+
+        assert_eq!(stats.total_runs, 1);
+        assert_eq!(stats.passed_runs, 0);
+        assert_eq!(stats.failed_runs, 0);
+        assert_eq!(stats.build_error_runs, 1);
+    }
+
+    #[test]
+    fn test_run_stats_record_other_exit_code() {
+        let mut stats = TestRunStats::default();
+        let record = TestRunRecord {
+            project_id: "p".to_string(),
+            worker_id: "w".to_string(),
+            command: "cargo test".to_string(),
+            kind: "cargo_test".to_string(),
+            exit_code: 137, // SIGKILL
+            duration_ms: 300,
+            completed_at: Utc::now(),
+        };
+
+        stats.record(&record);
+
+        // Other exit codes count as failed
+        assert_eq!(stats.total_runs, 1);
+        assert_eq!(stats.failed_runs, 1);
+    }
+
+    #[test]
+    fn test_run_stats_multiple_records_avg_duration() {
+        let mut stats = TestRunStats::default();
+
+        for duration in [1000, 2000, 3000] {
+            let record = TestRunRecord {
+                project_id: "p".to_string(),
+                worker_id: "w".to_string(),
+                command: "cargo test".to_string(),
+                kind: "cargo_test".to_string(),
+                exit_code: 0,
+                duration_ms: duration,
+                completed_at: Utc::now(),
+            };
+            stats.record(&record);
+        }
+
+        assert_eq!(stats.total_runs, 3);
+        assert_eq!(stats.passed_runs, 3);
+        assert_eq!(stats.avg_duration_ms, 2000); // (1000+2000+3000)/3
+    }
+
+    #[test]
+    fn test_run_stats_multiple_kinds() {
+        let mut stats = TestRunStats::default();
+
+        let kinds = ["cargo_test", "cargo_test", "cargo_nextest", "cargo_build"];
+        for kind in kinds {
+            let record = TestRunRecord {
+                project_id: "p".to_string(),
+                worker_id: "w".to_string(),
+                command: "cmd".to_string(),
+                kind: kind.to_string(),
+                exit_code: 0,
+                duration_ms: 100,
+                completed_at: Utc::now(),
+            };
+            stats.record(&record);
+        }
+
+        assert_eq!(stats.total_runs, 4);
+        assert_eq!(stats.runs_by_kind.get("cargo_test"), Some(&2));
+        assert_eq!(stats.runs_by_kind.get("cargo_nextest"), Some(&1));
+        assert_eq!(stats.runs_by_kind.get("cargo_build"), Some(&1));
+    }
+
+    #[test]
+    fn test_run_stats_serialization_roundtrip() {
+        let mut stats = TestRunStats::default();
+        stats.total_runs = 10;
+        stats.passed_runs = 7;
+        stats.failed_runs = 2;
+        stats.build_error_runs = 1;
+        stats.avg_duration_ms = 1500;
+        stats.runs_by_kind.insert("cargo_test".to_string(), 8);
+        stats.runs_by_kind.insert("cargo_nextest".to_string(), 2);
+
+        let json = serde_json::to_string(&stats).unwrap();
+        let parsed: TestRunStats = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.total_runs, 10);
+        assert_eq!(parsed.passed_runs, 7);
+        assert_eq!(parsed.failed_runs, 2);
+        assert_eq!(parsed.build_error_runs, 1);
+        assert_eq!(parsed.avg_duration_ms, 1500);
+        assert_eq!(parsed.runs_by_kind.get("cargo_test"), Some(&8));
+    }
+
+    // ========================
+    // Protocol version tests
+    // ========================
+
+    #[test]
+    fn test_protocol_version_is_one() {
+        assert_eq!(TELEMETRY_PROTOCOL_VERSION, 1);
+    }
+
+    #[test]
+    fn test_worker_telemetry_incompatible_version() {
+        let mut telemetry = make_test_worker_telemetry();
+        assert!(telemetry.is_compatible());
+
+        // Simulate receiving telemetry from a future version
+        telemetry.version = TELEMETRY_PROTOCOL_VERSION + 1;
+        assert!(!telemetry.is_compatible());
+
+        // Old version also incompatible
+        telemetry.version = 0;
+        assert!(!telemetry.is_compatible());
+    }
+
+    #[test]
+    fn test_protocol_backward_compatibility_missing_optional_fields() {
+        // Simulate JSON from an older version that doesn't have optional fields
+        let minimal_json = r#"{
+            "version": 1,
+            "worker_id": "legacy-worker",
+            "timestamp": "2025-01-01T00:00:00Z",
+            "cpu": {
+                "timestamp": "2025-01-01T00:00:00Z",
+                "overall_percent": 50.0,
+                "per_core_percent": [50.0],
+                "num_cores": 1,
+                "load_average": {
+                    "one_min": 1.0,
+                    "five_min": 0.8,
+                    "fifteen_min": 0.5,
+                    "running_processes": 1,
+                    "total_processes": 100
+                },
+                "psi": null
+            },
+            "memory": {
+                "timestamp": "2025-01-01T00:00:00Z",
+                "total_gb": 8.0,
+                "available_gb": 4.0,
+                "used_percent": 50.0,
+                "pressure_score": 50.0,
+                "swap_used_gb": 0.0,
+                "dirty_mb": 0.0,
+                "psi": null
+            },
+            "collection_duration_ms": 100
+        }"#;
+
+        let parsed = WorkerTelemetry::from_json(minimal_json).unwrap();
+        assert_eq!(parsed.worker_id, "legacy-worker");
+        assert!(parsed.disk.is_none());
+        assert!(parsed.network.is_none());
+        assert!(parsed.is_compatible());
+    }
+
+    #[test]
+    fn test_piggyback_marker_constant() {
+        assert_eq!(PIGGYBACK_MARKER, "---RCH-TELEMETRY---");
+    }
+
+    // ========================
+    // TelemetrySummary tests
+    // ========================
+
+    #[test]
+    fn test_telemetry_summary_serialization_roundtrip() {
+        let summary = TelemetrySummary {
+            worker_id: "w1".to_string(),
+            timestamp: Utc::now(),
+            cpu_percent: 45.0,
+            memory_percent: 60.0,
+            memory_pressure: 55.0,
+            disk_io_percent: Some(30.0),
+            network_throughput_mbps: Some(100.0),
+            load_1m: 2.5,
+        };
+
+        let json = serde_json::to_string(&summary).unwrap();
+        let parsed: TelemetrySummary = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.worker_id, "w1");
+        assert!((parsed.cpu_percent - 45.0).abs() < 0.01);
+        assert_eq!(parsed.disk_io_percent, Some(30.0));
+        assert_eq!(parsed.network_throughput_mbps, Some(100.0));
+    }
+
+    #[test]
+    fn test_telemetry_summary_display_with_all_fields() {
+        let summary = TelemetrySummary {
+            worker_id: "w1".to_string(),
+            timestamp: Utc::now(),
+            cpu_percent: 45.0,
+            memory_percent: 60.0,
+            memory_pressure: 55.0,
+            disk_io_percent: Some(30.0),
+            network_throughput_mbps: Some(100.0),
+            load_1m: 2.5,
+        };
+
+        let display = summary.to_string();
+        assert!(display.contains("w1"));
+        assert!(display.contains("CPU: 45.0%"));
+        assert!(display.contains("Mem: 60.0%"));
+        assert!(display.contains("Disk I/O: 30.0%"));
+        assert!(display.contains("Net: 100.0 Mbps"));
+    }
+
+    #[test]
+    fn test_telemetry_summary_display_without_optional_fields() {
+        let summary = TelemetrySummary {
+            worker_id: "w1".to_string(),
+            timestamp: Utc::now(),
+            cpu_percent: 45.0,
+            memory_percent: 60.0,
+            memory_pressure: 55.0,
+            disk_io_percent: None,
+            network_throughput_mbps: None,
+            load_1m: 2.5,
+        };
+
+        let display = summary.to_string();
+        assert!(display.contains("w1"));
+        assert!(display.contains("CPU: 45.0%"));
+        assert!(!display.contains("Disk I/O"));
+        assert!(!display.contains("Net:"));
+    }
+
+    // ========================
+    // TelemetrySource tests
+    // ========================
+
+    #[test]
+    fn test_telemetry_source_equality() {
+        assert_eq!(TelemetrySource::Piggyback, TelemetrySource::Piggyback);
+        assert_ne!(TelemetrySource::Piggyback, TelemetrySource::SshPoll);
+        assert_ne!(TelemetrySource::SshPoll, TelemetrySource::OnDemand);
+    }
+
+    #[test]
+    fn test_telemetry_source_serialization_roundtrip() {
+        for source in [
+            TelemetrySource::Piggyback,
+            TelemetrySource::SshPoll,
+            TelemetrySource::OnDemand,
+        ] {
+            let json = serde_json::to_string(&source).unwrap();
+            let parsed: TelemetrySource = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, source);
+        }
+    }
+
+    // ========================
+    // ReceivedTelemetry tests
+    // ========================
+
+    #[test]
+    fn test_received_telemetry_serialization_roundtrip() {
+        let telemetry = make_test_worker_telemetry();
+        let received = ReceivedTelemetry::new(telemetry, TelemetrySource::Piggyback);
+
+        let json = serde_json::to_string(&received).unwrap();
+        let parsed: ReceivedTelemetry = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.source, TelemetrySource::Piggyback);
+        assert_eq!(parsed.telemetry.worker_id, "worker-1");
+    }
+
+    #[test]
+    fn test_received_telemetry_all_sources() {
+        let telemetry = make_test_worker_telemetry();
+
+        for source in [
+            TelemetrySource::Piggyback,
+            TelemetrySource::SshPoll,
+            TelemetrySource::OnDemand,
+        ] {
+            let received = ReceivedTelemetry::new(telemetry.clone(), source);
+            assert_eq!(received.source, source);
+        }
+    }
+
+    // ========================
+    // PiggybackExtraction tests
+    // ========================
+
+    #[test]
+    fn test_piggyback_extraction_empty_output() {
+        let extraction = extract_piggybacked_telemetry("");
+        assert!(extraction.telemetry.is_none());
+        assert!(extraction.extraction_error.is_none());
+        assert_eq!(extraction.build_output, "");
+    }
+
+    #[test]
+    fn test_piggyback_extraction_whitespace_handling() {
+        let telemetry = make_test_worker_telemetry();
+        let build_output = "Build output with trailing spaces   \n\n";
+        let combined = format!("{}{}", build_output, telemetry.to_piggyback().unwrap());
+
+        let extraction = extract_piggybacked_telemetry(&combined);
+        assert!(extraction.telemetry.is_some());
+        // Build output should have trailing whitespace trimmed
+        assert!(!extraction.build_output.ends_with(' '));
+        assert!(!extraction.build_output.ends_with('\n'));
+    }
 }
