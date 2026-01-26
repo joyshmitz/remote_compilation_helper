@@ -437,6 +437,7 @@ mod tests {
             transfer: ConfigTransferSection {
                 compression_level: 6,
                 exclude_patterns: vec!["target".to_string(), "node_modules".to_string()],
+                remote_base: "/tmp/rch".to_string(),
             },
             environment: ConfigEnvironmentSection {
                 allowlist: vec!["RUSTFLAGS".to_string()],

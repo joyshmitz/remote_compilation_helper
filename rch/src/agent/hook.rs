@@ -115,16 +115,24 @@ fn check_claude_code_hook() -> Result<HookStatus> {
         && let Some(arr) = pre_tool_use.as_array()
     {
         for hook in arr {
+            // Check correct format: { "matcher": "Bash", "hooks": [{ "command": "rch" }] }
+            if let Some(inner_hooks) = hook.get("hooks").and_then(|h| h.as_array()) {
+                for inner in inner_hooks {
+                    if let Some(cmd) = inner.get("command").and_then(|c| c.as_str())
+                        && cmd.contains("rch")
+                    {
+                        return Ok(HookStatus::Installed);
+                    }
+                }
+            }
+            // Also check obsolete format for backwards compatibility detection:
+            // { "command": "rch", "description": "..." }
             if let Some(cmd) = hook.get("command").and_then(|c| c.as_str())
                 && cmd.contains("rch")
+                && hook.get("matcher").is_none()
             {
-                return Ok(HookStatus::Installed);
-            }
-            // Also check for string hooks
-            if let Some(cmd) = hook.as_str()
-                && cmd.contains("rch")
-            {
-                return Ok(HookStatus::Installed);
+                // Obsolete format detected - needs update
+                return Ok(HookStatus::NeedsUpdate);
             }
         }
     }
@@ -156,8 +164,9 @@ fn install_claude_code_hook(dry_run: bool) -> Result<IdempotentResult> {
         serde_json::json!({})
     };
 
-    // Check if already installed
-    if check_claude_code_hook()? == HookStatus::Installed {
+    // Check if already installed (correctly)
+    let current_status = check_claude_code_hook()?;
+    if current_status == HookStatus::Installed {
         return Ok(IdempotentResult::Unchanged);
     }
 
@@ -166,10 +175,41 @@ fn install_claude_code_hook(dry_run: bool) -> Result<IdempotentResult> {
         create_backup(&settings_path)?;
     }
 
-    // Add the hook
+    // If obsolete format exists, we need to remove it first
+    if current_status == HookStatus::NeedsUpdate {
+        // Remove obsolete entries before adding correct one
+        if let Some(hooks) = settings.get_mut("hooks")
+            && let Some(pre_tool_use) = hooks.get_mut("PreToolUse")
+            && let Some(arr) = pre_tool_use.as_array_mut()
+        {
+            arr.retain(|hook| {
+                // Keep entries that don't have obsolete rch format
+                let is_obsolete_rch = hook.get("command").and_then(|c| c.as_str())
+                    .map(|c| c.contains("rch"))
+                    .unwrap_or(false)
+                    && hook.get("matcher").is_none();
+                !is_obsolete_rch
+            });
+        }
+    }
+
+    // Get the rch binary path (prefer full path if available)
+    let hook_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("rch")))
+        .filter(|p| p.exists())
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| "rch".to_string());
+
+    // Add the hook in the correct format
     let hook_entry = serde_json::json!({
-        "command": "rch",
-        "description": "Remote Compilation Helper - routes builds to remote workers"
+        "matcher": "Bash",
+        "hooks": [
+            {
+                "type": "command",
+                "command": hook_path
+            }
+        ]
     });
 
     let hooks = settings
@@ -215,25 +255,39 @@ fn uninstall_claude_code_hook(dry_run: bool) -> Result<IdempotentResult> {
     let content = std::fs::read_to_string(&settings_path)?;
     let mut settings: Value = serde_json::from_str(&content)?;
 
-    // Check if hook exists
-    if check_claude_code_hook()? == HookStatus::NotInstalled {
+    // Check if hook exists (either correct or obsolete format)
+    let status = check_claude_code_hook()?;
+    if status == HookStatus::NotInstalled || status == HookStatus::NotSupported {
         return Ok(IdempotentResult::Unchanged);
     }
 
     // Create backup
     create_backup(&settings_path)?;
 
-    // Remove the hook
+    // Remove the hook (handle both old and new formats)
     if let Some(hooks) = settings.get_mut("hooks")
         && let Some(pre_tool_use) = hooks.get_mut("PreToolUse")
         && let Some(arr) = pre_tool_use.as_array_mut()
     {
         arr.retain(|hook| {
-            let cmd = hook
-                .get("command")
-                .and_then(|c| c.as_str())
-                .or_else(|| hook.as_str());
-            !cmd.map(|c| c.contains("rch")).unwrap_or(false)
+            // Check correct format: { "matcher": "Bash", "hooks": [{ "command": "rch" }] }
+            if let Some(inner_hooks) = hook.get("hooks").and_then(|h| h.as_array()) {
+                for inner in inner_hooks {
+                    if let Some(cmd) = inner.get("command").and_then(|c| c.as_str())
+                        && cmd.contains("rch")
+                    {
+                        return false; // Remove this entry
+                    }
+                }
+            }
+            // Check obsolete format: { "command": "rch", ... }
+            if let Some(cmd) = hook.get("command").and_then(|c| c.as_str())
+                && cmd.contains("rch")
+                && hook.get("matcher").is_none()
+            {
+                return false; // Remove this entry
+            }
+            true // Keep other entries
         });
     }
 
