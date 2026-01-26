@@ -5,27 +5,38 @@
 
 use crate::config::load_config;
 use crate::error::{DaemonError, TransferError};
+use crate::status_types::format_bytes;
 use crate::toolchain::detect_toolchain;
 use crate::transfer::{
-    TransferPipeline, compute_project_hash, default_bun_artifact_patterns,
+    SyncResult, TransferPipeline, compute_project_hash, default_bun_artifact_patterns,
     default_c_cpp_artifact_patterns, default_rust_artifact_patterns,
     default_rust_test_artifact_patterns, project_id_from_path,
 };
+use crate::ui::console::RchConsole;
 use rch_common::{
     ColorMode, CompilationKind, HookInput, HookOutput, OutputVisibility, RequiredRuntime,
-    SelectedWorker, SelectionResponse, ToolchainInfo, TransferConfig, WorkerConfig, WorkerId,
-    classify_command,
+    SelectedWorker, SelectionResponse, SelfHealingConfig, ToolchainInfo, TransferConfig,
+    WorkerConfig, WorkerId, classify_command,
+    ui::{CompilationProgress, Icons, OutputContext, RchTheme, TransferProgress},
 };
 use rch_telemetry::protocol::{
     PIGGYBACK_MARKER, TelemetrySource, TestRunRecord, WorkerTelemetry,
     extract_piggybacked_telemetry,
 };
+use serde::Deserialize;
+use std::fs::OpenOptions;
 use std::io::{self, BufRead, Write};
-use std::path::Path;
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use tokio::time::{sleep, timeout};
 use tracing::{debug, info, warn};
+use which::which;
+
+#[cfg(feature = "rich-ui")]
+use rich_rust::renderables::Panel;
 
 // ============================================================================
 // Exit Code Constants
@@ -133,6 +144,175 @@ fn format_duration_ms(duration: Duration) -> String {
     }
 }
 
+fn format_speed(bytes: u64, duration_ms: u64) -> String {
+    if duration_ms == 0 || bytes == 0 {
+        return "--".to_string();
+    }
+    let secs = duration_ms as f64 / 1000.0;
+    if secs <= 0.0 {
+        return "--".to_string();
+    }
+    let per_sec = (bytes as f64 / secs).round() as u64;
+    format!("{}/s", format_bytes(per_sec))
+}
+
+fn cache_hit(sync: &SyncResult) -> bool {
+    sync.bytes_transferred == 0 && sync.files_transferred == 0
+}
+
+fn emit_job_banner(
+    console: &RchConsole,
+    ctx: OutputContext,
+    worker: &SelectedWorker,
+    build_id: Option<u64>,
+) {
+    if console.is_machine() {
+        return;
+    }
+
+    let job = build_id
+        .map(|id| format!("j-{}", id))
+        .unwrap_or_else(|| "job".to_string());
+    let message = format!(
+        "{} Job {} submitted to {} (slots {}, speed {:.1})",
+        Icons::status_healthy(ctx),
+        job,
+        worker.id,
+        worker.slots_available,
+        worker.speed_score
+    );
+
+    #[cfg(feature = "rich-ui")]
+    if console.is_rich() {
+        let rich = format!(
+            "[bold {}]{}[/] Job {} submitted to {} (slots {}, speed {:.1})",
+            RchTheme::INFO,
+            Icons::status_healthy(ctx),
+            job,
+            worker.id,
+            worker.slots_available,
+            worker.speed_score
+        );
+        console.print_rich(&rich);
+        return;
+    }
+
+    console.print_plain(&message);
+}
+
+#[allow(clippy::too_many_arguments)] // Presentation helper; wiring is clearer with explicit params.
+fn render_compile_summary(
+    console: &RchConsole,
+    ctx: OutputContext,
+    worker: &SelectedWorker,
+    build_id: Option<u64>,
+    sync: &SyncResult,
+    exec_ms: u64,
+    artifacts: Option<&SyncResult>,
+    artifacts_failed: bool,
+    cache_hit: bool,
+    success: bool,
+) {
+    if console.is_machine() {
+        return;
+    }
+
+    let total_ms = sync.duration_ms + exec_ms + artifacts.map(|a| a.duration_ms).unwrap_or(0);
+    let sync_duration = format_duration_ms(Duration::from_millis(sync.duration_ms));
+    let exec_duration = format_duration_ms(Duration::from_millis(exec_ms));
+    let total_duration = format_duration_ms(Duration::from_millis(total_ms));
+
+    let sync_bytes = format_bytes(sync.bytes_transferred);
+    let sync_speed = format_speed(sync.bytes_transferred, sync.duration_ms);
+
+    let (artifact_line, artifact_duration) = if let Some(artifact) = artifacts {
+        let bytes = format_bytes(artifact.bytes_transferred);
+        let speed = format_speed(artifact.bytes_transferred, artifact.duration_ms);
+        let duration = format_duration_ms(Duration::from_millis(artifact.duration_ms));
+        (
+            format!(
+                "{} Artifacts: {} in {} ({})",
+                Icons::arrow_down(ctx),
+                bytes,
+                duration,
+                speed
+            ),
+            duration,
+        )
+    } else if artifacts_failed {
+        ("Artifacts: failed".to_string(), "--".to_string())
+    } else {
+        ("Artifacts: skipped".to_string(), "--".to_string())
+    };
+
+    let job = build_id
+        .map(|id| format!("j-{}", id))
+        .unwrap_or_else(|| "job".to_string());
+
+    let worker_line = format!(
+        "{} Worker: {} | Job: {}",
+        Icons::worker(ctx),
+        worker.id,
+        job
+    );
+    let timing_line = format!(
+        "{} Total: {} (sync {}, build {}, artifacts {})",
+        Icons::clock(ctx),
+        total_duration,
+        sync_duration,
+        exec_duration,
+        artifact_duration
+    );
+    let sync_line = format!(
+        "{} Sync: {} in {} ({})",
+        Icons::arrow_up(ctx),
+        sync_bytes,
+        sync_duration,
+        sync_speed
+    );
+    let compile_line = format!("{} Compile: {}", Icons::compile(ctx), exec_duration);
+
+    let cache_text = if cache_hit { "HIT" } else { "MISS" };
+    let cache_line_plain = format!("{} Cache: {}", Icons::transfer(ctx), cache_text);
+
+    let content_plain = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}",
+        worker_line, timing_line, sync_line, compile_line, artifact_line, cache_line_plain
+    );
+
+    #[cfg(feature = "rich-ui")]
+    if console.is_rich() {
+        let cache_rich = if cache_hit {
+            format!("[bold {}]HIT[/]", RchTheme::SUCCESS)
+        } else {
+            format!("[bold {}]MISS[/]", RchTheme::WARNING)
+        };
+        let cache_line = format!("{} Cache: {}", Icons::transfer(ctx), cache_rich);
+        let content = format!(
+            "{}\n{}\n{}\n{}\n{}\n{}",
+            worker_line, timing_line, sync_line, compile_line, artifact_line, cache_line
+        );
+        let title = if success {
+            "Compilation Complete"
+        } else {
+            "Compilation Failed"
+        };
+        let border = if success {
+            RchTheme::success()
+        } else {
+            RchTheme::error()
+        };
+        let panel = Panel::from_text(&content)
+            .title(title)
+            .border_style(border)
+            .rounded();
+        console.print_renderable(&panel);
+        return;
+    }
+
+    console.print_plain(&content_plain);
+}
+
 fn estimate_local_time_ms(remote_ms: u64, worker_speed_score: f64) -> Option<u64> {
     if remote_ms == 0 || worker_speed_score <= 0.0 {
         return None;
@@ -193,6 +373,243 @@ fn parse_test_threads(command: &str) -> Option<u32> {
         }
     }
     None
+}
+
+// ============================================================================
+// Daemon Auto-Start (Self-Healing)
+// ============================================================================
+
+#[derive(Debug, thiserror::Error)]
+enum AutoStartError {
+    #[error("Another process is starting the daemon (lock held)")]
+    LockHeld,
+    #[error("Auto-start on cooldown (last attempt {0}s ago, need {1}s)")]
+    CooldownActive(u64, u64),
+    #[error("Failed to spawn rchd: {0}")]
+    SpawnFailed(#[source] std::io::Error),
+    #[error("Daemon started but socket not found after {0}s")]
+    Timeout(u64),
+    #[error("rchd binary not found in PATH")]
+    BinaryNotFound,
+    #[error("Socket exists but daemon not responding (stale socket)")]
+    StaleSocket,
+    #[error("Configuration disabled auto-start")]
+    Disabled,
+    #[error("Auto-start I/O error: {0}")]
+    Io(#[source] std::io::Error),
+}
+
+struct AutoStartLock {
+    path: PathBuf,
+}
+
+impl Drop for AutoStartLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct HealthResponse {
+    status: String,
+}
+
+fn autostart_state_dir() -> PathBuf {
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR")
+        && !runtime_dir.trim().is_empty()
+    {
+        return PathBuf::from(runtime_dir).join("rch");
+    }
+    PathBuf::from("/tmp").join("rch")
+}
+
+fn autostart_lock_path() -> PathBuf {
+    autostart_state_dir().join("hook_autostart.lock")
+}
+
+fn autostart_cooldown_path() -> PathBuf {
+    autostart_state_dir().join("hook_autostart.cooldown")
+}
+
+fn read_cooldown_timestamp(path: &Path) -> Option<SystemTime> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    let secs: u64 = contents.trim().parse().ok()?;
+    Some(UNIX_EPOCH + Duration::from_secs(secs))
+}
+
+fn write_cooldown_timestamp(path: &Path) -> Result<(), AutoStartError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(AutoStartError::Io)?;
+    }
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::from_secs(0))
+        .as_secs();
+    std::fs::write(path, format!("{now_secs}")).map_err(AutoStartError::Io)
+}
+
+fn acquire_autostart_lock(path: &Path) -> Result<AutoStartLock, AutoStartError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(AutoStartError::Io)?;
+    }
+    match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(_) => Ok(AutoStartLock {
+            path: path.to_path_buf(),
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(AutoStartError::LockHeld),
+        Err(e) => Err(AutoStartError::Io(e)),
+    }
+}
+
+fn which_rchd_path() -> Option<PathBuf> {
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(dir) = exe_path.parent()
+    {
+        let candidate = dir.join("rchd");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    which("rchd").ok()
+}
+
+fn spawn_rchd(path: &Path) -> Result<(), AutoStartError> {
+    let mut cmd = std::process::Command::new("nohup");
+    cmd.arg(path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null());
+    cmd.spawn().map_err(AutoStartError::SpawnFailed)?;
+    Ok(())
+}
+
+async fn probe_daemon_health(socket_path: &Path) -> bool {
+    let connect = timeout(Duration::from_millis(300), UnixStream::connect(socket_path)).await;
+    let stream = match connect {
+        Ok(Ok(stream)) => stream,
+        _ => return false,
+    };
+
+    let (reader, mut writer) = stream.into_split();
+    if writer.write_all(b"GET /health\n").await.is_err() {
+        return false;
+    }
+    let _ = writer.flush().await;
+
+    let mut reader = BufReader::new(reader);
+    let mut line = String::new();
+    let mut body = String::new();
+    let mut in_body = false;
+
+    loop {
+        line.clear();
+        let read = match timeout(Duration::from_millis(300), reader.read_line(&mut line)).await {
+            Ok(Ok(n)) => n,
+            _ => return false,
+        };
+        if read == 0 {
+            break;
+        }
+        if in_body {
+            body.push_str(&line);
+        } else if line.trim().is_empty() {
+            in_body = true;
+        }
+    }
+
+    let response: HealthResponse = match serde_json::from_str(body.trim()) {
+        Ok(resp) => resp,
+        Err(_) => return false,
+    };
+
+    response.status == "healthy"
+}
+
+async fn wait_for_socket(socket_path: &Path, timeout_secs: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        if socket_path.exists() && probe_daemon_health(socket_path).await {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn try_auto_start_daemon(
+    config: &SelfHealingConfig,
+    socket_path: &Path,
+) -> Result<(), AutoStartError> {
+    if !config.hook_starts_daemon {
+        return Err(AutoStartError::Disabled);
+    }
+
+    info!(
+        target: "rch::hook::autostart",
+        "Daemon unavailable, attempting auto-start"
+    );
+
+    if socket_path.exists() {
+        if probe_daemon_health(socket_path).await {
+            debug!(
+                target: "rch::hook::autostart",
+                "Socket exists and daemon is responsive"
+            );
+            return Ok(());
+        }
+
+        warn!(
+            target: "rch::hook::autostart",
+            "Socket exists but daemon not responding"
+        );
+        if let Err(err) = std::fs::remove_file(socket_path) {
+            warn!(
+                target: "rch::hook::autostart",
+                "Failed to remove stale socket: {}",
+                err
+            );
+            return Err(AutoStartError::StaleSocket);
+        }
+    }
+
+    let cooldown_path = autostart_cooldown_path();
+    if let Some(last_attempt) = read_cooldown_timestamp(&cooldown_path) {
+        let elapsed = last_attempt
+            .elapsed()
+            .unwrap_or(Duration::from_secs(0))
+            .as_secs();
+        if elapsed < config.auto_start_cooldown_secs {
+            return Err(AutoStartError::CooldownActive(
+                elapsed,
+                config.auto_start_cooldown_secs,
+            ));
+        }
+    }
+
+    let _lock = acquire_autostart_lock(&autostart_lock_path())?;
+    write_cooldown_timestamp(&cooldown_path)?;
+
+    let rchd_path = which_rchd_path().ok_or(AutoStartError::BinaryNotFound)?;
+    info!(
+        target: "rch::hook::autostart",
+        "Spawning rchd at {}",
+        rchd_path.display()
+    );
+    spawn_rchd(&rchd_path)?;
+
+    let timeout_secs = config.auto_start_timeout_secs;
+    if !wait_for_socket(socket_path, timeout_secs).await {
+        return Err(AutoStartError::Timeout(timeout_secs));
+    }
+
+    info!(
+        target: "rch::hook::autostart",
+        "Auto-start successful, socket is responsive"
+    );
+    Ok(())
 }
 
 /// Detect if a cargo test command has a test name filter.
@@ -519,159 +936,230 @@ async fn process_hook(input: HookInput) -> HookOutput {
     .await
     {
         Ok(response) => {
-            // Check if a worker was assigned
-            let Some(worker) = response.worker else {
-                // No worker available - graceful fallback to local execution
-                warn!(
-                    "⚠️ RCH: No remote workers available ({}), executing locally",
-                    response.reason
-                );
-                reporter.summary(&format!("[RCH] local ({})", response.reason));
-                return HookOutput::allow();
-            };
-
-            info!(
-                "Selected worker: {} at {}@{} ({} slots, speed {:.1})",
-                worker.id, worker.user, worker.host, worker.slots_available, worker.speed_score
-            );
-            reporter.verbose(&format!(
-                "[RCH] selected {}@{} (slots {}, speed {:.1})",
-                worker.user, worker.host, worker.slots_available, worker.speed_score
-            ));
-
-            // Execute remote compilation pipeline
-            let remote_start = Instant::now();
-            let result = execute_remote_compilation(
-                &worker,
+            handle_selection_response(
+                response,
                 command,
-                config.transfer.clone(),
-                config.environment.allowlist.clone(),
-                &config.compilation,
+                &config,
+                &reporter,
                 toolchain.as_ref(),
                 classification.kind,
-                &reporter,
-                &config.general.socket_path,
-                config.output.color_mode,
+                &project,
+                estimated_cores,
             )
-            .await;
-            let remote_elapsed = remote_start.elapsed();
-
-            // Always release slots after execution
-            if let Err(e) =
-                release_worker(&config.general.socket_path, &worker.id, estimated_cores).await
+            .await
+        }
+        Err(e) => {
+            warn!(
+                target: "rch::hook::autostart",
+                "Failed to query daemon: {}",
+                e
+            );
+            match try_auto_start_daemon(
+                &config.self_healing,
+                Path::new(&config.general.socket_path),
+            )
+            .await
             {
-                warn!("Failed to release worker slots: {}", e);
-            }
-
-            match result {
-                Ok(result) => {
-                    if result.exit_code == 0 {
-                        // Command succeeded remotely - deny local execution
-                        // The agent sees output via stderr, artifacts are local
-                        info!("Remote compilation succeeded, denying local execution");
-                        reporter.summary(&format!(
-                            "[RCH] remote {} ({})",
-                            worker.id,
-                            format_duration_ms(remote_elapsed)
-                        ));
-
-                        // Record successful build for cache affinity
-                        if let Err(e) =
-                            record_build(&config.general.socket_path, &worker.id, &project).await
-                        {
-                            warn!("Failed to record build: {}", e);
-                        }
-
-                        if !config.output.first_run_complete {
-                            let local_estimate =
-                                estimate_local_time_ms(result.duration_ms, worker.speed_score);
-                            emit_first_run_message(&worker, result.duration_ms, local_estimate);
-                            if let Err(e) = crate::config::set_first_run_complete(true) {
-                                warn!("Failed to persist first_run_complete: {}", e);
-                            }
-                        }
-
-                        HookOutput::deny(
-                            "RCH: Command executed successfully on remote worker".to_string(),
+                Ok(()) => match query_daemon(
+                    &config.general.socket_path,
+                    &project,
+                    estimated_cores,
+                    toolchain.as_ref(),
+                    required_runtime,
+                    classification_duration_us,
+                )
+                .await
+                {
+                    Ok(response) => {
+                        handle_selection_response(
+                            response,
+                            command,
+                            &config,
+                            &reporter,
+                            toolchain.as_ref(),
+                            classification.kind,
+                            &project,
+                            estimated_cores,
                         )
-                    } else if is_toolchain_failure(&result.stderr, result.exit_code) {
-                        // Toolchain failure - fall back to local execution
-                        warn!(
-                            "Remote toolchain failure detected (exit {}), falling back to local",
-                            result.exit_code
-                        );
-                        reporter
-                            .summary(&format!("[RCH] local (toolchain missing on {})", worker.id));
-                        HookOutput::allow()
-                    } else {
-                        // Command failed remotely - still deny to prevent re-execution
-                        // The agent saw the error output via stderr
-                        //
-                        // Exit code semantics:
-                        // - 101: Test failures (cargo test ran but tests failed)
-                        // - 1: Build/compilation error
-                        // - 128+N: Process killed by signal N
-                        let exit_code = result.exit_code;
-
-                        // Check for signal-killed processes (OOM, etc.)
-                        if let Some(signal) = is_signal_killed(exit_code) {
-                            warn!(
-                                "Remote command killed by signal {} ({}) on {}, denying local execution",
-                                signal,
-                                signal_name(signal),
-                                worker.id
-                            );
-                            reporter.summary(&format!(
-                                "[RCH] remote {} killed ({})",
-                                worker.id,
-                                signal_name(signal)
-                            ));
-                        } else if exit_code == EXIT_TEST_FAILURES {
-                            // Cargo test exit 101: tests ran but some failed
-                            info!(
-                                "Remote tests failed (exit 101) on {}, denying local re-execution",
-                                worker.id
-                            );
-                            reporter.summary(&format!("[RCH] remote {} tests failed", worker.id));
-                        } else if exit_code == EXIT_BUILD_ERROR {
-                            // Build/compilation error
-                            info!(
-                                "Remote build error (exit 1) on {}, denying local re-execution",
-                                worker.id
-                            );
-                            reporter.summary(&format!("[RCH] remote {} build error", worker.id));
-                        } else {
-                            // Other non-zero exit code
-                            info!(
-                                "Remote command failed (exit {}) on {}, denying local execution",
-                                exit_code, worker.id
-                            );
-                            reporter.summary(&format!(
-                                "[RCH] remote {} failed (exit {})",
-                                worker.id, exit_code
-                            ));
-                        }
-
-                        HookOutput::deny(format!(
-                            "RCH: Remote compilation failed with exit code {}",
-                            exit_code
-                        ))
+                        .await
                     }
-                }
-                Err(e) => {
-                    // Pipeline failed - fall back to local execution
+                    Err(err) => {
+                        warn!(
+                            target: "rch::hook::autostart",
+                            "Failed to query daemon after auto-start: {}",
+                            err
+                        );
+                        reporter.summary("[RCH] local (daemon unavailable)");
+                        HookOutput::allow()
+                    }
+                },
+                Err(auto_err) => {
                     warn!(
-                        "Remote execution pipeline failed: {}, falling back to local",
-                        e
+                        target: "rch::hook::autostart",
+                        "Failed to auto-start daemon: {}",
+                        auto_err
                     );
-                    reporter.summary("[RCH] local (remote pipeline failed)");
+                    warn!("Original daemon error: {}", e);
+                    reporter.summary("[RCH] local (daemon unavailable)");
                     HookOutput::allow()
                 }
             }
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // Pipeline wiring favors explicit params.
+async fn handle_selection_response(
+    response: SelectionResponse,
+    command: &str,
+    config: &rch_common::RchConfig,
+    reporter: &HookReporter,
+    toolchain: Option<&ToolchainInfo>,
+    classification_kind: Option<CompilationKind>,
+    project: &str,
+    estimated_cores: u32,
+) -> HookOutput {
+    // Check if a worker was assigned
+    let Some(worker) = response.worker else {
+        // No worker available - graceful fallback to local execution
+        warn!(
+            "⚠️ RCH: No remote workers available ({}), executing locally",
+            response.reason
+        );
+        reporter.summary(&format!("[RCH] local ({})", response.reason));
+        return HookOutput::allow();
+    };
+
+    info!(
+        "Selected worker: {} at {}@{} ({} slots, speed {:.1})",
+        worker.id, worker.user, worker.host, worker.slots_available, worker.speed_score
+    );
+    reporter.verbose(&format!(
+        "[RCH] selected {}@{} (slots {}, speed {:.1})",
+        worker.user, worker.host, worker.slots_available, worker.speed_score
+    ));
+
+    // Execute remote compilation pipeline
+    let remote_start = Instant::now();
+    let result = execute_remote_compilation(
+        &worker,
+        command,
+        config.transfer.clone(),
+        config.environment.allowlist.clone(),
+        &config.compilation,
+        toolchain,
+        classification_kind,
+        reporter,
+        &config.general.socket_path,
+        config.output.color_mode,
+        response.build_id,
+    )
+    .await;
+    let remote_elapsed = remote_start.elapsed();
+
+    // Always release slots after execution
+    if let Err(e) = release_worker(&config.general.socket_path, &worker.id, estimated_cores).await {
+        warn!("Failed to release worker slots: {}", e);
+    }
+
+    match result {
+        Ok(result) => {
+            if result.exit_code == 0 {
+                // Command succeeded remotely - deny local execution
+                // The agent sees output via stderr, artifacts are local
+                info!("Remote compilation succeeded, denying local execution");
+                reporter.summary(&format!(
+                    "[RCH] remote {} ({})",
+                    worker.id,
+                    format_duration_ms(remote_elapsed)
+                ));
+
+                // Record successful build for cache affinity
+                if let Err(e) = record_build(&config.general.socket_path, &worker.id, project).await
+                {
+                    warn!("Failed to record build: {}", e);
+                }
+
+                if !config.output.first_run_complete {
+                    let local_estimate =
+                        estimate_local_time_ms(result.duration_ms, worker.speed_score);
+                    emit_first_run_message(&worker, result.duration_ms, local_estimate);
+                    if let Err(e) = crate::config::set_first_run_complete(true) {
+                        warn!("Failed to persist first_run_complete: {}", e);
+                    }
+                }
+
+                HookOutput::deny("RCH: Command executed successfully on remote worker".to_string())
+            } else if is_toolchain_failure(&result.stderr, result.exit_code) {
+                // Toolchain failure - fall back to local execution
+                warn!(
+                    "Remote toolchain failure detected (exit {}), falling back to local",
+                    result.exit_code
+                );
+                reporter.summary(&format!("[RCH] local (toolchain missing on {})", worker.id));
+                HookOutput::allow()
+            } else {
+                // Command failed remotely - still deny to prevent re-execution
+                // The agent saw the error output via stderr
+                //
+                // Exit code semantics:
+                // - 101: Test failures (cargo test ran but tests failed)
+                // - 1: Build/compilation error
+                // - 128+N: Process killed by signal N
+                let exit_code = result.exit_code;
+
+                // Check for signal-killed processes (OOM, etc.)
+                if let Some(signal) = is_signal_killed(exit_code) {
+                    warn!(
+                        "Remote command killed by signal {} ({}) on {}, denying local execution",
+                        signal,
+                        signal_name(signal),
+                        worker.id
+                    );
+                    reporter.summary(&format!(
+                        "[RCH] remote {} killed ({})",
+                        worker.id,
+                        signal_name(signal)
+                    ));
+                } else if exit_code == EXIT_TEST_FAILURES {
+                    // Cargo test exit 101: tests ran but some failed
+                    info!(
+                        "Remote tests failed (exit 101) on {}, denying local re-execution",
+                        worker.id
+                    );
+                    reporter.summary(&format!("[RCH] remote {} tests failed", worker.id));
+                } else if exit_code == EXIT_BUILD_ERROR {
+                    // Build/compilation error
+                    info!(
+                        "Remote build error (exit 1) on {}, denying local re-execution",
+                        worker.id
+                    );
+                    reporter.summary(&format!("[RCH] remote {} build error", worker.id));
+                } else {
+                    // Other non-zero exit code
+                    info!(
+                        "Remote command failed (exit {}) on {}, denying local execution",
+                        exit_code, worker.id
+                    );
+                    reporter.summary(&format!(
+                        "[RCH] remote {} failed (exit {})",
+                        worker.id, exit_code
+                    ));
+                }
+
+                HookOutput::deny(format!(
+                    "RCH: Remote compilation failed with exit code {}",
+                    exit_code
+                ))
+            }
+        }
         Err(e) => {
-            warn!("Failed to query daemon: {}, allowing local execution", e);
-            reporter.summary("[RCH] local (daemon unavailable)");
+            // Pipeline failed - fall back to local execution
+            warn!(
+                "Remote execution pipeline failed: {}, falling back to local",
+                e
+            );
+            reporter.summary("[RCH] local (remote pipeline failed)");
             HookOutput::allow()
         }
     }
@@ -999,6 +1487,7 @@ async fn execute_remote_compilation(
     reporter: &HookReporter,
     socket_path: &str,
     color_mode: ColorMode,
+    build_id: Option<u64>,
 ) -> anyhow::Result<RemoteExecutionResult> {
     let worker_config = selected_worker_to_config(worker);
 
@@ -1008,6 +1497,16 @@ async fn execute_remote_compilation(
 
     let project_id = project_id_from_path(&project_root);
     let project_hash = compute_project_hash(&project_root);
+
+    let output_ctx = OutputContext::detect();
+    let console = RchConsole::with_context(output_ctx);
+    let feedback_visible = reporter.visibility != OutputVisibility::None && !console.is_machine();
+    let progress_enabled =
+        output_ctx.supports_rich() && reporter.visibility != OutputVisibility::None;
+
+    if feedback_visible {
+        emit_job_banner(&console, output_ctx, worker, build_id);
+    }
 
     info!(
         "Starting remote compilation pipeline for {} (hash: {})",
@@ -1032,7 +1531,24 @@ async fn execute_remote_compilation(
 
     // Step 1: Sync project to remote
     info!("Syncing project to worker {}...", worker_config.id);
-    let sync_result = pipeline.sync_to_remote(&worker_config).await?;
+    let mut upload_progress = if progress_enabled {
+        Some(TransferProgress::upload(
+            output_ctx,
+            "Syncing workspace",
+            reporter.visibility == OutputVisibility::None,
+        ))
+    } else {
+        None
+    };
+    let sync_result = if let Some(progress) = &mut upload_progress {
+        pipeline
+            .sync_to_remote_streaming(&worker_config, |line| {
+                progress.update_from_line(line);
+            })
+            .await?
+    } else {
+        pipeline.sync_to_remote(&worker_config).await?
+    };
     info!(
         "Sync complete: {} files, {} bytes in {}ms",
         sync_result.files_transferred, sync_result.bytes_transferred, sync_result.duration_ms
@@ -1041,16 +1557,60 @@ async fn execute_remote_compilation(
         "[RCH] sync done: {} files, {} bytes in {}ms",
         sync_result.files_transferred, sync_result.bytes_transferred, sync_result.duration_ms
     ));
+    if let Some(progress) = &mut upload_progress {
+        progress.apply_summary(sync_result.bytes_transferred, sync_result.files_transferred);
+        progress.finish();
+    }
 
     // Step 2: Execute command remotely with streaming output
     info!("Executing command remotely: {}", command);
     reporter.verbose(&format!("[RCH] exec start: {}", command));
 
     // Capture stderr for toolchain failure detection
-    let mut stderr_capture = String::new();
+    //
+    // `std::env::set_var` is unsafe in Rust 2024, but reading env is fine. For streaming,
+    // we need shared mutable state across stdout/stderr callbacks; use `Rc<RefCell<_>>`
+    // to avoid borrow-checker conflicts between the two closures.
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let stderr_capture_cell = Rc::new(RefCell::new(String::new()));
+
+    struct CompileUiState {
+        progress: Option<CompilationProgress>,
+        output: String,
+        output_truncated: bool,
+    }
+    let use_compile_progress = progress_enabled
+        && matches!(
+            kind,
+            Some(
+                CompilationKind::CargoBuild
+                    | CompilationKind::CargoCheck
+                    | CompilationKind::CargoClippy
+                    | CompilationKind::CargoDoc
+                    | CompilationKind::CargoBench
+            )
+        );
+    let ui_state = Rc::new(RefCell::new(CompileUiState {
+        progress: if use_compile_progress {
+            Some(CompilationProgress::new(
+                output_ctx,
+                worker_config.id.as_str().to_string(),
+                reporter.visibility == OutputVisibility::None,
+            ))
+        } else {
+            None
+        },
+        output: String::new(),
+        output_truncated: false,
+    }));
 
     // Stream stdout/stderr to our stderr so the agent sees the output
     let command_with_telemetry = wrap_command_with_telemetry(command, &worker_config.id);
+    let ui_state_stdout = Rc::clone(&ui_state);
+    let ui_state_stderr = Rc::clone(&ui_state);
+    let stderr_capture_stderr = Rc::clone(&stderr_capture_cell);
     let mut suppress_telemetry = false;
 
     let result = pipeline
@@ -1058,7 +1618,7 @@ async fn execute_remote_compilation(
             &worker_config,
             &command_with_telemetry,
             toolchain,
-            |line| {
+            move |line| {
                 if suppress_telemetry {
                     return;
                 }
@@ -1066,16 +1626,47 @@ async fn execute_remote_compilation(
                     suppress_telemetry = true;
                     return;
                 }
-                // Write stdout lines to stderr (hook stdout is for protocol)
-                eprint!("{}", line);
+
+                let mut state = ui_state_stdout.borrow_mut();
+                if let Some(progress) = state.progress.as_mut() {
+                    progress.update_from_line(line);
+                    if !state.output_truncated {
+                        const MAX_OUTPUT_BYTES: usize = 256 * 1024;
+                        if state.output.len() + line.len() <= MAX_OUTPUT_BYTES {
+                            state.output.push_str(line);
+                        } else {
+                            state.output_truncated = true;
+                        }
+                    }
+                } else {
+                    // Write stdout lines to stderr (hook stdout is for protocol)
+                    eprint!("{}", line);
+                }
             },
-            |line| {
+            move |line| {
                 // Write stderr lines to stderr and capture for analysis
-                eprint!("{}", line);
-                stderr_capture.push_str(line);
+                let mut state = ui_state_stderr.borrow_mut();
+                if let Some(progress) = state.progress.as_mut() {
+                    progress.update_from_line(line);
+                    if !state.output_truncated {
+                        const MAX_OUTPUT_BYTES: usize = 256 * 1024;
+                        if state.output.len() + line.len() <= MAX_OUTPUT_BYTES {
+                            state.output.push_str(line);
+                        } else {
+                            state.output_truncated = true;
+                        }
+                    }
+                } else {
+                    eprint!("{}", line);
+                }
+                drop(state);
+
+                stderr_capture_stderr.borrow_mut().push_str(line);
             },
         )
         .await?;
+
+    let stderr_capture = std::mem::take(&mut *stderr_capture_cell.borrow_mut());
 
     info!(
         "Remote command finished: exit={} in {}ms",
@@ -1086,15 +1677,59 @@ async fn execute_remote_compilation(
         result.exit_code, result.duration_ms
     ));
 
+    {
+        let mut state = ui_state.borrow_mut();
+
+        if let Some(progress) = state.progress.as_mut() {
+            if result.success() {
+                progress.finish();
+            } else {
+                let message = stderr_capture
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or("remote compilation failed");
+                progress.finish_error(message);
+            }
+        }
+
+        if use_compile_progress && !result.success() && !state.output.is_empty() {
+            eprintln!("{}", state.output);
+            if state.output_truncated {
+                eprintln!("[RCH] output truncated (increase buffer if needed)");
+            }
+        }
+    }
+
+    let mut artifacts_result: Option<SyncResult> = None;
+    let mut artifacts_failed = false;
     // Step 3: Retrieve artifacts
     if result.success() {
         info!("Retrieving build artifacts...");
         reporter.verbose("[RCH] artifacts: retrieving...");
         let artifact_patterns = get_artifact_patterns(kind);
-        match pipeline
-            .retrieve_artifacts(&worker_config, &artifact_patterns)
-            .await
-        {
+        let mut download_progress = if progress_enabled {
+            Some(TransferProgress::download(
+                output_ctx,
+                "Retrieving artifacts",
+                reporter.visibility == OutputVisibility::None,
+            ))
+        } else {
+            None
+        };
+
+        let retrieval = if let Some(progress) = &mut download_progress {
+            pipeline
+                .retrieve_artifacts_streaming(&worker_config, &artifact_patterns, |line| {
+                    progress.update_from_line(line);
+                })
+                .await
+        } else {
+            pipeline
+                .retrieve_artifacts(&worker_config, &artifact_patterns)
+                .await
+        };
+
+        match retrieval {
             Ok(artifact_result) => {
                 info!(
                     "Artifacts retrieved: {} files, {} bytes in {}ms",
@@ -1108,10 +1743,22 @@ async fn execute_remote_compilation(
                     artifact_result.bytes_transferred,
                     artifact_result.duration_ms
                 ));
+                if let Some(progress) = &mut download_progress {
+                    progress.apply_summary(
+                        artifact_result.bytes_transferred,
+                        artifact_result.files_transferred,
+                    );
+                    progress.finish();
+                }
+                artifacts_result = Some(artifact_result);
             }
             Err(e) => {
+                artifacts_failed = true;
                 warn!("Failed to retrieve artifacts: {}", e);
                 reporter.verbose("[RCH] artifacts failed (continuing)");
+                if let Some(progress) = &mut download_progress {
+                    progress.finish_error(&e.to_string());
+                }
                 // Continue anyway - compilation succeeded
             }
         }
@@ -1142,6 +1789,21 @@ async fn execute_remote_compilation(
         if let Err(e) = send_test_run(socket_path, &record).await {
             warn!("Failed to forward test run telemetry: {}", e);
         }
+    }
+
+    if feedback_visible {
+        render_compile_summary(
+            &console,
+            output_ctx,
+            worker,
+            build_id,
+            &sync_result,
+            result.duration_ms,
+            artifacts_result.as_ref(),
+            artifacts_failed,
+            cache_hit(&sync_result),
+            result.success(),
+        );
     }
 
     Ok(RemoteExecutionResult {

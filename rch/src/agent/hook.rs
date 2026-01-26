@@ -556,19 +556,34 @@ fn is_pre_tool_use_line(line: &str) -> bool {
 }
 
 fn is_pre_tool_use_rch(line: &str) -> bool {
-    let mut stripped = line.split('#').next().unwrap_or("").trim();
+    let stripped = line.split('#').next().unwrap_or("").trim();
     if !stripped.starts_with("pre_tool_use") {
         return false;
     }
 
-    let Some(value) = stripped.splitn(2, '=').nth(1) else {
+    let Some((_, value)) = stripped.split_once('=') else {
         return false;
     };
 
-    stripped = value.trim();
-    let stripped = stripped.trim_matches('"').trim_matches('\'');
+    let value = value.trim();
 
-    stripped == "rch"
+    // Handle string format: pre_tool_use = "rch"
+    if value.starts_with('"') || value.starts_with('\'') {
+        let unquoted = value.trim_matches('"').trim_matches('\'');
+        return unquoted == "rch";
+    }
+
+    // Handle array format: pre_tool_use = ["rch", "other"]
+    if value.starts_with('[') && value.ends_with(']') {
+        let inner = &value[1..value.len() - 1];
+        return inner.split(',').any(|item| {
+            let item = item.trim().trim_matches('"').trim_matches('\'');
+            item == "rch"
+        });
+    }
+
+    // Bare word (unlikely but handle it)
+    value == "rch"
 }
 
 fn ensure_trailing_newline(content: String) -> String {
@@ -713,5 +728,80 @@ mod tests {
             check_hook_status(AgentKind::Aider).unwrap(),
             HookStatus::NotSupported
         );
+    }
+
+    #[test]
+    fn test_is_pre_tool_use_rch_string_format() {
+        // Double quotes
+        assert!(is_pre_tool_use_rch("pre_tool_use = \"rch\""));
+        assert!(is_pre_tool_use_rch("  pre_tool_use = \"rch\"  "));
+        assert!(is_pre_tool_use_rch("pre_tool_use=\"rch\""));
+
+        // Single quotes
+        assert!(is_pre_tool_use_rch("pre_tool_use = 'rch'"));
+
+        // With comments
+        assert!(is_pre_tool_use_rch("pre_tool_use = \"rch\" # comment"));
+
+        // Not rch
+        assert!(!is_pre_tool_use_rch("pre_tool_use = \"other\""));
+        assert!(!is_pre_tool_use_rch("pre_tool_use = \"rch-extended\""));
+    }
+
+    #[test]
+    fn test_is_pre_tool_use_rch_array_format() {
+        // Array with rch
+        assert!(is_pre_tool_use_rch("pre_tool_use = [\"rch\"]"));
+        assert!(is_pre_tool_use_rch("pre_tool_use = [\"rch\", \"other\"]"));
+        assert!(is_pre_tool_use_rch("pre_tool_use = [\"other\", \"rch\"]"));
+        assert!(is_pre_tool_use_rch("pre_tool_use = ['rch', 'other']"));
+
+        // Array without rch
+        assert!(!is_pre_tool_use_rch("pre_tool_use = [\"other\"]"));
+        assert!(!is_pre_tool_use_rch("pre_tool_use = [\"foo\", \"bar\"]"));
+    }
+
+    #[test]
+    fn test_is_pre_tool_use_line() {
+        assert!(is_pre_tool_use_line("pre_tool_use = \"rch\""));
+        assert!(is_pre_tool_use_line("  pre_tool_use = \"rch\""));
+        assert!(!is_pre_tool_use_line("# pre_tool_use = \"rch\""));
+        assert!(!is_pre_tool_use_line("other_key = \"value\""));
+    }
+
+    #[test]
+    fn test_find_toml_section_range() {
+        let lines = vec![
+            "# comment",
+            "[hooks]",
+            "pre_tool_use = \"rch\"",
+            "",
+            "[other]",
+            "key = \"value\"",
+        ];
+
+        let range = find_toml_section_range(&lines, "hooks");
+        assert_eq!(range, Some((1, 4)));
+
+        let range = find_toml_section_range(&lines, "other");
+        assert_eq!(range, Some((4, 6)));
+
+        let range = find_toml_section_range(&lines, "missing");
+        assert_eq!(range, None);
+    }
+
+    #[test]
+    fn test_find_toml_section_range_at_end() {
+        let lines = vec!["[hooks]", "pre_tool_use = \"rch\""];
+
+        let range = find_toml_section_range(&lines, "hooks");
+        assert_eq!(range, Some((0, 2)));
+    }
+
+    #[test]
+    fn test_ensure_trailing_newline() {
+        assert_eq!(ensure_trailing_newline("foo".to_string()), "foo\n");
+        assert_eq!(ensure_trailing_newline("foo\n".to_string()), "foo\n");
+        assert_eq!(ensure_trailing_newline("".to_string()), "\n");
     }
 }

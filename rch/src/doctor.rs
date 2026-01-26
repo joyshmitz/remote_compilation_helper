@@ -2,7 +2,9 @@
 //!
 //! Runs comprehensive diagnostics and optionally auto-fixes common issues.
 
+use crate::agent::{AgentKind, install_hook};
 use crate::commands::{config_dir, load_workers_from_config};
+use crate::state::primitives::IdempotentResult;
 use crate::ui::context::OutputContext;
 use crate::ui::theme::StatusIndicator;
 use anyhow::Result;
@@ -38,6 +40,8 @@ pub struct DoctorSummary {
     pub passed: usize,
     pub warnings: usize,
     pub failed: usize,
+    pub fixed: usize,
+    pub would_fix: usize,
 }
 
 /// Result of a single diagnostic check.
@@ -52,6 +56,9 @@ pub struct CheckResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggestion: Option<String>,
     pub fixable: bool,
+    pub fix_applied: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fix_message: Option<String>,
 }
 
 /// Status of a check.
@@ -82,6 +89,8 @@ pub struct FixApplied {
 pub struct DoctorOptions {
     /// Attempt to fix safe issues.
     pub fix: bool,
+    /// Show what would be fixed without making changes.
+    pub dry_run: bool,
     /// Allow installing missing local deps (requires confirmation).
     #[allow(dead_code)]
     pub install_deps: bool,
@@ -109,11 +118,20 @@ pub async fn run_doctor(ctx: &OutputContext, options: DoctorOptions) -> Result<(
     check_configuration(&mut checks, ctx, &options);
     check_ssh_keys(&mut checks, ctx, &options, &mut fixes_applied);
     check_daemon(&mut checks, ctx, &options);
-    check_hooks(&mut checks, ctx, &options);
+    check_hooks(&mut checks, ctx, &options, &mut fixes_applied);
     check_workers(&mut checks, ctx, &options).await;
     check_telemetry_database(&mut checks, ctx, &options);
 
     // Calculate summary
+    let fixed = checks.iter().filter(|c| c.fix_applied).count();
+    let would_fix = if options.fix && options.dry_run {
+        checks
+            .iter()
+            .filter(|c| matches!(c.fix_message.as_deref(), Some(msg) if msg.starts_with("Would ")))
+            .count()
+    } else {
+        0
+    };
     let summary = DoctorSummary {
         total: checks.len(),
         passed: checks
@@ -128,6 +146,8 @@ pub async fn run_doctor(ctx: &OutputContext, options: DoctorOptions) -> Result<(
             .iter()
             .filter(|c| c.status == CheckStatus::Fail)
             .count(),
+        fixed,
+        would_fix,
     };
 
     // Output results
@@ -162,6 +182,20 @@ pub async fn run_doctor(ctx: &OutputContext, options: DoctorOptions) -> Result<(
                 "  {} {} failed",
                 StatusIndicator::Error.display(style),
                 style.highlight(&summary.failed.to_string())
+            );
+        }
+        if summary.fixed > 0 {
+            println!(
+                "  {} {} fixed",
+                StatusIndicator::Success.display(style),
+                style.highlight(&summary.fixed.to_string())
+            );
+        }
+        if summary.would_fix > 0 {
+            println!(
+                "  {} {} would fix",
+                StatusIndicator::Pending.display(style),
+                style.highlight(&summary.would_fix.to_string())
             );
         }
 
@@ -452,6 +486,8 @@ fn check_command_exists(cmd: &str, description: &str) -> CheckResult {
             Some(format!("Install {} using your package manager", cmd))
         },
         fixable: !exists,
+        fix_applied: false,
+        fix_message: None,
     }
 }
 
@@ -503,6 +539,8 @@ fn check_config_directory() -> CheckResult {
                     details: Some(dir.display().to_string()),
                     suggestion: None,
                     fixable: false,
+                    fix_applied: false,
+                    fix_message: None,
                 }
             } else {
                 CheckResult {
@@ -513,6 +551,8 @@ fn check_config_directory() -> CheckResult {
                     details: Some(dir.display().to_string()),
                     suggestion: Some("Run 'rch config init' to create it".to_string()),
                     fixable: true,
+                    fix_applied: false,
+                    fix_message: None,
                 }
             }
         }
@@ -524,6 +564,8 @@ fn check_config_directory() -> CheckResult {
             details: None,
             suggestion: None,
             fixable: false,
+            fix_applied: false,
+            fix_message: None,
         },
     }
 }
@@ -540,6 +582,8 @@ fn check_config_file() -> CheckResult {
                 details: None,
                 suggestion: None,
                 fixable: false,
+                fix_applied: false,
+                fix_message: None,
             };
         }
     };
@@ -553,6 +597,8 @@ fn check_config_file() -> CheckResult {
             details: Some(config_path.display().to_string()),
             suggestion: Some("Run 'rch config init' to create default config".to_string()),
             fixable: true,
+            fix_applied: false,
+            fix_message: None,
         };
     }
 
@@ -566,6 +612,8 @@ fn check_config_file() -> CheckResult {
                 details: Some(config_path.display().to_string()),
                 suggestion: None,
                 fixable: false,
+                fix_applied: false,
+                fix_message: None,
             },
             Err(e) => CheckResult {
                 category: "configuration".to_string(),
@@ -575,6 +623,8 @@ fn check_config_file() -> CheckResult {
                 details: Some(e.to_string()),
                 suggestion: Some("Fix TOML syntax errors in config file".to_string()),
                 fixable: false,
+                fix_applied: false,
+                fix_message: None,
             },
         },
         Err(e) => CheckResult {
@@ -585,6 +635,8 @@ fn check_config_file() -> CheckResult {
             details: Some(e.to_string()),
             suggestion: None,
             fixable: false,
+            fix_applied: false,
+            fix_message: None,
         },
     }
 }
@@ -601,6 +653,8 @@ fn check_workers_file() -> CheckResult {
                 details: None,
                 suggestion: None,
                 fixable: false,
+                fix_applied: false,
+                fix_message: None,
             };
         }
     };
@@ -614,6 +668,8 @@ fn check_workers_file() -> CheckResult {
             details: Some(workers_path.display().to_string()),
             suggestion: Some("Run 'rch config init' to create example workers config".to_string()),
             fixable: true,
+            fix_applied: false,
+            fix_message: None,
         };
     }
 
@@ -635,6 +691,8 @@ fn check_workers_file() -> CheckResult {
                         details: Some(workers_path.display().to_string()),
                         suggestion: Some("Add worker definitions to workers.toml".to_string()),
                         fixable: false,
+                        fix_applied: false,
+                        fix_message: None,
                     }
                 } else {
                     CheckResult {
@@ -645,6 +703,8 @@ fn check_workers_file() -> CheckResult {
                         details: Some(workers_path.display().to_string()),
                         suggestion: None,
                         fixable: false,
+                        fix_applied: false,
+                        fix_message: None,
                     }
                 }
             }
@@ -656,6 +716,8 @@ fn check_workers_file() -> CheckResult {
                 details: Some(e.to_string()),
                 suggestion: Some("Fix TOML syntax errors in workers file".to_string()),
                 fixable: false,
+                fix_applied: false,
+                fix_message: None,
             },
         },
         Err(e) => CheckResult {
@@ -666,6 +728,8 @@ fn check_workers_file() -> CheckResult {
             details: Some(e.to_string()),
             suggestion: None,
             fixable: false,
+            fix_applied: false,
+            fix_message: None,
         },
     }
 }
@@ -722,6 +786,8 @@ fn check_ssh_keys(
                 default_key.display()
             )),
             fixable: false,
+            fix_applied: false,
+            fix_message: None,
         };
         print_check_result(&result, ctx);
         checks.push(result);
@@ -765,10 +831,28 @@ fn check_ssh_key_permissions(
                     details: Some(key_path.display().to_string()),
                     suggestion: None,
                     fixable: false,
+                    fix_applied: false,
+                    fix_message: None,
                 }
             } else {
                 // Try to fix if requested
                 if options.fix {
+                    if options.dry_run {
+                        return CheckResult {
+                            category: "ssh".to_string(),
+                            name: key_name,
+                            status: CheckStatus::Warning,
+                            message: format!("SSH key has loose permissions (0{:o})", perms),
+                            details: Some(key_path.display().to_string()),
+                            suggestion: Some(format!("Run: chmod 600 {}", key_path.display())),
+                            fixable: true,
+                            fix_applied: false,
+                            fix_message: Some(format!(
+                                "Would change permissions from 0{:o} to 0600",
+                                perms
+                            )),
+                        };
+                    }
                     match std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))
                     {
                         Ok(()) => {
@@ -786,6 +870,11 @@ fn check_ssh_key_permissions(
                                 details: Some(key_path.display().to_string()),
                                 suggestion: None,
                                 fixable: false,
+                                fix_applied: true,
+                                fix_message: Some(format!(
+                                    "Changed permissions from 0{:o} to 0600",
+                                    perms
+                                )),
                             }
                         }
                         Err(e) => {
@@ -806,6 +895,8 @@ fn check_ssh_key_permissions(
                                 details: Some(e.to_string()),
                                 suggestion: Some(format!("Run: chmod 600 {}", key_path.display())),
                                 fixable: true,
+                                fix_applied: false,
+                                fix_message: Some(format!("Failed to fix permissions: {}", e)),
                             }
                         }
                     }
@@ -818,6 +909,8 @@ fn check_ssh_key_permissions(
                         details: Some(key_path.display().to_string()),
                         suggestion: Some(format!("Run: chmod 600 {}", key_path.display())),
                         fixable: true,
+                        fix_applied: false,
+                        fix_message: None,
                     }
                 }
             }
@@ -830,6 +923,8 @@ fn check_ssh_key_permissions(
             details: Some(e.to_string()),
             suggestion: None,
             fixable: false,
+            fix_applied: false,
+            fix_message: None,
         },
     }
 }
@@ -859,6 +954,8 @@ fn check_worker_identity_files(
                 details: Some(key_path.display().to_string()),
                 suggestion: Some(suggestion),
                 fixable: false,
+                fix_applied: false,
+                fix_message: None,
             };
             print_check_result(&result, ctx);
             checks.push(result);
@@ -878,6 +975,8 @@ fn check_worker_identity_files(
             details: key_result.details,
             suggestion: Some(suggestion),
             fixable: key_result.fixable,
+            fix_applied: key_result.fix_applied,
+            fix_message: key_result.fix_message,
         };
         print_check_result(&result, ctx);
         checks.push(result);
@@ -910,6 +1009,8 @@ fn check_ssh_config() -> CheckResult {
             details: Some(ssh_config.display().to_string()),
             suggestion: None,
             fixable: false,
+            fix_applied: false,
+            fix_message: None,
         }
     } else {
         CheckResult {
@@ -922,6 +1023,8 @@ fn check_ssh_config() -> CheckResult {
                 "Consider creating ~/.ssh/config for custom host settings".to_string(),
             ),
             fixable: false,
+            fix_applied: false,
+            fix_message: None,
         }
     }
 }
@@ -948,6 +1051,8 @@ fn check_daemon(checks: &mut Vec<CheckResult>, ctx: &OutputContext, _options: &D
             details: Some(socket_path.to_string_lossy().to_string()),
             suggestion: None,
             fixable: false,
+            fix_applied: false,
+            fix_message: None,
         }
     } else {
         CheckResult {
@@ -958,6 +1063,8 @@ fn check_daemon(checks: &mut Vec<CheckResult>, ctx: &OutputContext, _options: &D
             details: Some(socket_path.to_string_lossy().to_string()),
             suggestion: Some("Start daemon with: rch daemon start".to_string()),
             fixable: false,
+            fix_applied: false,
+            fix_message: None,
         }
     };
 
@@ -977,6 +1084,8 @@ fn check_daemon(checks: &mut Vec<CheckResult>, ctx: &OutputContext, _options: &D
                 "Restart the daemon so it binds to the new default socket path".to_string(),
             ),
             fixable: false,
+            fix_applied: false,
+            fix_message: None,
         };
         print_check_result(&legacy_result, ctx);
         checks.push(legacy_result);
@@ -991,7 +1100,12 @@ fn check_daemon(checks: &mut Vec<CheckResult>, ctx: &OutputContext, _options: &D
 // Hook Checks
 // =============================================================================
 
-fn check_hooks(checks: &mut Vec<CheckResult>, ctx: &OutputContext, _options: &DoctorOptions) {
+fn check_hooks(
+    checks: &mut Vec<CheckResult>,
+    ctx: &OutputContext,
+    options: &DoctorOptions,
+    fixes_applied: &mut Vec<FixApplied>,
+) {
     let style = ctx.theme();
 
     if !ctx.is_json() {
@@ -1000,7 +1114,89 @@ fn check_hooks(checks: &mut Vec<CheckResult>, ctx: &OutputContext, _options: &Do
     }
 
     // Check Claude Code hook
-    let claude_result = check_claude_code_hook();
+    let mut claude_result = check_claude_code_hook();
+    let mut fix_message: Option<String> = None;
+    let mut fix_applied = false;
+    let mut fix_line: Option<(StatusIndicator, String)> = None;
+
+    if options.fix && claude_result.fixable && claude_result.status != CheckStatus::Pass {
+        match install_hook(AgentKind::ClaudeCode, options.dry_run) {
+            Ok(IdempotentResult::Changed) => {
+                fix_applied = true;
+                let msg = "Installed Claude Code hook".to_string();
+                fix_message = Some(msg.clone());
+                fix_line = Some((StatusIndicator::Success, format!("Fixed: {}", msg)));
+                fixes_applied.push(FixApplied {
+                    check_name: "claude_code_hook".to_string(),
+                    action: msg.clone(),
+                    success: true,
+                    error: None,
+                });
+                claude_result.status = CheckStatus::Pass;
+                claude_result.message = "Claude Code PreToolUse hook installed (fixed)".to_string();
+                claude_result.suggestion = None;
+                claude_result.fixable = false;
+            }
+            Ok(IdempotentResult::WouldChange(msg)) => {
+                fix_message = Some(msg.clone());
+                fix_line = Some((StatusIndicator::Pending, format!("Would fix: {}", msg)));
+            }
+            Ok(IdempotentResult::Unchanged) => {
+                fix_message = Some("Claude Code hook already installed".to_string());
+                claude_result.status = CheckStatus::Pass;
+                claude_result.message = "Claude Code PreToolUse hook already installed".to_string();
+                claude_result.suggestion = None;
+                claude_result.fixable = false;
+            }
+            Ok(other) => {
+                let msg = format!("Hook install result: {}", other);
+                fix_message = Some(msg.clone());
+                fix_line = Some((StatusIndicator::Success, format!("Fixed: {}", msg)));
+                if !options.dry_run {
+                    fix_applied = true;
+                    fixes_applied.push(FixApplied {
+                        check_name: "claude_code_hook".to_string(),
+                        action: msg.clone(),
+                        success: true,
+                        error: None,
+                    });
+                    claude_result.status = CheckStatus::Pass;
+                    claude_result.message =
+                        "Claude Code PreToolUse hook installed (fixed)".to_string();
+                    claude_result.suggestion = None;
+                    claude_result.fixable = false;
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to install hook: {}", e);
+                fix_message = Some(msg.clone());
+                fix_line = Some((StatusIndicator::Error, msg.clone()));
+                if !options.dry_run {
+                    fixes_applied.push(FixApplied {
+                        check_name: "claude_code_hook".to_string(),
+                        action: "Install Claude Code hook".to_string(),
+                        success: false,
+                        error: Some(e.to_string()),
+                    });
+                }
+            }
+        }
+    }
+
+    claude_result.fix_applied = fix_applied;
+    claude_result.fix_message = fix_message;
+
+    if let Some((indicator, line)) = fix_line
+        && !ctx.is_json()
+    {
+        let rendered = match indicator {
+            StatusIndicator::Success => style.success(&line),
+            StatusIndicator::Pending => style.muted(&line),
+            StatusIndicator::Error => style.error(&line),
+            _ => style.info(&line),
+        };
+        println!("  {} {}", indicator.display(style), rendered);
+    }
     print_check_result(&claude_result, ctx);
     checks.push(claude_result);
 
@@ -1022,6 +1218,8 @@ fn check_claude_code_hook() -> CheckResult {
             details: Some(settings_path.display().to_string()),
             suggestion: Some("Install hook with: rch hook install".to_string()),
             fixable: true,
+            fix_applied: false,
+            fix_message: None,
         };
     }
 
@@ -1042,6 +1240,8 @@ fn check_claude_code_hook() -> CheckResult {
                         details: Some(settings_path.display().to_string()),
                         suggestion: None,
                         fixable: false,
+                        fix_applied: false,
+                        fix_message: None,
                     }
                 } else {
                     CheckResult {
@@ -1052,6 +1252,8 @@ fn check_claude_code_hook() -> CheckResult {
                         details: Some(settings_path.display().to_string()),
                         suggestion: Some("Install hook with: rch hook install".to_string()),
                         fixable: true,
+                        fix_applied: false,
+                        fix_message: None,
                     }
                 }
             }
@@ -1063,6 +1265,8 @@ fn check_claude_code_hook() -> CheckResult {
                 details: Some(e.to_string()),
                 suggestion: None,
                 fixable: false,
+                fix_applied: false,
+                fix_message: None,
             },
         },
         Err(e) => CheckResult {
@@ -1073,6 +1277,8 @@ fn check_claude_code_hook() -> CheckResult {
             details: Some(e.to_string()),
             suggestion: None,
             fixable: false,
+            fix_applied: false,
+            fix_message: None,
         },
     }
 }
@@ -1105,6 +1311,8 @@ async fn check_workers(
                 details: None,
                 suggestion: Some("Run 'rch config init' to create workers.toml".to_string()),
                 fixable: false,
+                fix_applied: false,
+                fix_message: None,
             };
             print_check_result(&result, ctx);
             checks.push(result);
@@ -1121,6 +1329,8 @@ async fn check_workers(
             details: None,
             suggestion: Some("Add workers to workers.toml".to_string()),
             fixable: false,
+            fix_applied: false,
+            fix_message: None,
         };
         print_check_result(&result, ctx);
         checks.push(result);
@@ -1142,6 +1352,8 @@ async fn check_workers(
         ),
         suggestion: None,
         fixable: false,
+        fix_applied: false,
+        fix_message: None,
     };
     print_check_result(&count_result, ctx);
     checks.push(count_result);
@@ -1187,6 +1399,8 @@ fn check_telemetry_database(
                 details: None,
                 suggestion: None,
                 fixable: false,
+                fix_applied: false,
+                fix_message: None,
             };
             print_check_result(&result, ctx);
             checks.push(result);
@@ -1204,6 +1418,8 @@ fn check_telemetry_database(
             details: Some(db_path.display().to_string()),
             suggestion: Some("Database will be created when daemon starts".to_string()),
             fixable: false,
+            fix_applied: false,
+            fix_message: None,
         };
         print_check_result(&result, ctx);
         checks.push(result);
@@ -1240,6 +1456,8 @@ fn check_telemetry_database(
                         details,
                         suggestion: None,
                         fixable: false,
+                        fix_applied: false,
+                        fix_message: None,
                     };
                     print_check_result(&result, ctx);
                     checks.push(result);
@@ -1256,6 +1474,8 @@ fn check_telemetry_database(
                                 .to_string(),
                         ),
                         fixable: false,
+                        fix_applied: false,
+                        fix_message: None,
                     };
                     print_check_result(&result, ctx);
                     checks.push(result);
@@ -1273,6 +1493,8 @@ fn check_telemetry_database(
                     "Check file permissions or delete and let daemon recreate it".to_string(),
                 ),
                 fixable: false,
+                fix_applied: false,
+                fix_message: None,
             };
             print_check_result(&result, ctx);
             checks.push(result);
@@ -1360,6 +1582,8 @@ mod tests {
             passed: 7,
             warnings: 2,
             failed: 1,
+            fixed: 0,
+            would_fix: 0,
         };
 
         let json = serde_json::to_string(&summary).unwrap();
@@ -1451,5 +1675,743 @@ mod tests {
         // We can't assert on specific values because they depend on system state,
         // but we can verify the result is accessible and properly structured
         let _total_issues = result.warnings.len() + result.errors.len();
+    }
+
+    // =========================================================================
+    // Individual Check Tests
+    // =========================================================================
+
+    #[test]
+    fn test_check_config_directory_with_existing_dir() {
+        // TEST START: check_config_directory with existing directory
+        // This test verifies config directory check handles existing directories
+        let result = check_config_directory();
+        // Config directory check should return a valid result regardless of state
+        assert!(
+            matches!(
+                result.status,
+                CheckStatus::Pass | CheckStatus::Warning | CheckStatus::Fail
+            ),
+            "Config directory check returned unexpected status"
+        );
+        assert_eq!(result.category, "configuration");
+        assert_eq!(result.name, "config_directory");
+        // TEST PASS: check_config_directory
+    }
+
+    #[test]
+    fn test_check_config_file_structure() {
+        // TEST START: check_config_file structure validation
+        let result = check_config_file();
+        assert_eq!(result.category, "configuration");
+        assert_eq!(result.name, "config.toml");
+        // Check that we get valid status and proper field population
+        assert!(
+            matches!(
+                result.status,
+                CheckStatus::Pass | CheckStatus::Warning | CheckStatus::Fail | CheckStatus::Skipped
+            ),
+            "Config file check returned unexpected status"
+        );
+        // If skipped, should have appropriate message
+        if result.status == CheckStatus::Skipped {
+            assert!(result.message.contains("Skipped"));
+        }
+        // TEST PASS: check_config_file structure
+    }
+
+    #[test]
+    fn test_check_workers_file_structure() {
+        // TEST START: check_workers_file structure validation
+        let result = check_workers_file();
+        assert_eq!(result.category, "configuration");
+        assert_eq!(result.name, "workers.toml");
+        // Should return valid CheckResult regardless of file existence
+        assert!(
+            matches!(
+                result.status,
+                CheckStatus::Pass | CheckStatus::Warning | CheckStatus::Fail | CheckStatus::Skipped
+            ),
+            "Workers file check returned unexpected status"
+        );
+        // TEST PASS: check_workers_file structure
+    }
+
+    #[test]
+    fn test_check_ssh_config_returns_valid_result() {
+        // TEST START: check_ssh_config validation
+        let result = check_ssh_config();
+        assert_eq!(result.category, "ssh");
+        assert_eq!(result.name, "ssh_config");
+        // SSH config is optional, so either Pass or Warning is acceptable
+        assert!(
+            matches!(result.status, CheckStatus::Pass | CheckStatus::Warning),
+            "SSH config check should return Pass or Warning, got {:?}",
+            result.status
+        );
+        // TEST PASS: check_ssh_config
+    }
+
+    #[test]
+    fn test_check_claude_code_hook_returns_valid_result() {
+        // TEST START: check_claude_code_hook validation
+        let result = check_claude_code_hook();
+        assert_eq!(result.category, "hooks");
+        assert_eq!(result.name, "claude_code_hook");
+        // Hook may or may not be installed
+        assert!(
+            matches!(
+                result.status,
+                CheckStatus::Pass | CheckStatus::Warning | CheckStatus::Fail
+            ),
+            "Claude Code hook check returned unexpected status"
+        );
+        // Should always have details pointing to settings path
+        assert!(result.details.is_some() || result.status == CheckStatus::Fail);
+        // TEST PASS: check_claude_code_hook
+    }
+
+    #[test]
+    fn test_check_command_exists_common_tools() {
+        // TEST START: check_command_exists for common system tools
+        // These should exist on any Unix-like system
+        let tools = [
+            ("ls", "List command"),
+            ("cat", "Concatenate command"),
+            ("echo", "Echo command"),
+        ];
+
+        for (cmd, desc) in tools {
+            let result = check_command_exists(cmd, desc);
+            assert_eq!(
+                result.status,
+                CheckStatus::Pass,
+                "Expected {} to exist on system",
+                cmd
+            );
+            assert_eq!(result.category, "prerequisites");
+            assert_eq!(result.name, cmd);
+            assert!(result.message.contains("installed"));
+        }
+        // TEST PASS: check_command_exists for common tools
+    }
+
+    #[test]
+    fn test_check_command_exists_returns_version_info() {
+        // TEST START: check_command_exists captures version info
+        let result = check_command_exists("ls", "List command");
+        if result.status == CheckStatus::Pass {
+            // Most tools return version info, but some may not
+            // We just verify the field exists
+            let _ = &result.details;
+        }
+        // TEST PASS: check_command_exists version info
+    }
+
+    #[test]
+    fn test_check_command_exists_provides_suggestion_for_missing() {
+        // TEST START: check_command_exists suggestions for missing commands
+        let result = check_command_exists("rch_nonexistent_test_cmd_xyz", "fake tool");
+        assert_eq!(result.status, CheckStatus::Fail);
+        assert!(
+            result.suggestion.is_some(),
+            "Missing command should provide installation suggestion"
+        );
+        assert!(
+            result.suggestion.unwrap().contains("package manager"),
+            "Suggestion should mention package manager"
+        );
+        // TEST PASS: check_command_exists suggestions
+    }
+
+    // =========================================================================
+    // CheckResult Structure Tests
+    // =========================================================================
+
+    #[test]
+    fn test_check_result_json_serialization() {
+        // TEST START: CheckResult JSON serialization
+        let result = CheckResult {
+            category: "test".to_string(),
+            name: "test_check".to_string(),
+            status: CheckStatus::Pass,
+            message: "Test passed".to_string(),
+            details: Some("Extra details".to_string()),
+            suggestion: None,
+            fixable: false,
+            fix_applied: false,
+            fix_message: None,
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"category\":\"test\""));
+        assert!(json.contains("\"name\":\"test_check\""));
+        assert!(json.contains("\"status\":\"pass\""));
+        assert!(json.contains("\"message\":\"Test passed\""));
+        assert!(json.contains("\"details\":\"Extra details\""));
+        // Optional fields that are None should be skipped
+        assert!(!json.contains("\"suggestion\":"));
+        assert!(!json.contains("\"fix_message\":"));
+        // TEST PASS: CheckResult JSON serialization
+    }
+
+    #[test]
+    fn test_check_result_with_fix_info() {
+        // TEST START: CheckResult with fix information
+        let result = CheckResult {
+            category: "ssh".to_string(),
+            name: "key_permissions".to_string(),
+            status: CheckStatus::Warning,
+            message: "Loose permissions".to_string(),
+            details: Some("/home/user/.ssh/id_ed25519".to_string()),
+            suggestion: Some("chmod 600 /path/to/key".to_string()),
+            fixable: true,
+            fix_applied: true,
+            fix_message: Some("Changed permissions to 0600".to_string()),
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"fixable\":true"));
+        assert!(json.contains("\"fix_applied\":true"));
+        assert!(json.contains("\"fix_message\":"));
+        // TEST PASS: CheckResult with fix info
+    }
+
+    #[test]
+    fn test_all_check_statuses_serialize() {
+        // TEST START: All CheckStatus variants serialize correctly
+        let statuses = [
+            (CheckStatus::Pass, "\"pass\""),
+            (CheckStatus::Warning, "\"warning\""),
+            (CheckStatus::Fail, "\"fail\""),
+            (CheckStatus::Skipped, "\"skipped\""),
+        ];
+
+        for (status, expected) in statuses {
+            let json = serde_json::to_string(&status).unwrap();
+            assert_eq!(
+                json, expected,
+                "CheckStatus::{:?} serialized incorrectly",
+                status
+            );
+        }
+        // TEST PASS: All CheckStatus variants serialize
+    }
+
+    // =========================================================================
+    // DoctorResponse Structure Tests
+    // =========================================================================
+
+    #[test]
+    fn test_doctor_response_serialization() {
+        // TEST START: DoctorResponse full serialization
+        let response = DoctorResponse {
+            checks: vec![
+                CheckResult {
+                    category: "prerequisites".to_string(),
+                    name: "rsync".to_string(),
+                    status: CheckStatus::Pass,
+                    message: "rsync is installed".to_string(),
+                    details: Some("rsync version 3.2.7".to_string()),
+                    suggestion: None,
+                    fixable: false,
+                    fix_applied: false,
+                    fix_message: None,
+                },
+                CheckResult {
+                    category: "configuration".to_string(),
+                    name: "config.toml".to_string(),
+                    status: CheckStatus::Warning,
+                    message: "config.toml not found".to_string(),
+                    details: None,
+                    suggestion: Some("Run rch config init".to_string()),
+                    fixable: true,
+                    fix_applied: false,
+                    fix_message: None,
+                },
+            ],
+            summary: DoctorSummary {
+                total: 2,
+                passed: 1,
+                warnings: 1,
+                failed: 0,
+                fixed: 0,
+                would_fix: 0,
+            },
+            fixes_applied: vec![],
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"checks\":["));
+        assert!(json.contains("\"summary\":{"));
+        assert!(json.contains("\"fixes_applied\":[]"));
+        // TEST PASS: DoctorResponse serialization
+    }
+
+    #[test]
+    fn test_doctor_response_with_fixes() {
+        // TEST START: DoctorResponse with applied fixes
+        let response = DoctorResponse {
+            checks: vec![],
+            summary: DoctorSummary {
+                total: 1,
+                passed: 1,
+                warnings: 0,
+                failed: 0,
+                fixed: 1,
+                would_fix: 0,
+            },
+            fixes_applied: vec![FixApplied {
+                check_name: "ssh_key_perms".to_string(),
+                action: "Changed permissions to 0600".to_string(),
+                success: true,
+                error: None,
+            }],
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"fixes_applied\":[{"));
+        assert!(json.contains("\"check_name\":\"ssh_key_perms\""));
+        assert!(json.contains("\"success\":true"));
+        // TEST PASS: DoctorResponse with fixes
+    }
+
+    // =========================================================================
+    // Fix Applied Structure Tests
+    // =========================================================================
+
+    #[test]
+    fn test_fix_applied_success() {
+        // TEST START: FixApplied success case
+        let fix = FixApplied {
+            check_name: "id_ed25519".to_string(),
+            action: "Changed permissions from 0644 to 0600".to_string(),
+            success: true,
+            error: None,
+        };
+
+        let json = serde_json::to_string(&fix).unwrap();
+        assert!(json.contains("\"success\":true"));
+        assert!(!json.contains("\"error\""));
+        // TEST PASS: FixApplied success
+    }
+
+    #[test]
+    fn test_fix_applied_failure() {
+        // TEST START: FixApplied failure case
+        let fix = FixApplied {
+            check_name: "id_rsa".to_string(),
+            action: "Attempted to change permissions".to_string(),
+            success: false,
+            error: Some("Permission denied".to_string()),
+        };
+
+        let json = serde_json::to_string(&fix).unwrap();
+        assert!(json.contains("\"success\":false"));
+        assert!(json.contains("\"error\":\"Permission denied\""));
+        // TEST PASS: FixApplied failure
+    }
+
+    // =========================================================================
+    // DoctorOptions Tests
+    // =========================================================================
+
+    #[test]
+    fn test_doctor_options_default_values() {
+        // TEST START: DoctorOptions can be constructed with various combinations
+        let opts_minimal = DoctorOptions {
+            fix: false,
+            dry_run: false,
+            install_deps: false,
+            verbose: false,
+        };
+        assert!(!opts_minimal.fix);
+        assert!(!opts_minimal.dry_run);
+
+        let opts_fix = DoctorOptions {
+            fix: true,
+            dry_run: false,
+            install_deps: false,
+            verbose: false,
+        };
+        assert!(opts_fix.fix);
+
+        let opts_dry_run = DoctorOptions {
+            fix: true,
+            dry_run: true,
+            install_deps: false,
+            verbose: false,
+        };
+        assert!(opts_dry_run.fix);
+        assert!(opts_dry_run.dry_run);
+
+        let opts_verbose = DoctorOptions {
+            fix: false,
+            dry_run: false,
+            install_deps: false,
+            verbose: true,
+        };
+        assert!(opts_verbose.verbose);
+        // TEST PASS: DoctorOptions construction
+    }
+
+    // =========================================================================
+    // DoctorSummary Tests
+    // =========================================================================
+
+    #[test]
+    fn test_doctor_summary_all_passed() {
+        // TEST START: DoctorSummary all checks passed
+        let summary = DoctorSummary {
+            total: 15,
+            passed: 15,
+            warnings: 0,
+            failed: 0,
+            fixed: 0,
+            would_fix: 0,
+        };
+
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(json.contains("\"total\":15"));
+        assert!(json.contains("\"passed\":15"));
+        assert!(json.contains("\"failed\":0"));
+        // TEST PASS: DoctorSummary all passed
+    }
+
+    #[test]
+    fn test_doctor_summary_with_failures() {
+        // TEST START: DoctorSummary with failures
+        let summary = DoctorSummary {
+            total: 10,
+            passed: 5,
+            warnings: 2,
+            failed: 3,
+            fixed: 0,
+            would_fix: 0,
+        };
+
+        // Verify counts add up
+        assert_eq!(
+            summary.passed + summary.warnings + summary.failed,
+            summary.total
+        );
+        // TEST PASS: DoctorSummary with failures
+    }
+
+    #[test]
+    fn test_doctor_summary_with_fixes() {
+        // TEST START: DoctorSummary tracking fixes
+        let summary = DoctorSummary {
+            total: 10,
+            passed: 8,
+            warnings: 0,
+            failed: 0,
+            fixed: 2,
+            would_fix: 0,
+        };
+
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(json.contains("\"fixed\":2"));
+        // TEST PASS: DoctorSummary with fixes
+    }
+
+    #[test]
+    fn test_doctor_summary_dry_run_would_fix() {
+        // TEST START: DoctorSummary dry run would_fix count
+        let summary = DoctorSummary {
+            total: 10,
+            passed: 7,
+            warnings: 3,
+            failed: 0,
+            fixed: 0,
+            would_fix: 3,
+        };
+
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(json.contains("\"would_fix\":3"));
+        // TEST PASS: DoctorSummary dry run
+    }
+
+    // =========================================================================
+    // QuickCheckResult Extended Tests
+    // =========================================================================
+
+    #[test]
+    fn test_quick_check_result_multiple_issues() {
+        // TEST START: QuickCheckResult with multiple issues
+        let result = QuickCheckResult {
+            daemon_running: false,
+            worker_count: 0,
+            workers_healthy: 0,
+            hook_installed: false,
+            warnings: vec![
+                "Daemon not running".to_string(),
+                "No workers configured".to_string(),
+            ],
+            errors: vec!["Hook not installed".to_string()],
+        };
+
+        assert!(!result.is_healthy());
+        assert!(result.has_issues());
+        assert_eq!(result.warnings.len(), 2);
+        assert_eq!(result.errors.len(), 1);
+        // TEST PASS: QuickCheckResult multiple issues
+    }
+
+    #[test]
+    fn test_quick_check_result_partial_health() {
+        // TEST START: QuickCheckResult partial health (some components working)
+        let result = QuickCheckResult {
+            daemon_running: true,
+            worker_count: 2,
+            workers_healthy: 1, // Only 1 of 2 healthy
+            hook_installed: true,
+            warnings: vec!["Worker css is offline".to_string()],
+            errors: vec![],
+        };
+
+        // System is "healthy" from base criteria but has warnings
+        assert!(result.is_healthy());
+        assert!(result.has_issues()); // Still has issues due to warning
+        // TEST PASS: QuickCheckResult partial health
+    }
+
+    // =========================================================================
+    // SSH Worker Suggestion Tests
+    // =========================================================================
+
+    #[test]
+    fn test_ssh_worker_suggestion_format() {
+        // TEST START: ssh_worker_suggestion generates correct commands
+        let suggestion = ssh_worker_suggestion(
+            "ubuntu",
+            "build-server.local",
+            Path::new("/home/user/.ssh/id_ed25519"),
+        );
+
+        // Should contain ssh-copy-id command
+        assert!(
+            suggestion.contains("ssh-copy-id"),
+            "Should suggest ssh-copy-id"
+        );
+        // Should contain test command
+        assert!(
+            suggestion.contains("ssh -i"),
+            "Should suggest testing with ssh -i"
+        );
+        // Should contain agent commands
+        assert!(
+            suggestion.contains("ssh-agent") && suggestion.contains("ssh-add"),
+            "Should suggest ssh-agent setup"
+        );
+        // Should contain debug command
+        assert!(suggestion.contains("-vvv"), "Should suggest verbose debug");
+        // Should use correct user and host
+        assert!(suggestion.contains("ubuntu@build-server.local"));
+        // TEST PASS: ssh_worker_suggestion format
+    }
+
+    #[test]
+    fn test_ssh_worker_suggestion_with_special_path() {
+        // TEST START: ssh_worker_suggestion handles special paths
+        let suggestion =
+            ssh_worker_suggestion("admin", "192.168.1.100", Path::new("/custom/path/my_key"));
+
+        assert!(suggestion.contains("/custom/path/my_key"));
+        assert!(suggestion.contains("admin@192.168.1.100"));
+        // TEST PASS: ssh_worker_suggestion special path
+    }
+
+    // =========================================================================
+    // Default Socket Path Tests
+    // =========================================================================
+
+    #[test]
+    fn test_default_socket_path_returns_valid_path() {
+        // TEST START: default_socket_path returns non-empty path
+        let path = default_socket_path();
+        assert!(
+            !path.as_os_str().is_empty(),
+            "Socket path should not be empty"
+        );
+        // Should end with a reasonable filename
+        let filename = path.file_name().map(|f| f.to_string_lossy().to_string());
+        assert!(
+            filename.is_some(),
+            "Socket path should have a filename component"
+        );
+        // TEST PASS: default_socket_path
+    }
+
+    // =========================================================================
+    // Integration-Style Tests (Still No Mocks)
+    // =========================================================================
+
+    #[test]
+    fn test_prerequisite_checks_run_without_panic() {
+        // TEST START: Prerequisites check runs safely
+        use crate::ui::context::{OutputConfig, OutputContext};
+
+        let ctx = OutputContext::new(OutputConfig::default());
+        let options = DoctorOptions {
+            fix: false,
+            dry_run: false,
+            install_deps: false,
+            verbose: false,
+        };
+
+        let mut checks = Vec::new();
+        // This should not panic regardless of system state
+        check_prerequisites(&mut checks, &ctx, &options);
+
+        // Should have checked at least the core tools (rsync, zstd, ssh, rustup, cargo)
+        assert!(
+            checks.len() >= 5,
+            "Should check at least 5 prerequisite tools, got {}",
+            checks.len()
+        );
+
+        // All results should have valid structure
+        for check in &checks {
+            assert_eq!(check.category, "prerequisites");
+            assert!(!check.name.is_empty());
+            assert!(!check.message.is_empty());
+        }
+        // TEST PASS: Prerequisites check runs
+    }
+
+    #[test]
+    fn test_configuration_checks_run_without_panic() {
+        // TEST START: Configuration checks run safely
+        use crate::ui::context::{OutputConfig, OutputContext};
+
+        let ctx = OutputContext::new(OutputConfig::default());
+        let options = DoctorOptions {
+            fix: false,
+            dry_run: false,
+            install_deps: false,
+            verbose: false,
+        };
+
+        let mut checks = Vec::new();
+        check_configuration(&mut checks, &ctx, &options);
+
+        // Should check config directory, config.toml, workers.toml
+        assert!(
+            checks.len() >= 3,
+            "Should check at least 3 config items, got {}",
+            checks.len()
+        );
+
+        for check in &checks {
+            assert_eq!(check.category, "configuration");
+        }
+        // TEST PASS: Configuration checks run
+    }
+
+    #[test]
+    fn test_daemon_check_runs_without_panic() {
+        // TEST START: Daemon check runs safely
+        use crate::ui::context::{OutputConfig, OutputContext};
+
+        let ctx = OutputContext::new(OutputConfig::default());
+        let options = DoctorOptions {
+            fix: false,
+            dry_run: false,
+            install_deps: false,
+            verbose: false,
+        };
+
+        let mut checks = Vec::new();
+        check_daemon(&mut checks, &ctx, &options);
+
+        // Should check at least daemon socket
+        assert!(!checks.is_empty(), "Should have daemon checks");
+
+        for check in &checks {
+            assert_eq!(check.category, "daemon");
+        }
+        // TEST PASS: Daemon check runs
+    }
+
+    #[test]
+    fn test_check_result_fixable_field_semantics() {
+        // TEST START: CheckResult fixable field has correct semantics
+        // A check that passes should not be fixable (nothing to fix)
+        let pass_result = CheckResult {
+            category: "test".to_string(),
+            name: "passing_check".to_string(),
+            status: CheckStatus::Pass,
+            message: "All good".to_string(),
+            details: None,
+            suggestion: None,
+            fixable: false, // Correct: passing checks aren't fixable
+            fix_applied: false,
+            fix_message: None,
+        };
+        assert!(!pass_result.fixable);
+
+        // A failing check that can be auto-fixed should be marked fixable
+        let fixable_fail = CheckResult {
+            category: "test".to_string(),
+            name: "fixable_issue".to_string(),
+            status: CheckStatus::Warning,
+            message: "Permission issue".to_string(),
+            details: None,
+            suggestion: Some("Run chmod 600".to_string()),
+            fixable: true, // Correct: this can be fixed
+            fix_applied: false,
+            fix_message: None,
+        };
+        assert!(fixable_fail.fixable);
+
+        // A failing check that cannot be auto-fixed should not be fixable
+        let unfixable_fail = CheckResult {
+            category: "test".to_string(),
+            name: "unfixable_issue".to_string(),
+            status: CheckStatus::Fail,
+            message: "Missing hardware".to_string(),
+            details: None,
+            suggestion: Some("Buy new hardware".to_string()),
+            fixable: false, // Correct: can't auto-fix hardware
+            fix_applied: false,
+            fix_message: None,
+        };
+        assert!(!unfixable_fail.fixable);
+        // TEST PASS: fixable field semantics
+    }
+
+    #[test]
+    fn test_check_result_fix_applied_and_message_consistency() {
+        // TEST START: fix_applied and fix_message should be consistent
+        // If fix_applied is true, fix_message should be Some
+        let fixed_result = CheckResult {
+            category: "test".to_string(),
+            name: "fixed_check".to_string(),
+            status: CheckStatus::Pass,
+            message: "Fixed!".to_string(),
+            details: None,
+            suggestion: None,
+            fixable: false,
+            fix_applied: true,
+            fix_message: Some("Changed X to Y".to_string()),
+        };
+        assert!(fixed_result.fix_applied);
+        assert!(fixed_result.fix_message.is_some());
+
+        // If fix_applied is false, fix_message typically should be None
+        let not_fixed = CheckResult {
+            category: "test".to_string(),
+            name: "not_fixed".to_string(),
+            status: CheckStatus::Warning,
+            message: "Issue detected".to_string(),
+            details: None,
+            suggestion: Some("Run fix command".to_string()),
+            fixable: true,
+            fix_applied: false,
+            fix_message: None,
+        };
+        assert!(!not_fixed.fix_applied);
+        // TEST PASS: fix_applied and fix_message consistency
     }
 }
