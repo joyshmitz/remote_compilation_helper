@@ -186,15 +186,14 @@ impl CompletionCelebration {
         let mut lines = Vec::new();
         let duration_str = format_duration_ms(self.summary.duration_ms);
 
-        if stats.is_record {
-            if let Some(best_ms) = stats.best_ms {
-                if best_ms > 0 {
-                    lines.push(format!(
-                        "New personal best! {duration_str} (previous: {})",
-                        format_duration_ms(best_ms)
-                    ));
-                }
-            }
+        if stats.is_record
+            && let Some(best_ms) = stats.best_ms
+            && best_ms > 0
+        {
+            lines.push(format!(
+                "New personal best! {duration_str} (previous: {})",
+                format_duration_ms(best_ms)
+            ));
         }
 
         if let Some(milestone) = stats.milestone {
@@ -518,7 +517,7 @@ fn star_icon(ctx: OutputContext) -> &'static str {
 
 fn format_ordinal(value: u64) -> String {
     let suffix = match value % 100 {
-        11 | 12 | 13 => "th",
+        11..=13 => "th",
         _ => match value % 10 {
             1 => "st",
             2 => "nd",
@@ -534,17 +533,17 @@ fn format_ordinal(value: u64) -> String {
 // ========================================================================
 
 fn compute_stats(summary: &CelebrationSummary, mut stats: BuildStats) -> BuildStats {
-    if let Some(previous_ms) = stats.previous_ms {
-        if previous_ms > 0 {
-            let diff = summary.duration_ms as f64 - previous_ms as f64;
-            let percent = (diff.abs() / previous_ms as f64) * 100.0;
-            if percent >= 1.0 {
-                stats.comparison = Some(Comparison {
-                    percent,
-                    faster: diff < 0.0,
-                    baseline_ms: previous_ms,
-                });
-            }
+    if let Some(previous_ms) = stats.previous_ms
+        && previous_ms > 0
+    {
+        let diff = summary.duration_ms as f64 - previous_ms as f64;
+        let percent = (diff.abs() / previous_ms as f64) * 100.0;
+        if percent >= 1.0 {
+            stats.comparison = Some(Comparison {
+                percent,
+                faster: diff < 0.0,
+                baseline_ms: previous_ms,
+            });
         }
     }
 
@@ -553,7 +552,7 @@ fn compute_stats(summary: &CelebrationSummary, mut stats: BuildStats) -> BuildSt
     }
 
     let next_count = stats.count + 1;
-    if next_count > 0 && next_count % 100 == 0 {
+    if next_count > 0 && next_count.is_multiple_of(100) {
         stats.milestone = Some(next_count);
     }
 

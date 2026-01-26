@@ -284,11 +284,11 @@ pub fn get_config_path() -> PathBuf {
 
 /// Expand tilde (~) in a path to the user's home directory.
 pub fn expand_path(path: &str) -> ConfigResult<PathBuf> {
-    if path.starts_with("~/") {
+    if let Some(stripped) = path.strip_prefix("~/") {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .map_err(|_| ConfigError::PathExpansionFailed(path.to_string()))?;
-        Ok(PathBuf::from(home).join(&path[2..]))
+        Ok(PathBuf::from(home).join(stripped))
     } else if path == "~" {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))

@@ -37,6 +37,7 @@ enum ApiRequest {
     RecordBuild {
         worker_id: WorkerId,
         project: String,
+        is_test: bool,
     },
     IngestTelemetry(TelemetrySource),
     TestRun,
@@ -440,9 +441,13 @@ pub async fn handle_connection(
             handle_release_worker(&ctx.pool, request).await?;
             ("{}".to_string(), "application/json")
         }
-        Ok(ApiRequest::RecordBuild { worker_id, project }) => {
+        Ok(ApiRequest::RecordBuild {
+            worker_id,
+            project,
+            is_test,
+        }) => {
             metrics::inc_requests("record-build");
-            handle_record_build(&ctx, &worker_id, &project).await?;
+            handle_record_build(&ctx, &worker_id, &project, is_test).await?;
             ("{}".to_string(), "application/json")
         }
         Ok(ApiRequest::IngestTelemetry(source)) => {
@@ -1023,6 +1028,7 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
 
         let mut worker_id = None;
         let mut project = None;
+        let mut is_test = false;
 
         for param in query.split('&') {
             if param.is_empty() {
@@ -1035,6 +1041,10 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
             match key {
                 "worker" => worker_id = Some(urlencoding_decode(value)),
                 "project" => project = Some(urlencoding_decode(value)),
+                "test" => {
+                    let decoded = urlencoding_decode(value);
+                    is_test = matches!(decoded.as_str(), "1" | "true" | "yes" | "y" | "on");
+                }
                 _ => {}
             }
         }
@@ -1045,6 +1055,7 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
         return Ok(ApiRequest::RecordBuild {
             worker_id: WorkerId::new(worker_id),
             project,
+            is_test,
         });
     }
 
@@ -1691,13 +1702,14 @@ async fn handle_record_build(
     ctx: &DaemonContext,
     worker_id: &WorkerId,
     project: &str,
+    is_test: bool,
 ) -> Result<()> {
     debug!(
         "Recording build for project '{}' on worker {}",
         project, worker_id
     );
     ctx.worker_selector
-        .record_build(worker_id.as_str(), project)
+        .record_build(worker_id.as_str(), project, is_test)
         .await;
     Ok(())
 }

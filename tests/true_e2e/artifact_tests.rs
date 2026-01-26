@@ -203,12 +203,12 @@ async fn sync_artifacts_from_remote(
 /// Parse bytes transferred from rsync --stats output.
 fn parse_rsync_bytes(output: &str) -> u64 {
     for line in output.lines() {
-        if line.contains("Total transferred file size:") {
-            if let Some(num_str) = line.split(':').nth(1) {
-                let clean = num_str.trim().replace(',', "").replace(" bytes", "");
-                if let Ok(bytes) = clean.parse::<u64>() {
-                    return bytes;
-                }
+        if line.contains("Total transferred file size:")
+            && let Some(num_str) = line.split(':').nth(1)
+        {
+            let clean = num_str.trim().replace(',', "").replace(" bytes", "");
+            if let Ok(bytes) = clean.parse::<u64>() {
+                return bytes;
             }
         }
     }
@@ -218,12 +218,11 @@ fn parse_rsync_bytes(output: &str) -> u64 {
 /// Parse number of files transferred from rsync --stats output.
 fn parse_rsync_files(output: &str) -> u64 {
     for line in output.lines() {
-        if line.contains("Number of regular files transferred:") {
-            if let Some(num_str) = line.split(':').nth(1) {
-                if let Ok(count) = num_str.trim().replace(',', "").parse::<u64>() {
-                    return count;
-                }
-            }
+        if line.contains("Number of regular files transferred:")
+            && let Some(num_str) = line.split(':').nth(1)
+            && let Ok(count) = num_str.trim().replace(',', "").parse::<u64>()
+        {
+            return count;
         }
     }
     0
@@ -272,7 +271,11 @@ fn compute_local_md5(path: &Path) -> Result<String, std::io::Error> {
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(stdout.split_whitespace().next().unwrap_or_default().to_string())
+        Ok(stdout
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_string())
     } else {
         Err(std::io::Error::other("md5 command failed"))
     }
@@ -280,7 +283,10 @@ fn compute_local_md5(path: &Path) -> Result<String, std::io::Error> {
 
 /// Get remote file size via SSH.
 async fn get_remote_file_size(client: &mut SshClient, remote_path: &str) -> Result<u64, String> {
-    let cmd = format!("stat -c%s {} 2>/dev/null || stat -f%z {}", remote_path, remote_path);
+    let cmd = format!(
+        "stat -c%s {} 2>/dev/null || stat -f%z {}",
+        remote_path, remote_path
+    );
     let result = client
         .execute(&cmd)
         .await
@@ -377,7 +383,10 @@ async fn test_binary_artifact_integrity() {
     };
 
     let fixture_dir = hello_world_fixture_dir();
-    let remote_path = format!("{}/artifact_integrity_test", config.settings.remote_work_dir);
+    let remote_path = format!(
+        "{}/artifact_integrity_test",
+        config.settings.remote_work_dir
+    );
 
     // Sync fixture to remote
     logger.log_with_context(
@@ -472,15 +481,16 @@ async fn test_binary_artifact_integrity() {
         vec![("phase".to_string(), "transfer".to_string())],
     );
 
-    let transfer_stats = match sync_artifacts_from_remote(&worker_config, &remote_path, &fixture_dir).await {
-        Ok(stats) => stats,
-        Err(e) => {
-            logger.error(format!("Failed to transfer artifacts: {e}"));
-            let _ = cleanup_remote(&mut client, &remote_path).await;
-            client.disconnect().await.ok();
-            panic!("Artifact transfer failed");
-        }
-    };
+    let transfer_stats =
+        match sync_artifacts_from_remote(&worker_config, &remote_path, &fixture_dir).await {
+            Ok(stats) => stats,
+            Err(e) => {
+                logger.error(format!("Failed to transfer artifacts: {e}"));
+                let _ = cleanup_remote(&mut client, &remote_path).await;
+                client.disconnect().await.ok();
+                panic!("Artifact transfer failed");
+            }
+        };
 
     logger.log_with_context(
         LogLevel::Info,
@@ -488,10 +498,22 @@ async fn test_binary_artifact_integrity() {
         "Transfer complete",
         vec![
             ("phase".to_string(), "transfer".to_string()),
-            ("bytes".to_string(), transfer_stats.bytes_transferred.to_string()),
-            ("duration_ms".to_string(), transfer_stats.duration.as_millis().to_string()),
-            ("rate_mbps".to_string(), format!("{:.2}", transfer_stats.rate_mbps())),
-            ("files".to_string(), transfer_stats.files_transferred.to_string()),
+            (
+                "bytes".to_string(),
+                transfer_stats.bytes_transferred.to_string(),
+            ),
+            (
+                "duration_ms".to_string(),
+                transfer_stats.duration.as_millis().to_string(),
+            ),
+            (
+                "rate_mbps".to_string(),
+                format!("{:.2}", transfer_stats.rate_mbps()),
+            ),
+            (
+                "files".to_string(),
+                transfer_stats.files_transferred.to_string(),
+            ),
         ],
     );
 
@@ -538,15 +560,13 @@ async fn test_binary_artifact_integrity() {
     assert!(
         integrity.hash_match,
         "Binary hash mismatch! local={}, remote={}",
-        integrity.local_hash,
-        integrity.remote_hash
+        integrity.local_hash, integrity.remote_hash
     );
 
     assert!(
         integrity.size_match,
         "Binary size mismatch! local={}, remote={}",
-        integrity.local_size,
-        integrity.remote_size
+        integrity.local_size, integrity.remote_size
     );
 
     // Verify binary executes correctly
@@ -570,9 +590,15 @@ async fn test_binary_artifact_integrity() {
                 "Binary execution result",
                 vec![
                     ("phase".to_string(), "execute".to_string()),
-                    ("exit_code".to_string(), output.status.code().unwrap_or(-1).to_string()),
+                    (
+                        "exit_code".to_string(),
+                        output.status.code().unwrap_or(-1).to_string(),
+                    ),
                     ("success".to_string(), success.to_string()),
-                    ("output_contains_hello".to_string(), stdout.contains("Hello").to_string()),
+                    (
+                        "output_contains_hello".to_string(),
+                        stdout.contains("Hello").to_string(),
+                    ),
                 ],
             );
 
@@ -1122,7 +1148,10 @@ async fn test_large_artifact_handling() {
         "Build complete",
         vec![
             ("phase".to_string(), "build".to_string()),
-            ("duration_ms".to_string(), build_duration.as_millis().to_string()),
+            (
+                "duration_ms".to_string(),
+                build_duration.as_millis().to_string(),
+            ),
         ],
     );
 
@@ -1139,7 +1168,10 @@ async fn test_large_artifact_handling() {
                 vec![
                     ("phase".to_string(), "transfer".to_string()),
                     ("bytes".to_string(), stats.bytes_transferred.to_string()),
-                    ("duration_ms".to_string(), stats.duration.as_millis().to_string()),
+                    (
+                        "duration_ms".to_string(),
+                        stats.duration.as_millis().to_string(),
+                    ),
                     ("rate_mbps".to_string(), format!("{:.2}", stats.rate_mbps())),
                     ("files".to_string(), stats.files_transferred.to_string()),
                 ],

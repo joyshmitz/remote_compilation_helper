@@ -376,6 +376,18 @@ impl WorkerPool {
         debug!("Added worker: {}", id);
     }
 
+    /// Remove a worker from the pool.
+    pub async fn remove_worker(&self, id: &WorkerId) -> bool {
+        let mut workers = self.workers.write().await;
+        if workers.remove(id).is_some() {
+            self.worker_count.fetch_sub(1, Ordering::SeqCst);
+            debug!("Removed worker: {}", id);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Get the number of workers in the pool.
     pub fn len(&self) -> usize {
         self.worker_count.load(Ordering::SeqCst)

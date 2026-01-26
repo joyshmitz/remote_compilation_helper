@@ -730,12 +730,14 @@ mod tests {
 
     #[test]
     fn test_run_stats_serialization_roundtrip() {
-        let mut stats = TestRunStats::default();
-        stats.total_runs = 10;
-        stats.passed_runs = 7;
-        stats.failed_runs = 2;
-        stats.build_error_runs = 1;
-        stats.avg_duration_ms = 1500;
+        let mut stats = TestRunStats {
+            total_runs: 10,
+            passed_runs: 7,
+            failed_runs: 2,
+            build_error_runs: 1,
+            avg_duration_ms: 1500,
+            ..Default::default()
+        };
         stats.runs_by_kind.insert("cargo_test".to_string(), 8);
         stats.runs_by_kind.insert("cargo_nextest".to_string(), 2);
 

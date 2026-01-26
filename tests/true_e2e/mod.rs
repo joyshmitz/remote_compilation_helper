@@ -42,6 +42,7 @@ pub mod cargo_check_clippy_tests;
 pub mod cargo_nextest_tests;
 pub mod cargo_test_tests;
 pub mod config;
+pub mod error_recovery_tests;
 pub mod exit_code_tests;
 pub mod failopen_tests;
 pub mod output;

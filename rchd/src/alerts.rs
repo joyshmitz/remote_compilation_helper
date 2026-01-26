@@ -31,6 +31,7 @@ impl Default for AlertConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AlertSeverity {
+    #[allow(dead_code)]
     Info,
     Warning,
     Error,
@@ -268,11 +269,11 @@ impl AlertManager {
         let now = alert.created_at;
         let mut state = self.state.write().unwrap();
 
-        if let Some(last) = state.last_sent.get(&key) {
-            if now - *last < self.config.suppress_duplicates {
-                state.active.entry(key).or_insert(alert);
-                return;
-            }
+        if let Some(last) = state.last_sent.get(&key)
+            && now - *last < self.config.suppress_duplicates
+        {
+            state.active.entry(key).or_insert(alert);
+            return;
         }
 
         state.active.insert(key.clone(), alert);

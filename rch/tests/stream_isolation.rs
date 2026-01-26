@@ -18,13 +18,7 @@ const ANSI_ESC: &str = "\x1b[";
 
 /// Get the path to the rch binary.
 fn rch_binary() -> String {
-    std::env::var("RCH_BINARY").unwrap_or_else(|_| {
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-        format!(
-            "{}/target/release/rch",
-            manifest_dir.trim_end_matches("/rch")
-        )
-    })
+    std::env::var("RCH_BINARY").unwrap_or_else(|_| env!("CARGO_BIN_EXE_rch").to_string())
 }
 
 /// Check if binary exists.

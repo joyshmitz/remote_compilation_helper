@@ -217,9 +217,7 @@ pub async fn apply_worker_diff(pool: &WorkerPool, diff: &ConfigDiff) -> Result<R
                 ));
             } else {
                 info!("Worker {} removed (no active jobs)", id);
-                worker
-                    .disable(Some("Removed from configuration".to_string()))
-                    .await;
+                pool.remove_worker(id).await;
             }
             result.removed += 1;
         }
@@ -289,6 +287,7 @@ pub enum ReloadMessage {
     /// Manual reload requested (e.g., via SIGHUP or CLI).
     ManualReload,
     /// Shutdown the watcher.
+    #[allow(dead_code)]
     Shutdown,
 }
 
@@ -359,19 +358,19 @@ impl ConfigWatcher {
         })?;
 
         // Watch the workers config path if provided
-        if let Some(ref path) = workers_path {
-            if let Some(parent) = path.parent() {
-                watcher.watch(parent, RecursiveMode::NonRecursive)?;
-                info!("Watching for config changes in {:?}", parent);
-            }
+        if let Some(ref path) = workers_path
+            && let Some(parent) = path.parent()
+        {
+            watcher.watch(parent, RecursiveMode::NonRecursive)?;
+            info!("Watching for config changes in {:?}", parent);
         }
 
         // Watch the default config directory
-        if let Some(dir) = config_dir {
-            if dir.exists() {
-                watcher.watch(&dir, RecursiveMode::NonRecursive)?;
-                info!("Watching for config changes in {:?}", dir);
-            }
+        if let Some(dir) = config_dir
+            && dir.exists()
+        {
+            watcher.watch(&dir, RecursiveMode::NonRecursive)?;
+            info!("Watching for config changes in {:?}", dir);
         }
 
         self._watcher = Some(watcher);

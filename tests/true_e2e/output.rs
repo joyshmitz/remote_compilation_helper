@@ -531,6 +531,11 @@ fn normalize_paths(input: &str) -> (String, usize) {
     count += TMP_RCH_RE.find_iter(&result).count();
     result = TMP_RCH_RE.replace_all(&result, "<RCH_WORK>").into_owned();
 
+    count += CARGO_TARGET_RE.find_iter(&result).count();
+    result = CARGO_TARGET_RE
+        .replace_all(&result, "target/$1/<CARGO_TARGET>")
+        .into_owned();
+
     (result, count)
 }
 
@@ -555,6 +560,10 @@ fn strip_timestamps(input: &str) -> (String, usize) {
     result = TOOK_TIME_RE
         .replace_all(&result, "took <TIME>")
         .into_owned();
+
+    // Generic durations (e.g., "14s elapsed", "0.6s")
+    count += DURATION_RE.find_iter(&result).count();
+    result = DURATION_RE.replace_all(&result, "<DURATION>").into_owned();
 
     // Unix timestamps (rough detection - 10 digit numbers starting with 1)
     count += UNIX_TIMESTAMP_RE.find_iter(&result).count();

@@ -601,7 +601,11 @@ async fn test_cmd_binary_output() {
 
     match client.execute(&cmd).await {
         Ok(result) => {
-            let binary_count = result.stdout.bytes().filter(|&b| b < 32 || b > 126).count();
+            let binary_count = result
+                .stdout
+                .bytes()
+                .filter(|&b| !(32..=126).contains(&b))
+                .count();
 
             logger.log_with_context(
                 LogLevel::Info,
@@ -615,7 +619,7 @@ async fn test_cmd_binary_output() {
             );
 
             // Binary output should be preserved (even if some bytes are lost in string conversion)
-            assert!(result.stdout.len() > 0, "Should capture some output");
+            assert!(!result.stdout.is_empty(), "Should capture some output");
         }
         Err(e) => {
             logger.error(format!("Command failed: {e}"));

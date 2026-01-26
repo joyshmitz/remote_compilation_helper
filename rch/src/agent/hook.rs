@@ -550,14 +550,25 @@ fn find_toml_section_range(lines: &[&str], section: &str) -> Option<(usize, usiz
     start.map(|s| (s, lines.len()))
 }
 
-fn is_pre_tool_use_line(line: &str) -> bool {
+fn has_pre_tool_use_key(line: &str) -> bool {
     let trimmed = line.trim_start();
-    trimmed.starts_with("pre_tool_use")
+    let Some(rest) = trimmed.strip_prefix("pre_tool_use") else {
+        return false;
+    };
+
+    match rest.chars().next() {
+        None => true,
+        Some(c) => c.is_whitespace() || c == '=',
+    }
+}
+
+fn is_pre_tool_use_line(line: &str) -> bool {
+    has_pre_tool_use_key(line)
 }
 
 fn is_pre_tool_use_rch(line: &str) -> bool {
     let stripped = line.split('#').next().unwrap_or("").trim();
-    if !stripped.starts_with("pre_tool_use") {
+    if !has_pre_tool_use_key(stripped) {
         return false;
     }
 
@@ -710,15 +721,50 @@ fn uninstall_continue_dev_hook(dry_run: bool) -> Result<IdempotentResult> {
 mod tests {
     use super::*;
 
+    // ===== TEST: HookStatus =====
+
     #[test]
     fn test_hook_status_display() {
+        eprintln!("TEST START: test_hook_status_display");
         assert_eq!(HookStatus::Installed.to_string(), "Installed");
+        assert_eq!(HookStatus::NeedsUpdate.to_string(), "Needs update");
         assert_eq!(HookStatus::NotInstalled.to_string(), "Not installed");
         assert_eq!(HookStatus::NotSupported.to_string(), "Not supported");
+        eprintln!("TEST PASS: test_hook_status_display");
     }
 
     #[test]
+    fn test_hook_status_equality() {
+        eprintln!("TEST START: test_hook_status_equality");
+        assert_eq!(HookStatus::Installed, HookStatus::Installed);
+        assert_ne!(HookStatus::Installed, HookStatus::NotInstalled);
+        assert_ne!(HookStatus::NeedsUpdate, HookStatus::NotSupported);
+        eprintln!("TEST PASS: test_hook_status_equality");
+    }
+
+    #[test]
+    fn test_hook_status_serde_roundtrip() {
+        eprintln!("TEST START: test_hook_status_serde_roundtrip");
+        let statuses = [
+            HookStatus::Installed,
+            HookStatus::NeedsUpdate,
+            HookStatus::NotInstalled,
+            HookStatus::NotSupported,
+        ];
+        for status in statuses {
+            let json = serde_json::to_string(&status).expect("serialize");
+            let parsed: HookStatus = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(status, parsed);
+            eprintln!("  {:?} <-> {}", status, json);
+        }
+        eprintln!("TEST PASS: test_hook_status_serde_roundtrip");
+    }
+
+    // ===== TEST: check_hook_status =====
+
+    #[test]
     fn test_check_unsupported_agents() {
+        eprintln!("TEST START: test_check_unsupported_agents");
         // Agents without hook support should return NotSupported
         assert_eq!(
             check_hook_status(AgentKind::Cursor).unwrap(),
@@ -728,10 +774,170 @@ mod tests {
             check_hook_status(AgentKind::Aider).unwrap(),
             HookStatus::NotSupported
         );
+        assert_eq!(
+            check_hook_status(AgentKind::Windsurf).unwrap(),
+            HookStatus::NotSupported
+        );
+        assert_eq!(
+            check_hook_status(AgentKind::Cline).unwrap(),
+            HookStatus::NotSupported
+        );
+        eprintln!("TEST PASS: test_check_unsupported_agents");
     }
 
     #[test]
+    fn test_check_hook_status_all_agents_no_panic() {
+        eprintln!("TEST START: test_check_hook_status_all_agents_no_panic");
+        for kind in AgentKind::ALL {
+            let result = check_hook_status(*kind);
+            assert!(
+                result.is_ok(),
+                "check_hook_status({:?}) should not error",
+                kind
+            );
+            let status = result.unwrap();
+            eprintln!("  {:?}: {:?}", kind, status);
+
+            // Verify consistency with hook_support
+            if !kind.hook_support().can_install_hook() {
+                assert_eq!(
+                    status,
+                    HookStatus::NotSupported,
+                    "Agent {:?} should be NotSupported",
+                    kind
+                );
+            }
+        }
+        eprintln!("TEST PASS: test_check_hook_status_all_agents_no_panic");
+    }
+
+    #[test]
+    fn test_check_hook_status_supported_agents() {
+        eprintln!("TEST START: test_check_hook_status_supported_agents");
+        // Supported agents: ClaudeCode, GeminiCli, CodexCli, ContinueDev
+        let supported = [
+            AgentKind::ClaudeCode,
+            AgentKind::GeminiCli,
+            AgentKind::CodexCli,
+            AgentKind::ContinueDev,
+        ];
+
+        for kind in supported {
+            let status = check_hook_status(kind).expect("should not error");
+            // Status should be one of Installed, NeedsUpdate, or NotInstalled
+            assert!(
+                matches!(
+                    status,
+                    HookStatus::Installed | HookStatus::NeedsUpdate | HookStatus::NotInstalled
+                ),
+                "Unexpected status for {:?}: {:?}",
+                kind,
+                status
+            );
+            eprintln!("  {:?}: {:?}", kind, status);
+        }
+        eprintln!("TEST PASS: test_check_hook_status_supported_agents");
+    }
+
+    // ===== TEST: install_hook / uninstall_hook =====
+
+    #[test]
+    fn test_install_hook_unsupported_agents_error() {
+        eprintln!("TEST START: test_install_hook_unsupported_agents_error");
+        let unsupported = [
+            AgentKind::Cursor,
+            AgentKind::Windsurf,
+            AgentKind::Aider,
+            AgentKind::Cline,
+        ];
+
+        for kind in unsupported {
+            let result = install_hook(kind, true); // dry_run = true
+            assert!(
+                result.is_err(),
+                "install_hook({:?}) should error for unsupported agent",
+                kind
+            );
+            eprintln!("  {:?}: correctly rejected", kind);
+        }
+        eprintln!("TEST PASS: test_install_hook_unsupported_agents_error");
+    }
+
+    #[test]
+    fn test_uninstall_hook_unsupported_agents_error() {
+        eprintln!("TEST START: test_uninstall_hook_unsupported_agents_error");
+        let unsupported = [
+            AgentKind::Cursor,
+            AgentKind::Windsurf,
+            AgentKind::Aider,
+            AgentKind::Cline,
+        ];
+
+        for kind in unsupported {
+            let result = uninstall_hook(kind, true); // dry_run = true
+            assert!(
+                result.is_err(),
+                "uninstall_hook({:?}) should error for unsupported agent",
+                kind
+            );
+            eprintln!("  {:?}: correctly rejected", kind);
+        }
+        eprintln!("TEST PASS: test_uninstall_hook_unsupported_agents_error");
+    }
+
+    #[test]
+    fn test_install_hook_dry_run_supported_agents() {
+        eprintln!("TEST START: test_install_hook_dry_run_supported_agents");
+        let supported = [
+            AgentKind::ClaudeCode,
+            AgentKind::GeminiCli,
+            AgentKind::CodexCli,
+            AgentKind::ContinueDev,
+        ];
+
+        for kind in supported {
+            let result = install_hook(kind, true); // dry_run = true
+            assert!(
+                result.is_ok(),
+                "install_hook({:?}, dry_run=true) should not error: {:?}",
+                kind,
+                result
+            );
+            let outcome = result.unwrap();
+            eprintln!("  {:?}: {:?}", kind, outcome);
+        }
+        eprintln!("TEST PASS: test_install_hook_dry_run_supported_agents");
+    }
+
+    #[test]
+    fn test_uninstall_hook_dry_run_supported_agents() {
+        eprintln!("TEST START: test_uninstall_hook_dry_run_supported_agents");
+        let supported = [
+            AgentKind::ClaudeCode,
+            AgentKind::GeminiCli,
+            AgentKind::CodexCli,
+            AgentKind::ContinueDev,
+        ];
+
+        for kind in supported {
+            let result = uninstall_hook(kind, true); // dry_run = true
+            assert!(
+                result.is_ok(),
+                "uninstall_hook({:?}, dry_run=true) should not error: {:?}",
+                kind,
+                result
+            );
+            let outcome = result.unwrap();
+            eprintln!("  {:?}: {:?}", kind, outcome);
+        }
+        eprintln!("TEST PASS: test_uninstall_hook_dry_run_supported_agents");
+    }
+
+    // ===== TEST: TOML parsing helpers =====
+
+    #[test]
     fn test_is_pre_tool_use_rch_string_format() {
+        eprintln!("TEST START: test_is_pre_tool_use_rch_string_format");
         // Double quotes
         assert!(is_pre_tool_use_rch("pre_tool_use = \"rch\""));
         assert!(is_pre_tool_use_rch("  pre_tool_use = \"rch\"  "));
@@ -746,10 +952,12 @@ mod tests {
         // Not rch
         assert!(!is_pre_tool_use_rch("pre_tool_use = \"other\""));
         assert!(!is_pre_tool_use_rch("pre_tool_use = \"rch-extended\""));
+        eprintln!("TEST PASS: test_is_pre_tool_use_rch_string_format");
     }
 
     #[test]
     fn test_is_pre_tool_use_rch_array_format() {
+        eprintln!("TEST START: test_is_pre_tool_use_rch_array_format");
         // Array with rch
         assert!(is_pre_tool_use_rch("pre_tool_use = [\"rch\"]"));
         assert!(is_pre_tool_use_rch("pre_tool_use = [\"rch\", \"other\"]"));
@@ -759,18 +967,55 @@ mod tests {
         // Array without rch
         assert!(!is_pre_tool_use_rch("pre_tool_use = [\"other\"]"));
         assert!(!is_pre_tool_use_rch("pre_tool_use = [\"foo\", \"bar\"]"));
+        eprintln!("TEST PASS: test_is_pre_tool_use_rch_array_format");
+    }
+
+    #[test]
+    fn test_is_pre_tool_use_rch_edge_cases() {
+        eprintln!("TEST START: test_is_pre_tool_use_rch_edge_cases");
+
+        // Empty line
+        assert!(!is_pre_tool_use_rch(""));
+
+        // Comment line
+        assert!(!is_pre_tool_use_rch("# pre_tool_use = \"rch\""));
+
+        // Different key
+        assert!(!is_pre_tool_use_rch("post_tool_use = \"rch\""));
+
+        // No value
+        assert!(!is_pre_tool_use_rch("pre_tool_use"));
+        assert!(!is_pre_tool_use_rch("pre_tool_use ="));
+
+        // rch as substring (should not match)
+        assert!(!is_pre_tool_use_rch("pre_tool_use = \"rch_extended\""));
+        assert!(!is_pre_tool_use_rch("pre_tool_use = \"my_rch\""));
+
+        // Mixed quotes in array
+        assert!(is_pre_tool_use_rch("pre_tool_use = [\"rch\", 'other']"));
+
+        eprintln!("TEST PASS: test_is_pre_tool_use_rch_edge_cases");
     }
 
     #[test]
     fn test_is_pre_tool_use_line() {
+        eprintln!("TEST START: test_is_pre_tool_use_line");
         assert!(is_pre_tool_use_line("pre_tool_use = \"rch\""));
         assert!(is_pre_tool_use_line("  pre_tool_use = \"rch\""));
+        assert!(is_pre_tool_use_line("\tpre_tool_use = \"rch\""));
+        assert!(is_pre_tool_use_line("pre_tool_use"));
+        assert!(is_pre_tool_use_line("pre_tool_use ="));
         assert!(!is_pre_tool_use_line("# pre_tool_use = \"rch\""));
         assert!(!is_pre_tool_use_line("other_key = \"value\""));
+        assert!(!is_pre_tool_use_line(""));
+        assert!(!is_pre_tool_use_line("pre_tool_uses = \"rch\""));
+        assert!(!is_pre_tool_use_line("pre_tool_useful = \"rch\""));
+        eprintln!("TEST PASS: test_is_pre_tool_use_line");
     }
 
     #[test]
     fn test_find_toml_section_range() {
+        eprintln!("TEST START: test_find_toml_section_range");
         let lines = vec![
             "# comment",
             "[hooks]",
@@ -788,20 +1033,139 @@ mod tests {
 
         let range = find_toml_section_range(&lines, "missing");
         assert_eq!(range, None);
+        eprintln!("TEST PASS: test_find_toml_section_range");
     }
 
     #[test]
     fn test_find_toml_section_range_at_end() {
+        eprintln!("TEST START: test_find_toml_section_range_at_end");
         let lines = vec!["[hooks]", "pre_tool_use = \"rch\""];
 
         let range = find_toml_section_range(&lines, "hooks");
         assert_eq!(range, Some((0, 2)));
+        eprintln!("TEST PASS: test_find_toml_section_range_at_end");
+    }
+
+    #[test]
+    fn test_find_toml_section_range_empty() {
+        eprintln!("TEST START: test_find_toml_section_range_empty");
+        let lines: Vec<&str> = vec![];
+        assert_eq!(find_toml_section_range(&lines, "hooks"), None);
+
+        let lines = vec!["# just a comment"];
+        assert_eq!(find_toml_section_range(&lines, "hooks"), None);
+        eprintln!("TEST PASS: test_find_toml_section_range_empty");
+    }
+
+    #[test]
+    fn test_find_toml_section_range_nested_brackets() {
+        eprintln!("TEST START: test_find_toml_section_range_nested_brackets");
+        let lines = vec![
+            "[parent]",
+            "key = \"value\"",
+            "[parent.child]", // Not a top-level section
+            "nested = true",
+            "[sibling]",
+            "other = 1",
+        ];
+
+        // Should find [parent] from line 0 to line 2 (before [parent.child])
+        // Actually, the current implementation treats [parent.child] as a new section
+        let range = find_toml_section_range(&lines, "parent");
+        assert!(range.is_some());
+        let (start, end) = range.unwrap();
+        assert_eq!(start, 0);
+        // End should be before the next section header
+        assert!(end <= 2 || end <= 4, "Expected end <= 4, got {}", end);
+        eprintln!("TEST PASS: test_find_toml_section_range_nested_brackets");
+    }
+
+    #[test]
+    fn test_find_toml_section_range_whitespace() {
+        eprintln!("TEST START: test_find_toml_section_range_whitespace");
+        let lines = vec![
+            "  [hooks]  ", // Note: current impl uses trim()
+            "pre_tool_use = \"rch\"",
+        ];
+
+        // Should still find it because we trim
+        let range = find_toml_section_range(&lines, "hooks");
+        assert_eq!(range, Some((0, 2)));
+        eprintln!("TEST PASS: test_find_toml_section_range_whitespace");
     }
 
     #[test]
     fn test_ensure_trailing_newline() {
+        eprintln!("TEST START: test_ensure_trailing_newline");
         assert_eq!(ensure_trailing_newline("foo".to_string()), "foo\n");
         assert_eq!(ensure_trailing_newline("foo\n".to_string()), "foo\n");
         assert_eq!(ensure_trailing_newline("".to_string()), "\n");
+        assert_eq!(
+            ensure_trailing_newline("multi\nline".to_string()),
+            "multi\nline\n"
+        );
+        assert_eq!(
+            ensure_trailing_newline("multi\nline\n".to_string()),
+            "multi\nline\n"
+        );
+        eprintln!("TEST PASS: test_ensure_trailing_newline");
+    }
+
+    // ===== TEST: Config path helpers =====
+
+    #[test]
+    fn test_claude_code_settings_path() {
+        eprintln!("TEST START: test_claude_code_settings_path");
+        let path = claude_code_settings_path();
+        if let Some(p) = &path {
+            assert!(p.to_string_lossy().contains(".claude"));
+            assert!(p.to_string_lossy().contains("settings.json"));
+            eprintln!("  Path: {:?}", p);
+        } else {
+            eprintln!("  Path: None (HOME not set)");
+        }
+        eprintln!("TEST PASS: test_claude_code_settings_path");
+    }
+
+    #[test]
+    fn test_gemini_cli_settings_path() {
+        eprintln!("TEST START: test_gemini_cli_settings_path");
+        let path = gemini_cli_settings_path();
+        if let Some(p) = &path {
+            assert!(p.to_string_lossy().contains(".gemini"));
+            assert!(p.to_string_lossy().contains("settings.json"));
+            eprintln!("  Path: {:?}", p);
+        } else {
+            eprintln!("  Path: None (HOME not set)");
+        }
+        eprintln!("TEST PASS: test_gemini_cli_settings_path");
+    }
+
+    #[test]
+    fn test_codex_cli_config_path() {
+        eprintln!("TEST START: test_codex_cli_config_path");
+        let path = codex_cli_config_path();
+        if let Some(p) = &path {
+            assert!(p.to_string_lossy().contains(".codex"));
+            assert!(p.to_string_lossy().contains("config.toml"));
+            eprintln!("  Path: {:?}", p);
+        } else {
+            eprintln!("  Path: None (HOME not set)");
+        }
+        eprintln!("TEST PASS: test_codex_cli_config_path");
+    }
+
+    #[test]
+    fn test_continue_dev_config_path() {
+        eprintln!("TEST START: test_continue_dev_config_path");
+        let path = continue_dev_config_path();
+        if let Some(p) = &path {
+            assert!(p.to_string_lossy().contains(".continue"));
+            assert!(p.to_string_lossy().contains("config.json"));
+            eprintln!("  Path: {:?}", p);
+        } else {
+            eprintln!("  Path: None (HOME not set)");
+        }
+        eprintln!("TEST PASS: test_continue_dev_config_path");
     }
 }

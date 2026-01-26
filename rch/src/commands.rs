@@ -637,9 +637,9 @@ pub fn load_workers_from_config() -> Result<Vec<WorkerConfig>> {
         .context("Could not determine config directory")?;
 
     if !config_path.exists() {
-        println!("No workers configured.");
-        println!("Create a workers config at: {:?}", config_path);
-        println!("\nRun `rch config init` to generate example configuration.");
+        eprintln!("No workers configured.");
+        eprintln!("Create a workers config at: {:?}", config_path);
+        eprintln!("\nRun `rch config init` to generate example configuration.");
         return Ok(vec![]);
     }
 
@@ -3923,7 +3923,7 @@ pub async fn daemon_reload(ctx: &OutputContext) -> Result<()> {
                         if ctx.is_json() {
                             let _ = ctx.json(&ApiResponse::<()>::err(
                                 "daemon reload",
-                                ApiError::internal(&format!(
+                                ApiError::internal(format!(
                                     "Failed to parse reload response: {}",
                                     e
                                 )),
@@ -3942,7 +3942,7 @@ pub async fn daemon_reload(ctx: &OutputContext) -> Result<()> {
                 if ctx.is_json() {
                     let _ = ctx.json(&ApiResponse::<()>::err(
                         "daemon reload",
-                        ApiError::internal(&format!("Reload failed: {}", error_msg)),
+                        ApiError::internal(format!("Reload failed: {}", error_msg)),
                     ));
                 } else {
                     println!(
@@ -3951,25 +3951,23 @@ pub async fn daemon_reload(ctx: &OutputContext) -> Result<()> {
                         error_msg
                     );
                 }
+            } else if ctx.is_json() {
+                let _ = ctx.json(&ApiResponse::<()>::err(
+                    "daemon reload",
+                    ApiError::internal("Unexpected response from daemon"),
+                ));
             } else {
-                if ctx.is_json() {
-                    let _ = ctx.json(&ApiResponse::<()>::err(
-                        "daemon reload",
-                        ApiError::internal("Unexpected response from daemon"),
-                    ));
-                } else {
-                    println!(
-                        "{} Unexpected response from daemon",
-                        StatusIndicator::Error.display(style)
-                    );
-                }
+                println!(
+                    "{} Unexpected response from daemon",
+                    StatusIndicator::Error.display(style)
+                );
             }
         }
         Err(e) => {
             if ctx.is_json() {
                 let _ = ctx.json(&ApiResponse::<()>::err(
                     "daemon reload",
-                    ApiError::internal(&format!("Failed to communicate with daemon: {}", e)),
+                    ApiError::internal(format!("Failed to communicate with daemon: {}", e)),
                 ));
             } else {
                 println!(
@@ -5466,6 +5464,514 @@ pub fn config_export(format: &str, ctx: &OutputContext) -> Result<()> {
     Ok(())
 }
 
+// =============================================================================
+// Config Lint & Diff
+// =============================================================================
+
+/// Issue severity for config lint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LintSeverity {
+    Error,
+    Warning,
+    Info,
+}
+
+/// A single lint issue.
+#[derive(Debug, Clone, Serialize)]
+pub struct LintIssue {
+    pub severity: LintSeverity,
+    pub code: String,
+    pub message: String,
+    pub remediation: String,
+}
+
+/// Response for config lint command.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigLintResponse {
+    pub issues: Vec<LintIssue>,
+    pub error_count: usize,
+    pub warning_count: usize,
+    pub info_count: usize,
+}
+
+/// A single diff entry showing a non-default value.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigDiffEntry {
+    pub key: String,
+    pub current: String,
+    pub default: String,
+    pub source: String,
+}
+
+/// Response for config diff command.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigDiffResponse {
+    pub entries: Vec<ConfigDiffEntry>,
+    pub total_changes: usize,
+}
+
+/// Lint configuration for potential issues.
+pub fn config_lint(ctx: &OutputContext) -> Result<()> {
+    let style = ctx.theme();
+    let config = crate::config::load_config()?;
+    let mut issues = Vec::new();
+
+    // Check 1: Missing workers configuration
+    let workers_path = config_dir()
+        .map(|d| d.join("workers.toml"))
+        .unwrap_or_else(|| PathBuf::from("~/.config/rch/workers.toml"));
+    if !workers_path.exists() {
+        issues.push(LintIssue {
+            severity: LintSeverity::Error,
+            code: "LINT-E001".to_string(),
+            message: "No workers.toml configuration found".to_string(),
+            remediation: "Run 'rch config init --wizard' to create workers configuration"
+                .to_string(),
+        });
+    } else {
+        // Check if workers.toml has any workers defined
+        match load_workers_from_config() {
+            Ok(workers) if workers.is_empty() => {
+                issues.push(LintIssue {
+                    severity: LintSeverity::Error,
+                    code: "LINT-E002".to_string(),
+                    message: "workers.toml exists but no workers are defined".to_string(),
+                    remediation: "Add at least one [[workers]] section to workers.toml".to_string(),
+                });
+            }
+            Err(e) => {
+                issues.push(LintIssue {
+                    severity: LintSeverity::Error,
+                    code: "LINT-E003".to_string(),
+                    message: format!("Failed to parse workers.toml: {}", e),
+                    remediation:
+                        "Fix the workers.toml file syntax or run 'rch config init --wizard'"
+                            .to_string(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    // Check 2: Compression level warnings
+    if config.transfer.compression_level == 0 {
+        issues.push(LintIssue {
+            severity: LintSeverity::Warning,
+            code: "LINT-W001".to_string(),
+            message: "Compression is disabled (level=0)".to_string(),
+            remediation: "Consider setting compression_level to 3-6 for better transfer performance on slow networks".to_string(),
+        });
+    } else if config.transfer.compression_level > 19 {
+        issues.push(LintIssue {
+            severity: LintSeverity::Warning,
+            code: "LINT-W002".to_string(),
+            message: format!("Compression level {} is very high", config.transfer.compression_level),
+            remediation: "High compression levels (>10) significantly slow down transfers. Consider 3-6 for balanced performance".to_string(),
+        });
+    }
+
+    // Check 3: Risky exclude patterns
+    let risky_excludes = ["src/", "Cargo.toml", "Cargo.lock", "package.json", "go.mod"];
+    for pattern in &config.transfer.exclude_patterns {
+        for risky in &risky_excludes {
+            if pattern == *risky || pattern.ends_with(risky) {
+                issues.push(LintIssue {
+                    severity: LintSeverity::Warning,
+                    code: "LINT-W003".to_string(),
+                    message: format!(
+                        "Exclude pattern '{}' may prevent builds from working",
+                        pattern
+                    ),
+                    remediation: format!(
+                        "Remove '{}' from exclude_patterns unless intentional",
+                        pattern
+                    ),
+                });
+            }
+        }
+    }
+
+    // Check 4: Confidence threshold too low
+    if config.compilation.confidence_threshold < 0.5 {
+        issues.push(LintIssue {
+            severity: LintSeverity::Warning,
+            code: "LINT-W004".to_string(),
+            message: format!(
+                "Confidence threshold {} is very low",
+                config.compilation.confidence_threshold
+            ),
+            remediation:
+                "Low thresholds may intercept non-compilation commands. Consider 0.8 or higher"
+                    .to_string(),
+        });
+    }
+
+    // Check 5: RCH disabled
+    if !config.general.enabled {
+        issues.push(LintIssue {
+            severity: LintSeverity::Info,
+            code: "LINT-I001".to_string(),
+            message: "RCH is disabled (general.enabled = false)".to_string(),
+            remediation:
+                "Set general.enabled = true or RCH_ENABLED=true to enable remote compilation"
+                    .to_string(),
+        });
+    }
+
+    // Check 6: Very short timeouts
+    if config.compilation.build_timeout_sec < 60 {
+        issues.push(LintIssue {
+            severity: LintSeverity::Warning,
+            code: "LINT-W005".to_string(),
+            message: format!(
+                "Build timeout {}s is very short",
+                config.compilation.build_timeout_sec
+            ),
+            remediation:
+                "Short timeouts may cause builds to fail prematurely. Consider at least 300s"
+                    .to_string(),
+        });
+    }
+
+    // Count by severity
+    let error_count = issues
+        .iter()
+        .filter(|i| i.severity == LintSeverity::Error)
+        .count();
+    let warning_count = issues
+        .iter()
+        .filter(|i| i.severity == LintSeverity::Warning)
+        .count();
+    let info_count = issues
+        .iter()
+        .filter(|i| i.severity == LintSeverity::Info)
+        .count();
+
+    // Output
+    if ctx.is_json() {
+        let response = ConfigLintResponse {
+            issues,
+            error_count,
+            warning_count,
+            info_count,
+        };
+        ctx.json(&ApiResponse::ok("config lint", response))?;
+    } else if issues.is_empty() {
+        println!(
+            "{} Configuration looks good!",
+            StatusIndicator::Success.display(style)
+        );
+    } else {
+        println!("{} Configuration Lint Results", style.highlight("RCH"));
+        println!();
+
+        for issue in &issues {
+            let indicator = match issue.severity {
+                LintSeverity::Error => StatusIndicator::Error,
+                LintSeverity::Warning => StatusIndicator::Warning,
+                LintSeverity::Info => StatusIndicator::Info,
+            };
+            println!(
+                "{} [{}] {}",
+                indicator.display(style),
+                issue.code,
+                issue.message
+            );
+            println!("   {}", style.muted(&format!("→ {}", issue.remediation)));
+            println!();
+        }
+
+        // Summary
+        let mut summary_parts = Vec::new();
+        if error_count > 0 {
+            summary_parts.push(format!("{} error(s)", error_count));
+        }
+        if warning_count > 0 {
+            summary_parts.push(format!("{} warning(s)", warning_count));
+        }
+        if info_count > 0 {
+            summary_parts.push(format!("{} info", info_count));
+        }
+        println!("Summary: {}", summary_parts.join(", "));
+    }
+
+    // Exit with non-zero if errors found
+    if error_count > 0 {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+/// Show configuration values that differ from defaults.
+pub fn config_diff(ctx: &OutputContext) -> Result<()> {
+    use rch_common::RchConfig;
+
+    let style = ctx.theme();
+    let loaded = crate::config::load_config_with_sources()?;
+    let config = &loaded.config;
+    let defaults = RchConfig::default();
+    let sources = &loaded.sources;
+
+    let mut entries = Vec::new();
+
+    // Helper to add entry if different
+    macro_rules! diff_field {
+        ($key:expr, $current:expr, $default:expr, $source_key:expr) => {
+            let current_str = format!("{}", $current);
+            let default_str = format!("{}", $default);
+            if current_str != default_str {
+                let source = sources
+                    .get($source_key)
+                    .map(|s| format!("{:?}", s))
+                    .unwrap_or_else(|| "unknown".to_string());
+                entries.push(ConfigDiffEntry {
+                    key: $key.to_string(),
+                    current: current_str,
+                    default: default_str,
+                    source,
+                });
+            }
+        };
+    }
+
+    // General section
+    diff_field!(
+        "general.enabled",
+        config.general.enabled,
+        defaults.general.enabled,
+        "general.enabled"
+    );
+    diff_field!(
+        "general.log_level",
+        &config.general.log_level,
+        &defaults.general.log_level,
+        "general.log_level"
+    );
+    diff_field!(
+        "general.socket_path",
+        &config.general.socket_path,
+        &defaults.general.socket_path,
+        "general.socket_path"
+    );
+
+    // Compilation section
+    diff_field!(
+        "compilation.confidence_threshold",
+        config.compilation.confidence_threshold,
+        defaults.compilation.confidence_threshold,
+        "compilation.confidence_threshold"
+    );
+    diff_field!(
+        "compilation.min_local_time_ms",
+        config.compilation.min_local_time_ms,
+        defaults.compilation.min_local_time_ms,
+        "compilation.min_local_time_ms"
+    );
+    diff_field!(
+        "compilation.build_slots",
+        config.compilation.build_slots,
+        defaults.compilation.build_slots,
+        "compilation.build_slots"
+    );
+    diff_field!(
+        "compilation.test_slots",
+        config.compilation.test_slots,
+        defaults.compilation.test_slots,
+        "compilation.test_slots"
+    );
+    diff_field!(
+        "compilation.check_slots",
+        config.compilation.check_slots,
+        defaults.compilation.check_slots,
+        "compilation.check_slots"
+    );
+    diff_field!(
+        "compilation.build_timeout_sec",
+        config.compilation.build_timeout_sec,
+        defaults.compilation.build_timeout_sec,
+        "compilation.build_timeout_sec"
+    );
+    diff_field!(
+        "compilation.test_timeout_sec",
+        config.compilation.test_timeout_sec,
+        defaults.compilation.test_timeout_sec,
+        "compilation.test_timeout_sec"
+    );
+
+    // Transfer section
+    diff_field!(
+        "transfer.compression_level",
+        config.transfer.compression_level,
+        defaults.transfer.compression_level,
+        "transfer.compression_level"
+    );
+
+    // Compare exclude patterns
+    let current_excludes = config.transfer.exclude_patterns.join(",");
+    let default_excludes = defaults.transfer.exclude_patterns.join(",");
+    if current_excludes != default_excludes {
+        let source = sources
+            .get("transfer.exclude_patterns")
+            .map(|s| format!("{:?}", s))
+            .unwrap_or_else(|| "unknown".to_string());
+        entries.push(ConfigDiffEntry {
+            key: "transfer.exclude_patterns".to_string(),
+            current: format!("[{}]", current_excludes),
+            default: format!("[{}]", default_excludes),
+            source,
+        });
+    }
+
+    // Circuit breaker section
+    diff_field!(
+        "circuit.failure_threshold",
+        config.circuit.failure_threshold,
+        defaults.circuit.failure_threshold,
+        "circuit.failure_threshold"
+    );
+    diff_field!(
+        "circuit.success_threshold",
+        config.circuit.success_threshold,
+        defaults.circuit.success_threshold,
+        "circuit.success_threshold"
+    );
+    diff_field!(
+        "circuit.error_rate_threshold",
+        config.circuit.error_rate_threshold,
+        defaults.circuit.error_rate_threshold,
+        "circuit.error_rate_threshold"
+    );
+    diff_field!(
+        "circuit.window_secs",
+        config.circuit.window_secs,
+        defaults.circuit.window_secs,
+        "circuit.window_secs"
+    );
+    diff_field!(
+        "circuit.open_cooldown_secs",
+        config.circuit.open_cooldown_secs,
+        defaults.circuit.open_cooldown_secs,
+        "circuit.open_cooldown_secs"
+    );
+    diff_field!(
+        "circuit.half_open_max_probes",
+        config.circuit.half_open_max_probes,
+        defaults.circuit.half_open_max_probes,
+        "circuit.half_open_max_probes"
+    );
+
+    // Output section
+    diff_field!(
+        "output.visibility",
+        config.output.visibility,
+        defaults.output.visibility,
+        "output.visibility"
+    );
+    diff_field!(
+        "output.first_run_complete",
+        config.output.first_run_complete,
+        defaults.output.first_run_complete,
+        "output.first_run_complete"
+    );
+
+    // Self-healing section
+    diff_field!(
+        "self_healing.hook_starts_daemon",
+        config.self_healing.hook_starts_daemon,
+        defaults.self_healing.hook_starts_daemon,
+        "self_healing.hook_starts_daemon"
+    );
+    diff_field!(
+        "self_healing.auto_start_cooldown_secs",
+        config.self_healing.auto_start_cooldown_secs,
+        defaults.self_healing.auto_start_cooldown_secs,
+        "self_healing.auto_start_cooldown_secs"
+    );
+    diff_field!(
+        "self_healing.auto_start_timeout_secs",
+        config.self_healing.auto_start_timeout_secs,
+        defaults.self_healing.auto_start_timeout_secs,
+        "self_healing.auto_start_timeout_secs"
+    );
+
+    // Environment allowlist (compare as sets)
+    if !config.environment.allowlist.is_empty()
+        && config.environment.allowlist != defaults.environment.allowlist
+    {
+        let source = sources
+            .get("environment.allowlist")
+            .map(|s| format!("{:?}", s))
+            .unwrap_or_else(|| "unknown".to_string());
+        entries.push(ConfigDiffEntry {
+            key: "environment.allowlist".to_string(),
+            current: format!("[{}]", config.environment.allowlist.join(", ")),
+            default: format!("[{}]", defaults.environment.allowlist.join(", ")),
+            source,
+        });
+    }
+
+    let total_changes = entries.len();
+
+    // Output
+    if ctx.is_json() {
+        let response = ConfigDiffResponse {
+            entries,
+            total_changes,
+        };
+        ctx.json(&ApiResponse::ok("config diff", response))?;
+    } else if entries.is_empty() {
+        println!(
+            "{} All configuration values are at defaults",
+            StatusIndicator::Success.display(style)
+        );
+    } else {
+        println!(
+            "{} Configuration Diff (non-default values)",
+            style.highlight("RCH")
+        );
+        println!();
+
+        // Print header
+        println!(
+            "{:<40} {:<20} {:<20} {}",
+            style.highlight("Key"),
+            style.highlight("Current"),
+            style.highlight("Default"),
+            style.highlight("Source")
+        );
+        println!("{}", "-".repeat(95));
+
+        for entry in &entries {
+            // Truncate long values
+            let current = if entry.current.len() > 18 {
+                format!("{}...", &entry.current[..15])
+            } else {
+                entry.current.clone()
+            };
+            let default = if entry.default.len() > 18 {
+                format!("{}...", &entry.default[..15])
+            } else {
+                entry.default.clone()
+            };
+
+            println!(
+                "{:<40} {:<20} {:<20} {}",
+                entry.key,
+                current,
+                style.muted(&default),
+                entry.source
+            );
+        }
+
+        println!();
+        println!("Total: {} non-default value(s)", total_changes);
+    }
+
+    Ok(())
+}
+
 fn parse_bool(value: &str, key: &str) -> Result<bool> {
     value.trim().parse::<bool>().map_err(|_| {
         ConfigError::InvalidValue {
@@ -5710,6 +6216,7 @@ pub async fn diagnose(command: &str, ctx: &OutputContext) -> Result<()> {
             &socket_path,
             &project,
             estimated_cores,
+            command,
             toolchain.as_ref(),
             required_runtime,
             0,

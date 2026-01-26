@@ -200,10 +200,10 @@ fn extract_profile_flag(command: &str) -> Option<String> {
 
     let mut iter = command.split_whitespace();
     while let Some(token) = iter.next() {
-        if token == "--profile" {
-            if let Some(value) = iter.next() {
-                return Some(value.to_string());
-            }
+        if token == "--profile"
+            && let Some(value) = iter.next()
+        {
+            return Some(value.to_string());
         }
     }
     None
@@ -978,6 +978,7 @@ async fn process_hook(input: HookInput) -> HookOutput {
         &config.general.socket_path,
         &project,
         estimated_cores,
+        command,
         toolchain.as_ref(),
         required_runtime,
         classification_duration_us,
@@ -1013,6 +1014,7 @@ async fn process_hook(input: HookInput) -> HookOutput {
                     &config.general.socket_path,
                     &project,
                     estimated_cores,
+                    command,
                     toolchain.as_ref(),
                     required_runtime,
                     classification_duration_us,
@@ -1124,7 +1126,11 @@ async fn handle_selection_response(
                 ));
 
                 // Record successful build for cache affinity
-                if let Err(e) = record_build(&config.general.socket_path, &worker.id, project).await
+                let is_test = classification_kind
+                    .map(|kind| kind.is_test_command())
+                    .unwrap_or(false);
+                if let Err(e) =
+                    record_build(&config.general.socket_path, &worker.id, project, is_test).await
                 {
                     warn!("Failed to record build: {}", e);
                 }
@@ -1219,6 +1225,7 @@ pub(crate) async fn query_daemon(
     socket_path: &str,
     project: &str,
     cores: u32,
+    command: &str,
     toolchain: Option<&ToolchainInfo>,
     required_runtime: RequiredRuntime,
     classification_duration_us: u64,
@@ -1237,6 +1244,7 @@ pub(crate) async fn query_daemon(
 
     // Build query string
     let mut query = format!("project={}&cores={}", urlencoding_encode(project), cores);
+    query.push_str(&format!("&command={}", urlencoding_encode(command)));
 
     if let Some(tc) = toolchain
         && let Ok(json) = serde_json::to_string(tc)
@@ -1323,6 +1331,7 @@ pub(crate) async fn record_build(
     socket_path: &str,
     worker_id: &WorkerId,
     project: &str,
+    is_test: bool,
 ) -> anyhow::Result<()> {
     if !Path::new(socket_path).exists() {
         return Ok(()); // Ignore if daemon gone
@@ -1332,11 +1341,15 @@ pub(crate) async fn record_build(
     let (reader, mut writer) = stream.into_split();
 
     // Send request
-    let request = format!(
-        "POST /record-build?worker={}&project={}\n",
+    let mut request = format!(
+        "POST /record-build?worker={}&project={}",
         urlencoding_encode(worker_id.as_str()),
         urlencoding_encode(project)
     );
+    if is_test {
+        request.push_str("&test=1");
+    }
+    request.push('\n');
     writer.write_all(request.as_bytes()).await?;
     writer.flush().await?;
 
@@ -2355,6 +2368,7 @@ mod tests {
             "/tmp/nonexistent_rch_test.sock",
             "testproj",
             4,
+            "cargo build",
             None,
             RequiredRuntime::None,
             100, // 100µs classification time
@@ -2396,6 +2410,7 @@ mod tests {
             assert!(request_line.starts_with("GET /select-worker"));
             assert!(request_line.contains("project="));
             assert!(request_line.contains("cores="));
+            assert!(request_line.contains("command=cargo%20build"));
 
             // Send mock response
             let response = SelectionResponse {
@@ -2431,6 +2446,7 @@ mod tests {
             &socket_path,
             "test-project",
             4,
+            "cargo build",
             None,
             RequiredRuntime::None,
             100,
@@ -2497,6 +2513,7 @@ mod tests {
             &socket_path,
             "my project/test",
             2,
+            "cargo build --release",
             None,
             RequiredRuntime::None,
             150, // 150µs classification time

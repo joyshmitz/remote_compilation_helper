@@ -7,7 +7,7 @@
 
 use crate::history::BuildHistory;
 use crate::metrics;
-use crate::selection::WorkerSelector;
+use crate::selection::{CacheUse, WorkerSelector};
 use crate::workers::WorkerPool;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use rch_common::BuildLocation;
@@ -394,7 +394,7 @@ async fn estimate_cache_hits(
             continue;
         };
         total += 1;
-        if cache.has_recent_build(worker_id, &record.project_id, window) {
+        if cache.has_recent_build(worker_id, &record.project_id, CacheUse::Build, window) {
             hits += 1;
         }
     }

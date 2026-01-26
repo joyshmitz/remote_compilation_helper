@@ -729,36 +729,42 @@ where
     let stdout = child.stdout.take().context("Failed to capture stdout")?;
     let stderr = child.stderr.take().context("Failed to capture stderr")?;
 
-    let mut stdout_reader = BufReader::new(stdout).lines();
-    let mut stderr_reader = BufReader::new(stderr).lines();
+    // Use a channel to aggregate lines from both streams
+    // Capacity 100 ensures we don't consume too much memory if on_line is slow,
+    // but allows some buffering.
+    let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+    let tx_stderr = tx.clone();
 
-    let mut combined = String::new();
-    let mut stdout_done = false;
-    let mut stderr_done = false;
+    let tx_stdout = tx.clone();
 
-    while !stdout_done || !stderr_done {
-        tokio::select! {
-            line = stdout_reader.next_line(), if !stdout_done => {
-                match line? {
-                    Some(text) => {
-                        on_line(&text);
-                        combined.push_str(&text);
-                        combined.push('\n');
-                    }
-                    None => stdout_done = true,
-                }
-            }
-            line = stderr_reader.next_line(), if !stderr_done => {
-                match line? {
-                    Some(text) => {
-                        on_line(&text);
-                        combined.push_str(&text);
-                        combined.push('\n');
-                    }
-                    None => stderr_done = true,
-                }
+    // Spawn task for stdout
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            if tx_stdout.send(line).await.is_err() {
+                break;
             }
         }
+    });
+
+    // Spawn task for stderr
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            if tx_stderr.send(line).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Drop the original tx so rx will close when both tasks are done
+    drop(tx);
+
+    let mut combined = String::new();
+    while let Some(text) = rx.recv().await {
+        on_line(&text);
+        combined.push_str(&text);
+        combined.push('\n');
     }
 
     let status = child.wait().await.context("Failed to wait on rsync")?;

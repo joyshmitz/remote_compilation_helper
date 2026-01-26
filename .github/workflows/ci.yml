@@ -45,6 +45,17 @@ jobs:
           cache-on-failure: true
       - run: cargo check --all-targets --all-features
 
+  # Validate ACFS manifest sync
+  manifest_sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run manifest sync tests
+        run: |
+          chmod +x tests/manifest_sync_test.sh
+          ./tests/manifest_sync_test.sh
+
   # Ensure consistent formatting
   fmt:
     runs-on: ubuntu-latest

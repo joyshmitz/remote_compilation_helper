@@ -208,10 +208,7 @@ impl ConfigLock {
 
     /// Check if a lock is stale (holder process dead or lock too old).
     fn is_stale_lock(path: &Path) -> Result<bool> {
-        let info = match Self::read_lock_info(path) {
-            Ok(info) => Some(info),
-            Err(_) => None,
-        };
+        let info = Self::read_lock_info(path).ok();
 
         let Some(info) = info else {
             if let Ok(metadata) = fs::metadata(path)

@@ -140,24 +140,20 @@ fn detect_key_metadata(path: &Path) -> Option<KeyMetadata> {
 
     if let Ok(output) = Command::new("ssh-keygen").arg("-lf").arg(path).output()
         && output.status.success()
+        && let Ok(stdout) = String::from_utf8(output.stdout)
+        && let Some(line) = stdout.lines().next()
     {
-        if let Ok(stdout) = String::from_utf8(output.stdout) {
-            if let Some(line) = stdout.lines().next() {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if let Some(bits_str) = parts.get(0) {
-                    bits = bits_str.parse::<u32>().ok();
-                }
-                if let Some(fp) = parts.get(1) {
-                    fingerprint = Some(fp.to_string());
-                }
-                if let Some(last) = parts.last() {
-                    if let Some(inner) = last.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
-                        if let Some(parsed) = parse_key_type_label(inner) {
-                            key_type = parsed;
-                        }
-                    }
-                }
-            }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        bits = parts
+            .first()
+            .and_then(|bits_str| bits_str.parse::<u32>().ok());
+        fingerprint = parts.get(1).map(|fp| (*fp).to_string());
+
+        if let Some(last) = parts.last()
+            && let Some(inner) = last.strip_prefix('(').and_then(|s| s.strip_suffix(')'))
+            && let Some(parsed) = parse_key_type_label(inner)
+        {
+            key_type = parsed;
         }
     }
 

@@ -449,28 +449,27 @@ pub fn normalize_command(cmd: &str) -> Cow<'_, str> {
             changed = true;
         }
 
+        // Strip absolute paths: /usr/bin/cargo -> cargo
+        // We assume the command is the first word
+        if result.starts_with('/') {
+            if let Some(space_idx) = result.find(' ') {
+                let cmd_part = &result[..space_idx];
+                if let Some(last_slash) = cmd_part.rfind('/') {
+                    // Result becomes substring starting after the last slash of the command word
+                    result = &result[last_slash + 1..];
+                    changed = true;
+                }
+            } else {
+                // Single word command
+                if let Some(last_slash) = result.rfind('/') {
+                    result = &result[last_slash + 1..];
+                    changed = true;
+                }
+            }
+        }
+
         if !changed {
             break;
-        }
-    }
-
-    // Strip absolute paths: /usr/bin/cargo -> cargo
-    // We assume the command is the first word
-    if result.starts_with('/') {
-        if let Some(space_idx) = result.find(' ') {
-            let cmd_part = &result[..space_idx];
-            if let Some(last_slash) = cmd_part.rfind('/') {
-                // Reconstruct: <stripped_cmd> <rest>
-                // This is tricky with Cow, so we'll just return Owned if we modify
-                let stripped_cmd = &cmd_part[last_slash + 1..];
-                let rest = &result[space_idx..];
-                return Cow::Owned(format!("{}{}", stripped_cmd, rest));
-            }
-        } else {
-            // Single word command
-            if let Some(last_slash) = result.rfind('/') {
-                result = &result[last_slash + 1..];
-            }
         }
     }
 
@@ -1882,5 +1881,25 @@ mod tests {
         let result = classify_command("cargo bench | tee output.txt");
         assert!(!result.is_compilation);
         assert!(result.reason.contains("piped"));
+    }
+
+    #[test]
+
+    fn test_normalize_path_and_wrapper_bug_repro() {
+        // Case: /usr/bin/time cargo build
+
+        // Current behavior: strips path -> "time cargo build", then returns.
+
+        // Desired behavior: strips path -> "time cargo build", then strips wrapper -> "cargo build".
+
+        // This test asserts the CURRENT BROKEN behavior.
+
+        let normalized = normalize_command("/usr/bin/time cargo build");
+
+        assert_eq!(normalized, "cargo build");
+
+        let result = classify_command("/usr/bin/time cargo build");
+
+        assert!(result.is_compilation);
     }
 }

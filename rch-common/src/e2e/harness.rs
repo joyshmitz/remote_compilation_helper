@@ -143,6 +143,19 @@ pub struct HarnessConfig {
 
 impl Default for HarnessConfig {
     fn default() -> Self {
+        fn cargo_bin_exe(candidates: &[&str]) -> Option<PathBuf> {
+            for candidate in candidates {
+                let key = format!("CARGO_BIN_EXE_{candidate}");
+                if let Ok(value) = std::env::var(&key) {
+                    let trimmed = value.trim();
+                    if !trimmed.is_empty() {
+                        return Some(PathBuf::from(trimmed));
+                    }
+                }
+            }
+            None
+        }
+
         // Find binaries in target/debug or target/release
         let cargo_target = std::env::var("CARGO_TARGET_DIR")
             .map(PathBuf::from)
@@ -169,9 +182,10 @@ impl Default for HarnessConfig {
             default_timeout: Duration::from_secs(30),
             cleanup_on_success: true,
             cleanup_on_failure: false,
-            rch_binary: bin_dir.join("rch"),
-            rchd_binary: bin_dir.join("rchd"),
-            rch_wkr_binary: bin_dir.join("rch-wkr"),
+            rch_binary: cargo_bin_exe(&["rch"]).unwrap_or_else(|| bin_dir.join("rch")),
+            rchd_binary: cargo_bin_exe(&["rchd"]).unwrap_or_else(|| bin_dir.join("rchd")),
+            rch_wkr_binary: cargo_bin_exe(&["rch-wkr", "rch_wkr"])
+                .unwrap_or_else(|| bin_dir.join("rch-wkr")),
             env_vars,
         }
     }

@@ -15,7 +15,7 @@ use crate::workers::{WorkerPool, WorkerState};
 use rand::Rng;
 use rch_common::{
     CircuitBreakerConfig, CircuitState, RequiredRuntime, SelectionConfig, SelectionReason,
-    SelectionRequest, SelectionStrategy, SelectionWeightConfig,
+    SelectionRequest, SelectionStrategy, SelectionWeightConfig, classify_command,
 };
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -26,6 +26,8 @@ use tracing::debug;
 
 const DEFAULT_NETWORK_SCORE: f64 = 0.5;
 const NETWORK_LATENCY_HALF_LIFE_MS: f64 = 200.0;
+const TEST_CACHE_BOOST: f64 = 1.5;
+const TEST_BUILD_FALLBACK_FACTOR: f64 = 0.4;
 
 /// Weights for the selection scoring algorithm (legacy compatibility).
 #[derive(Debug, Clone)]
@@ -70,11 +72,34 @@ impl From<&SelectionWeightConfig> for SelectionWeights {
 // Cache Affinity Tracking
 // ============================================================================
 
-/// Tracks recent project builds per worker for cache affinity scoring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheUse {
+    Build,
+    Test,
+}
+
+#[derive(Debug, Default, Clone)]
+struct CacheState {
+    last_build: Option<Instant>,
+    last_test: Option<Instant>,
+}
+
+impl CacheState {
+    fn last_activity(&self) -> Option<Instant> {
+        match (self.last_build, self.last_test) {
+            (Some(build), Some(test)) => Some(build.max(test)),
+            (Some(build), None) => Some(build),
+            (None, Some(test)) => Some(test),
+            (None, None) => None,
+        }
+    }
+}
+
+/// Tracks recent build/test activity per worker for cache affinity scoring.
 #[derive(Debug, Default)]
 pub struct CacheTracker {
-    /// Map from worker_id -> (project_id -> last_build_time)
-    workers: HashMap<String, HashMap<String, Instant>>,
+    /// Map from worker_id -> (project_id -> CacheState)
+    workers: HashMap<String, HashMap<String, CacheState>>,
     /// Maximum projects to track per worker.
     max_projects_per_worker: usize,
 }
@@ -89,15 +114,27 @@ impl CacheTracker {
     }
 
     /// Record a build completion on a worker for a project.
-    pub fn record_build(&mut self, worker_id: &str, project_id: &str) {
+    pub fn record_build(&mut self, worker_id: &str, project_id: &str, cache_use: CacheUse) {
         let cache = self.workers.entry(worker_id.to_string()).or_default();
-        cache.insert(project_id.to_string(), Instant::now());
+        let state = cache.entry(project_id.to_string()).or_default();
+        let now = Instant::now();
+
+        match cache_use {
+            CacheUse::Build => {
+                state.last_build = Some(now);
+            }
+            CacheUse::Test => {
+                state.last_test = Some(now);
+                // Tests also produce build artifacts, so treat as a build too.
+                state.last_build = Some(now);
+            }
+        }
 
         // Limit to max_projects_per_worker most recent
         while cache.len() > self.max_projects_per_worker {
             let oldest = cache
                 .iter()
-                .min_by_key(|(_, time)| *time)
+                .min_by_key(|(_, state)| state.last_activity())
                 .map(|(k, _)| k.clone());
             if let Some(key) = oldest {
                 cache.remove(&key);
@@ -113,34 +150,66 @@ impl CacheTracker {
     /// - Build 6-24 hours ago: 0.2-0.5 (linear decay)
     /// - Build > 24 hours ago: 0.0-0.2 (linear decay)
     /// - No build: 0.0
-    pub fn estimate_warmth(&self, worker_id: &str, project_id: &str) -> f64 {
+    pub fn estimate_warmth(&self, worker_id: &str, project_id: &str, cache_use: CacheUse) -> f64 {
         self.workers
             .get(worker_id)
             .and_then(|c| c.get(project_id))
-            .map(|last_build| {
-                let age = last_build.elapsed();
-                let hours = age.as_secs_f64() / 3600.0;
-
-                if hours < 1.0 {
-                    1.0
-                } else if hours < 6.0 {
-                    1.0 - (hours - 1.0) * 0.1 // 1.0 -> 0.5 over 5 hours
-                } else if hours < 24.0 {
-                    0.5 - (hours - 6.0) * (0.3 / 18.0) // 0.5 -> 0.2 over 18 hours
-                } else {
-                    0.2 * (-((hours - 24.0) / 24.0)).exp() // Exponential decay from 0.2
-                }
+            .map(|state| match cache_use {
+                CacheUse::Build => state
+                    .last_activity()
+                    .map(Self::warmth_from_instant)
+                    .unwrap_or(0.0),
+                CacheUse::Test => match state.last_test {
+                    Some(last_test) => Self::warmth_from_instant(last_test),
+                    None => {
+                        state
+                            .last_build
+                            .map(Self::warmth_from_instant)
+                            .unwrap_or(0.0)
+                            * TEST_BUILD_FALLBACK_FACTOR
+                    }
+                },
             })
             .unwrap_or(0.0)
     }
 
     /// Check if a worker has a recent build for a project.
-    pub fn has_recent_build(&self, worker_id: &str, project_id: &str, max_age: Duration) -> bool {
+    pub fn has_recent_build(
+        &self,
+        worker_id: &str,
+        project_id: &str,
+        cache_use: CacheUse,
+        max_age: Duration,
+    ) -> bool {
         self.workers
             .get(worker_id)
             .and_then(|c| c.get(project_id))
-            .map(|last_build| last_build.elapsed() < max_age)
+            .map(|state| match cache_use {
+                CacheUse::Build => state
+                    .last_activity()
+                    .map(|instant| instant.elapsed() < max_age)
+                    .unwrap_or(false),
+                CacheUse::Test => state
+                    .last_test
+                    .map(|instant| instant.elapsed() < max_age)
+                    .unwrap_or(false),
+            })
             .unwrap_or(false)
+    }
+
+    fn warmth_from_instant(last_build: Instant) -> f64 {
+        let age = last_build.elapsed();
+        let hours = age.as_secs_f64() / 3600.0;
+
+        if hours < 1.0 {
+            1.0
+        } else if hours < 6.0 {
+            1.0 - (hours - 1.0) * 0.1 // 1.0 -> 0.5 over 5 hours
+        } else if hours < 24.0 {
+            0.5 - (hours - 6.0) * (0.3 / 18.0) // 0.5 -> 0.2 over 18 hours
+        } else {
+            0.2 * (-((hours - 24.0) / 24.0)).exp() // Exponential decay from 0.2
+        }
     }
 }
 
@@ -227,6 +296,23 @@ pub struct SelectionResult {
     pub reason: SelectionReason,
 }
 
+fn cache_use_for_request(request: &SelectionRequest) -> CacheUse {
+    let Some(command) = request.command.as_deref() else {
+        return CacheUse::Build;
+    };
+
+    let classification = classify_command(command);
+    if classification
+        .kind
+        .map(|kind| kind.is_test_command())
+        .unwrap_or(false)
+    {
+        CacheUse::Test
+    } else {
+        CacheUse::Build
+    }
+}
+
 impl WorkerSelector {
     /// Create a new worker selector with default configuration.
     pub fn new() -> Self {
@@ -251,6 +337,7 @@ impl WorkerSelector {
     /// Select a worker using the configured strategy.
     pub async fn select(&self, pool: &WorkerPool, request: &SelectionRequest) -> SelectionResult {
         let _timer = DecisionTimer::new(DecisionType::WorkerSelection);
+        let cache_use = cache_use_for_request(request);
 
         // Get eligible workers
         let eligible = match self.get_eligible_workers(pool, request).await {
@@ -274,16 +361,19 @@ impl WorkerSelector {
         let selected = match self.config.strategy {
             SelectionStrategy::Priority => self.select_by_priority(&eligible).await,
             SelectionStrategy::Fastest => self.select_by_fastest(&eligible).await,
-            SelectionStrategy::Balanced => self.select_balanced(&eligible, request).await,
+            SelectionStrategy::Balanced => {
+                self.select_balanced(&eligible, request, cache_use).await
+            }
             SelectionStrategy::CacheAffinity => {
-                self.select_cache_affinity(&eligible, request).await
+                self.select_cache_affinity(&eligible, request, cache_use)
+                    .await
             }
             SelectionStrategy::FairFastest => self.select_fair_fastest(&eligible).await,
         };
 
         if let Some((worker, circuit_state)) = selected {
             if debug_routing_enabled() {
-                let scores = self.debug_scores(&eligible, request).await;
+                let scores = self.debug_scores(&eligible, request, cache_use).await;
                 let worker_id = worker.config.read().await.id.as_str().to_string();
                 let circuit_label = format!("{:?}", circuit_state);
                 log_routing_decision(
@@ -327,16 +417,22 @@ impl WorkerSelector {
         }
     }
 
-    /// Record a build completion for cache affinity tracking.
-    pub async fn record_build(&self, worker_id: &str, project_id: &str) {
+    /// Record a build/test completion for cache affinity tracking.
+    pub async fn record_build(&self, worker_id: &str, project_id: &str, is_test: bool) {
         let mut cache = self.cache_tracker.write().await;
-        cache.record_build(worker_id, project_id);
+        let cache_use = if is_test {
+            CacheUse::Test
+        } else {
+            CacheUse::Build
+        };
+        cache.record_build(worker_id, project_id, cache_use);
     }
 
     async fn debug_scores(
         &self,
         workers: &[(Arc<WorkerState>, CircuitState)],
         request: &SelectionRequest,
+        cache_use: CacheUse,
     ) -> Vec<(String, f64)> {
         let mut scores = Vec::new();
 
@@ -365,6 +461,7 @@ impl WorkerSelector {
                             *circuit_state,
                             &request.project,
                             &cache,
+                            cache_use,
                             weights,
                             min_priority,
                             max_priority,
@@ -378,7 +475,7 @@ impl WorkerSelector {
                 let cache = self.cache_tracker.read().await;
                 for (worker, _) in workers {
                     let id = worker.config.read().await.id.as_str().to_string();
-                    let score = cache.estimate_warmth(id.as_str(), &request.project);
+                    let score = cache.estimate_warmth(id.as_str(), &request.project, cache_use);
                     scores.push((id, score));
                 }
             }
@@ -578,6 +675,7 @@ impl WorkerSelector {
         &self,
         workers: &[(Arc<WorkerState>, CircuitState)],
         request: &SelectionRequest,
+        cache_use: CacheUse,
     ) -> Option<(Arc<WorkerState>, CircuitState)> {
         let cache = self.cache_tracker.read().await;
         let weights = &self.config.weights;
@@ -595,6 +693,7 @@ impl WorkerSelector {
                     *circuit_state,
                     &request.project,
                     &cache,
+                    cache_use,
                     weights,
                     min_priority,
                     max_priority,
@@ -617,6 +716,7 @@ impl WorkerSelector {
         circuit_state: CircuitState,
         project: &str,
         cache: &CacheTracker,
+        cache_use: CacheUse,
         weights: &SelectionWeightConfig,
         min_priority: u32,
         max_priority: u32,
@@ -640,7 +740,10 @@ impl WorkerSelector {
         let slot_score = worker.available_slots().await as f64 / total_slots;
 
         // Cache affinity (0-1)
-        let cache_score = cache.estimate_warmth(config.id.as_str(), project);
+        let mut cache_score = cache.estimate_warmth(config.id.as_str(), project, cache_use);
+        if cache_use == CacheUse::Test {
+            cache_score = (cache_score * TEST_CACHE_BOOST).min(1.0);
+        }
 
         // Health score (0-1)
         let health_score = self.health_score(worker).await;
@@ -667,7 +770,7 @@ impl WorkerSelector {
         };
 
         debug!(
-            "Worker {} balanced score: {:.3} (speed={:.2}, load={:.2}, slots={:.2}, health={:.2}, cache={:.2}, network={:.2}, priority={:.2}, half_open={:?})",
+            "Worker {} balanced score: {:.3} (speed={:.2}, load={:.2}, slots={:.2}, health={:.2}, cache={:.2}, network={:.2}, priority={:.2}, half_open={:?}, cache_use={:?})",
             config.id,
             final_score,
             speed_score,
@@ -677,7 +780,8 @@ impl WorkerSelector {
             cache_score,
             network_score,
             priority_score,
-            circuit_state == CircuitState::HalfOpen
+            circuit_state == CircuitState::HalfOpen,
+            cache_use
         );
 
         final_score
@@ -707,6 +811,7 @@ impl WorkerSelector {
         &self,
         workers: &[(Arc<WorkerState>, CircuitState)],
         request: &SelectionRequest,
+        cache_use: CacheUse,
     ) -> Option<(Arc<WorkerState>, CircuitState)> {
         let cache = self.cache_tracker.read().await;
 
@@ -715,7 +820,7 @@ impl WorkerSelector {
         for pair in workers {
             let (w, _) = pair;
             let id = w.config.read().await.id.clone();
-            if cache.estimate_warmth(id.as_str(), &request.project) > 0.5 {
+            if cache.estimate_warmth(id.as_str(), &request.project, cache_use) > 0.5 {
                 warm_workers.push(pair.clone());
             }
         }
@@ -1602,31 +1707,41 @@ mod tests {
     #[test]
     fn test_cache_tracker_record_and_warmth() {
         let mut tracker = CacheTracker::new();
-        tracker.record_build("worker1", "project-a");
+        tracker.record_build("worker1", "project-a", CacheUse::Build);
 
         // Should have full warmth for just-recorded build
-        let warmth = tracker.estimate_warmth("worker1", "project-a");
+        let warmth = tracker.estimate_warmth("worker1", "project-a", CacheUse::Build);
         assert!(warmth > 0.9, "Expected warmth > 0.9, got {}", warmth);
 
         // Unknown project should have zero warmth
-        let unknown = tracker.estimate_warmth("worker1", "project-b");
+        let unknown = tracker.estimate_warmth("worker1", "project-b", CacheUse::Build);
         assert_eq!(unknown, 0.0);
 
         // Unknown worker should have zero warmth
-        let unknown = tracker.estimate_warmth("worker2", "project-a");
+        let unknown = tracker.estimate_warmth("worker2", "project-a", CacheUse::Build);
         assert_eq!(unknown, 0.0);
     }
 
     #[test]
     fn test_cache_tracker_has_recent_build() {
         let mut tracker = CacheTracker::new();
-        tracker.record_build("worker1", "project-a");
+        tracker.record_build("worker1", "project-a", CacheUse::Build);
 
         // Should report recent build within short window
-        assert!(tracker.has_recent_build("worker1", "project-a", Duration::from_secs(60)));
+        assert!(tracker.has_recent_build(
+            "worker1",
+            "project-a",
+            CacheUse::Build,
+            Duration::from_secs(60)
+        ));
 
         // Unknown project should not have recent build
-        assert!(!tracker.has_recent_build("worker1", "project-b", Duration::from_secs(60)));
+        assert!(!tracker.has_recent_build(
+            "worker1",
+            "project-b",
+            CacheUse::Build,
+            Duration::from_secs(60)
+        ));
     }
 
     // =========================================================================
@@ -1957,7 +2072,9 @@ mod tests {
         );
 
         // Record a build for warm-cache worker
-        selector.record_build("warm-cache", "test-project").await;
+        selector
+            .record_build("warm-cache", "test-project", false)
+            .await;
 
         let request = SelectionRequest {
             project: "test-project".to_string(),
@@ -1974,6 +2091,48 @@ mod tests {
         let selected = result.worker.expect("Expected a worker");
         // Should prefer warm cache despite lower speed
         assert_eq!(selected.config.read().await.id.as_str(), "warm-cache");
+    }
+
+    #[tokio::test]
+    async fn test_cache_affinity_prefers_test_cache_for_test_commands() {
+        let pool = WorkerPool::new();
+        pool.add_worker_state(make_worker("test-warm", 8, 50.0))
+            .await;
+        pool.add_worker_state(make_worker("fast", 8, 90.0)).await;
+
+        let selector = WorkerSelector::with_config(
+            SelectionConfig {
+                strategy: SelectionStrategy::CacheAffinity,
+                ..Default::default()
+            },
+            CircuitBreakerConfig::default(),
+        );
+
+        // Record only build cache first (no test binaries yet).
+        selector.record_build("test-warm", "proj", false).await;
+
+        let request = SelectionRequest {
+            project: "proj".to_string(),
+            command: Some("cargo test".to_string()),
+            estimated_cores: 2,
+            preferred_workers: vec![],
+            toolchain: None,
+            required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
+            hook_pid: None,
+        };
+
+        let result = selector.select(&pool, &request).await;
+        let selected = result.worker.expect("Expected a worker");
+        // Build cache alone shouldn't count as warm for tests.
+        assert_eq!(selected.config.read().await.id.as_str(), "fast");
+
+        // Now record a test run and ensure affinity selects the warm worker.
+        selector.record_build("test-warm", "proj", true).await;
+
+        let result = selector.select(&pool, &request).await;
+        let selected = result.worker.expect("Expected a worker");
+        assert_eq!(selected.config.read().await.id.as_str(), "test-warm");
     }
 
     #[tokio::test]
@@ -2068,11 +2227,11 @@ mod tests {
         let selector = WorkerSelector::new();
 
         // Record a build
-        selector.record_build("worker1", "project-a").await;
+        selector.record_build("worker1", "project-a", false).await;
 
         // Verify cache warmth is tracked
         let cache = selector.cache_tracker.read().await;
-        let warmth = cache.estimate_warmth("worker1", "project-a");
+        let warmth = cache.estimate_warmth("worker1", "project-a", CacheUse::Build);
         assert!(warmth > 0.9);
     }
 

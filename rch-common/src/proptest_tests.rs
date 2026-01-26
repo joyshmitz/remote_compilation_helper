@@ -256,9 +256,9 @@ mod tests {
             let path = PathBuf::from(&malicious_path);
 
             // Simulate the expand_tilde function logic
-            let expanded = if malicious_path.starts_with("~/") {
+            let expanded = if let Some(stripped) = malicious_path.strip_prefix("~/") {
                 if let Some(home) = dirs::home_dir() {
-                    home.join(&malicious_path[2..]).display().to_string()
+                    home.join(stripped).display().to_string()
                 } else {
                     malicious_path.clone()
                 }
@@ -298,16 +298,16 @@ mod tests {
             };
 
             // Invariant: expansion should never produce paths outside home for ~/ paths
-            if path.starts_with("~/") {
-                if let Some(home) = dirs::home_dir() {
-                    let home_str = home.display().to_string();
-                    prop_assert!(
-                        expanded.starts_with(&home_str) || expanded == path,
-                        "Path escaped home: {} -> {}",
-                        path,
-                        expanded
-                    );
-                }
+            if path.starts_with("~/")
+                && let Some(home) = dirs::home_dir()
+            {
+                let home_str = home.display().to_string();
+                prop_assert!(
+                    expanded.starts_with(&home_str) || expanded == path,
+                    "Path escaped home: {} -> {}",
+                    path,
+                    expanded
+                );
             }
         }
     }
@@ -334,7 +334,7 @@ mod tests {
             if parts.len() >= 2 {
                 let ver = parts[1];
                 // Parse major.minor.patch
-                let nums: Vec<&str> = ver.split(|c| c == '.' || c == '-').collect();
+                let nums: Vec<&str> = ver.split(['.', '-']).collect();
                 prop_assert!(!nums.is_empty(), "No version numbers found");
 
                 // First component should be numeric

@@ -179,10 +179,10 @@ fn find_bench_binary(root: &Path) -> Option<PathBuf> {
                 if !path.is_file() {
                     continue;
                 }
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name.starts_with("bench-") || name.starts_with("bench_project-") {
-                        return Some(path);
-                    }
+                if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                    && (name.starts_with("bench-") || name.starts_with("bench_project-"))
+                {
+                    return Some(path);
                 }
             }
         }

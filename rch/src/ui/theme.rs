@@ -234,6 +234,11 @@ impl Style {
         }
     }
 
+    /// Backwards-compatible alias for muted styling.
+    pub fn dim(&self, text: &str) -> ColoredString {
+        self.muted(text)
+    }
+
     /// Apply highlight/bold styling to text.
     pub fn highlight(&self, text: &str) -> ColoredString {
         if self.colors_enabled {

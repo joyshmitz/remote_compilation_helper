@@ -393,6 +393,12 @@ mod tests {
     }
 
     #[test]
+    fn test_context_accessor_returns_value() {
+        let console = RchConsole::with_context(OutputContext::Plain);
+        assert_eq!(console.context(), OutputContext::Plain);
+    }
+
+    #[test]
     fn test_with_context_all_modes() {
         let cases = [
             (OutputContext::Interactive, true, true, false),
@@ -508,6 +514,12 @@ mod tests {
     }
 
     #[test]
+    fn test_print_plain_suppressed_in_machine_mode() {
+        let console = RchConsole::with_context(OutputContext::Machine);
+        console.print_plain("plain");
+    }
+
+    #[test]
     fn test_status_messages_machine_mode() {
         let console = RchConsole::with_context(OutputContext::Machine);
         // These should be suppressed in machine mode (except print_error)
@@ -577,5 +589,41 @@ mod tests {
         let console = RchConsole::with_context(OutputContext::Machine);
         console.print_error("Test Error", "This is a test error message");
         // Should not panic - error output always happens
+    }
+
+    #[test]
+    fn test_threaded_console_usage() {
+        use std::thread;
+
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                thread::spawn(|| {
+                    let console = RchConsole::with_context(OutputContext::Plain);
+                    console.print_plain("test");
+                    console.print_or_plain("[bold]rich[/]", "plain");
+                    console.rule(None);
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+
+    #[cfg(feature = "rich-ui")]
+    #[test]
+    fn test_rich_paths_interactive() {
+        let console = RchConsole::with_context(OutputContext::Interactive);
+        console.print_rich("[bold]rich[/]");
+        let panel = rich_rust::renderables::Panel::from_text("renderable");
+        console.print_renderable(&panel);
+        console.rule(Some("Title"));
+        console.line();
+        console.print_error("Title", "Message");
+        console.print_success("success");
+        console.print_warning("warning");
+        console.print_info("info");
+        console.print_or_plain("[bold]rich[/]", "plain");
     }
 }

@@ -152,6 +152,20 @@ pub fn cache_path(project: &str, hash: &str) -> PathBuf {
     PathBuf::from(CACHE_BASE).join(project).join(hash)
 }
 
+/// Update the last-used timestamp of a project cache.
+///
+/// This creates or updates a marker file `.rch_last_used` in the directory,
+/// ensuring that the directory's modification time is updated. This prevents
+/// the cleanup logic (which checks directory mtime) from deleting actively
+/// used caches where source files might not be modified (e.g. re-running builds).
+pub fn touch_project(workdir: &std::path::Path) {
+    let marker_path = workdir.join(".rch_last_used");
+    // Just write an empty file to update the timestamp
+    if let Err(e) = std::fs::write(&marker_path, "") {
+        tracing::warn!("Failed to touch cache marker {:?}: {}", marker_path, e);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

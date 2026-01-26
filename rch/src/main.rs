@@ -762,6 +762,29 @@ The wizard helps you configure:
         #[arg(long, default_value = "shell")]
         format: String,
     },
+    /// Check configuration for potential issues and misconfigurations
+    #[command(after_help = r#"EXAMPLES:
+    rch config lint               # Check for issues with warnings/errors
+    rch config lint --json        # Machine-readable output for CI
+
+Checks for:
+  • Missing workers configuration
+  • Conflicting settings (force_local + force_remote)
+  • Invalid regex patterns in excludes
+  • Risky exclude patterns (removing essential directories)
+  • Performance warnings (compression=0 with large projects)"#)]
+    Lint,
+    /// Show configuration values that differ from defaults
+    #[command(after_help = r#"EXAMPLES:
+    rch config diff               # Show all non-default values
+    rch config diff --json        # Machine-readable output
+
+Shows:
+  • Key name
+  • Current value
+  • Default value
+  • Source (env, project, user)"#)]
+    Diff,
 }
 
 #[derive(Subcommand)]
@@ -1238,6 +1261,12 @@ async fn handle_config(action: ConfigAction, ctx: &OutputContext) -> Result<()> 
         }
         ConfigAction::Export { format } => {
             commands::config_export(&format, ctx)?;
+        }
+        ConfigAction::Lint => {
+            commands::config_lint(ctx)?;
+        }
+        ConfigAction::Diff => {
+            commands::config_diff(ctx)?;
         }
     }
     Ok(())
@@ -2070,6 +2099,28 @@ mod tests {
                 assert_eq!(format, "shell");
             }
             _ => panic!("Expected config export command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_config_lint() {
+        let cli = Cli::try_parse_from(["rch", "config", "lint"]).unwrap();
+        match cli.command {
+            Some(Commands::Config {
+                action: ConfigAction::Lint,
+            }) => {}
+            _ => panic!("Expected config lint command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_config_diff() {
+        let cli = Cli::try_parse_from(["rch", "config", "diff"]).unwrap();
+        match cli.command {
+            Some(Commands::Config {
+                action: ConfigAction::Diff,
+            }) => {}
+            _ => panic!("Expected config diff command"),
         }
     }
 

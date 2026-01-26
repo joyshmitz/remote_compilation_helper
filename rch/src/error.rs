@@ -4,7 +4,7 @@
 //! diagnostic capabilities for beautiful, actionable error messages.
 //!
 //! All public errors implement `Diagnostic` and follow the error code
-//! convention `rch::category::specific`.
+//! convention `RCH-Exxx`.
 
 #![allow(unused_assignments)]
 
@@ -26,7 +26,7 @@ pub enum ConfigError {
     /// Failed to read the configuration file from disk.
     #[error("Failed to read config file: {path}")]
     #[diagnostic(
-        code(rch::config::read_failed),
+        code("RCH-E002"),
         help("Check that the file exists and you have read permissions")
     )]
     ReadFailed {
@@ -37,7 +37,7 @@ pub enum ConfigError {
 
     /// TOML syntax error in configuration file.
     #[error("Invalid TOML syntax in config")]
-    #[diagnostic(code(rch::config::parse_error))]
+    #[diagnostic(code("RCH-E003"))]
     ParseError {
         #[source_code]
         src: NamedSource<String>,
@@ -48,15 +48,12 @@ pub enum ConfigError {
 
     /// Missing required configuration field.
     #[error("Missing required field: {field}")]
-    #[diagnostic(
-        code(rch::config::missing_field),
-        help("Add the '{field}' field to your config file")
-    )]
+    #[diagnostic(code("RCH-E004"), help("Add the '{field}' field to your config file"))]
     MissingField { field: String },
 
     /// Invalid configuration value.
     #[error("Invalid value for '{field}': {reason}")]
-    #[diagnostic(code(rch::config::invalid_value), help("{suggestion}"))]
+    #[diagnostic(code("RCH-E004"), help("{suggestion}"))]
     InvalidValue {
         field: String,
         reason: String,
@@ -65,16 +62,13 @@ pub enum ConfigError {
 
     /// Configuration file not found at expected location.
     #[error("Config file not found: {path}")]
-    #[diagnostic(
-        code(rch::config::not_found),
-        help("Create a config file with: rch config init")
-    )]
+    #[diagnostic(code("RCH-E001"), help("Create a config file with: rch config init"))]
     NotFound { path: PathBuf },
 
     /// Workers configuration file not found.
     #[error("Workers config not found: {path}")]
     #[diagnostic(
-        code(rch::config::workers_not_found),
+        code("RCH-E001"),
         help(
             "Create a workers config at ~/.config/rch/workers.toml\nExample:\n\n[[workers]]\nid = \"worker1\"\nhost = \"192.168.1.100\"\nuser = \"ubuntu\"\nidentity_file = \"~/.ssh/id_rsa\"\ntotal_slots = 16\n"
         )
@@ -104,7 +98,7 @@ pub enum WorkerError {
     /// SSH connection to worker failed.
     #[error("Connection to worker '{worker_id}' failed")]
     #[diagnostic(
-        code(rch::worker::connection_failed),
+        code("RCH-E100"),
         help("Verify SSH access with:\n  ssh -i {identity_file} {user}@{host}")
     )]
     ConnectionFailed {
@@ -119,23 +113,20 @@ pub enum WorkerError {
     /// Worker is configured but unhealthy.
     #[error("Worker '{worker_id}' is unhealthy: {reason}")]
     #[diagnostic(
-        code(rch::worker::unhealthy),
+        code("RCH-E202"),
         help("Check worker status: rch workers probe {worker_id}")
     )]
     Unhealthy { worker_id: String, reason: String },
 
     /// Worker not found in configuration.
     #[error("Worker '{worker_id}' not found in configuration")]
-    #[diagnostic(
-        code(rch::worker::not_found),
-        help("List available workers: rch workers list")
-    )]
+    #[diagnostic(code("RCH-E008"), help("List available workers: rch workers list"))]
     NotFound { worker_id: String },
 
     /// No workers are configured.
     #[error("No workers configured")]
     #[diagnostic(
-        code(rch::worker::none_configured),
+        code("RCH-E007"),
         help("Configure workers in ~/.config/rch/workers.toml")
     )]
     NoneConfigured,
@@ -143,7 +134,7 @@ pub enum WorkerError {
     /// All workers are busy (at capacity).
     #[error("All workers are at capacity")]
     #[diagnostic(
-        code(rch::worker::all_busy),
+        code("RCH-E204"),
         help("Wait for running jobs to complete or add more workers")
     )]
     AllBusy,
@@ -151,7 +142,7 @@ pub enum WorkerError {
     /// All workers have their circuit breakers open.
     #[error("All worker circuit breakers are open")]
     #[diagnostic(
-        code(rch::worker::all_circuits_open),
+        code("RCH-E207"),
         help(
             "Workers have experienced repeated failures.\nWait for circuit breakers to reset or check worker health:\n  rch workers probe --all"
         )
@@ -161,17 +152,14 @@ pub enum WorkerError {
     /// SSH key file not found.
     #[error("SSH identity file not found: {path}")]
     #[diagnostic(
-        code(rch::worker::identity_not_found),
+        code("RCH-E009"),
         help("Verify the identity_file path in your workers.toml")
     )]
     IdentityNotFound { path: PathBuf },
 
     /// SSH key has wrong permissions.
     #[error("SSH key has insecure permissions: {}", path.display())]
-    #[diagnostic(
-        code(rch::worker::insecure_permissions),
-        help("Fix with: chmod 600 <key_path>")
-    )]
+    #[diagnostic(code("RCH-E009"), help("Fix with: chmod 600 <key_path>"))]
     InsecurePermissions { path: PathBuf },
 }
 
@@ -185,7 +173,7 @@ pub enum SshError {
     /// SSH authentication failed (permission denied).
     #[error("SSH authentication failed for {user}@{host}")]
     #[diagnostic(
-        code(rch::ssh::permission_denied),
+        code("RCH-E101"),
         help(
             "SSH Troubleshooting:\n\
   1. Verify key exists:\n\
@@ -212,7 +200,7 @@ Run 'rch doctor' for comprehensive SSH diagnostics."
     /// SSH connection was refused by the host.
     #[error("SSH connection refused for {user}@{host}")]
     #[diagnostic(
-        code(rch::ssh::connection_refused),
+        code("RCH-E108"),
         help(
             "SSH Troubleshooting:\n\
   1. Ensure sshd is running on the worker and port 22 is open.\n\
@@ -231,7 +219,7 @@ Run 'rch doctor' for comprehensive SSH diagnostics."
     /// SSH connection timed out.
     #[error("SSH connection to {host} timed out after {timeout_secs}s")]
     #[diagnostic(
-        code(rch::ssh::timeout),
+        code("RCH-E104"),
         help(
             "SSH Troubleshooting:\n\
   1. Check network connectivity and firewall rules.\n\
@@ -250,7 +238,7 @@ Run 'rch doctor' for comprehensive SSH diagnostics."
     /// SSH host key verification failed.
     #[error("SSH host key verification failed for {host}")]
     #[diagnostic(
-        code(rch::ssh::host_key_verification_failed),
+        code("RCH-E103"),
         help(
             "SSH Troubleshooting:\n\
   1. Remove the old host key:\n\
@@ -271,7 +259,7 @@ Run 'rch doctor' for comprehensive SSH diagnostics."
     /// SSH agent is unavailable or has no keys.
     #[error("SSH agent unavailable for key {key_path:?}")]
     #[diagnostic(
-        code(rch::ssh::agent_unavailable),
+        code("RCH-E101"),
         help(
             "SSH Troubleshooting:\n\
   1. Start the SSH agent and add your key:\n\
@@ -292,7 +280,7 @@ Run 'rch doctor' for comprehensive SSH diagnostics."
     /// Generic SSH connection failure.
     #[error("SSH connection failed for {user}@{host}: {message}")]
     #[diagnostic(
-        code(rch::ssh::connection_failed),
+        code("RCH-E100"),
         help(
             "SSH Troubleshooting:\n\
   1. Verify host/user/key in workers.toml.\n\
@@ -318,16 +306,13 @@ Run 'rch doctor' for comprehensive SSH diagnostics."
 pub enum DaemonError {
     /// Daemon is not running.
     #[error("RCH daemon is not running")]
-    #[diagnostic(
-        code(rch::daemon::not_running),
-        help("Start the daemon with: rch daemon start")
-    )]
+    #[diagnostic(code("RCH-E502"), help("Start the daemon with: rch daemon start"))]
     NotRunning,
 
     /// Daemon socket file not found.
     #[error("Daemon socket not found at {socket_path}")]
     #[diagnostic(
-        code(rch::daemon::socket_not_found),
+        code("RCH-E502"),
         help(
             "The daemon socket file does not exist. This usually means:\n  1. The daemon is not running\n  2. The socket path is misconfigured\n\nStart the daemon: rch daemon start\nOr check config: rch config show | grep socket"
         )
@@ -337,7 +322,7 @@ pub enum DaemonError {
     /// Failed to connect to daemon.
     #[error("Failed to connect to daemon at {socket_path}")]
     #[diagnostic(
-        code(rch::daemon::connection_failed),
+        code("RCH-E500"),
         help(
             "The daemon socket exists but connection failed.\n\nCheck daemon status: rch daemon status\nView daemon logs: rch daemon logs\nRestart daemon: rch daemon restart"
         )
@@ -351,17 +336,14 @@ pub enum DaemonError {
     /// Daemon port is already in use.
     #[error("Port {port} is already in use")]
     #[diagnostic(
-        code(rch::daemon::port_in_use),
+        code("RCH-E504"),
         help("Stop the existing process or use RCH_SOCKET_PATH to specify a different socket")
     )]
     PortInUse { port: u16 },
 
     /// Daemon startup failed.
     #[error("Daemon startup failed")]
-    #[diagnostic(
-        code(rch::daemon::startup_failed),
-        help("Check the logs for details: rch daemon logs")
-    )]
+    #[diagnostic(code("RCH-E504"), help("Check the logs for details: rch daemon logs"))]
     StartupFailed {
         #[source]
         source: std::io::Error,
@@ -369,13 +351,13 @@ pub enum DaemonError {
 
     /// Daemon protocol error.
     #[error("Daemon protocol error: {message}")]
-    #[diagnostic(code(rch::daemon::protocol_error))]
+    #[diagnostic(code("RCH-E501"))]
     ProtocolError { message: String },
 
     /// Daemon returned an unexpected response.
     #[error("Unexpected daemon response: {response}")]
     #[diagnostic(
-        code(rch::daemon::unexpected_response),
+        code("RCH-E501"),
         help("This may indicate a version mismatch between rch and rchd")
     )]
     UnexpectedResponse { response: String },
@@ -391,7 +373,7 @@ pub enum TransferError {
     /// Failed to determine project root.
     #[error("Failed to determine project root directory")]
     #[diagnostic(
-        code(rch::transfer::no_project_root),
+        code("RCH-E402"),
         help(
             "Could not get the current working directory.\n\nEnsure you are running from a valid directory:\n  pwd\n  ls -la"
         )
@@ -404,7 +386,7 @@ pub enum TransferError {
     /// rsync command failed.
     #[error("rsync failed with exit code {exit_code:?}")]
     #[diagnostic(
-        code(rch::transfer::rsync_failed),
+        code("RCH-E400"),
         help(
             "Ensure rsync is installed on both local and remote machines:\n  which rsync\n  ssh worker which rsync"
         )
@@ -417,7 +399,7 @@ pub enum TransferError {
     /// SSH authentication failed during transfer.
     #[error("SSH authentication failed for {user}@{host}")]
     #[diagnostic(
-        code(rch::transfer::ssh_auth_failed),
+        code("RCH-E101"),
         help(
             "Verify SSH key permissions (chmod 600) and that the key is added to remote authorized_keys:\n  ssh-copy-id -i {identity_file} {user}@{host}"
         )
@@ -431,7 +413,7 @@ pub enum TransferError {
     /// Transfer timed out.
     #[error("Transfer timed out after {seconds}s")]
     #[diagnostic(
-        code(rch::transfer::timeout),
+        code("RCH-E401"),
         help("Consider increasing the transfer timeout or checking network connectivity")
     )]
     Timeout { seconds: u64 },
@@ -439,7 +421,7 @@ pub enum TransferError {
     /// Failed to create remote directory.
     #[error("Failed to create remote directory: {path}")]
     #[diagnostic(
-        code(rch::transfer::mkdir_failed),
+        code("RCH-E403"),
         help("Check disk space and permissions on the remote worker")
     )]
     MkdirFailed {
@@ -451,7 +433,7 @@ pub enum TransferError {
     /// Artifact retrieval failed.
     #[error("Failed to retrieve build artifacts from {worker_id}")]
     #[diagnostic(
-        code(rch::transfer::artifact_failed),
+        code("RCH-E309"),
         help("Check that the build completed successfully on the worker")
     )]
     ArtifactFailed {
@@ -471,7 +453,7 @@ pub enum HookError {
     /// Invalid hook input JSON.
     #[error("Invalid hook input: {message}")]
     #[diagnostic(
-        code(rch::hook::invalid_input),
+        code("RCH-E506"),
         help(
             "This error indicates a problem with the hook protocol.\nExpected JSON with tool_name and tool_input fields."
         )
@@ -481,7 +463,7 @@ pub enum HookError {
     /// Hook installation failed.
     #[error("Failed to install Claude Code hook")]
     #[diagnostic(
-        code(rch::hook::install_failed),
+        code("RCH-E506"),
         help(
             "Manual installation:\n  Add to ~/.config/claude-code/settings.json:\n  \"hooks\": {{\n    \"PreToolUse\": [{{ \"command\": \"rch\" }}]\n  }}"
         )
@@ -494,7 +476,7 @@ pub enum HookError {
     /// Claude Code settings file not found.
     #[error("Claude Code settings not found: {path}")]
     #[diagnostic(
-        code(rch::hook::settings_not_found),
+        code("RCH-E506"),
         help("Ensure Claude Code is installed and has been run at least once")
     )]
     SettingsNotFound { path: PathBuf },
@@ -509,10 +491,7 @@ pub enum HookError {
 pub enum UpdateError {
     /// Failed to fetch release information.
     #[error("Failed to fetch release info from GitHub")]
-    #[diagnostic(
-        code(rch::update::fetch_failed),
-        help("Check your internet connection and try again")
-    )]
+    #[diagnostic(code("RCH-E509"), help("Check your internet connection and try again"))]
     FetchFailed {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
@@ -521,7 +500,7 @@ pub enum UpdateError {
     /// No compatible release found.
     #[error("No compatible release found for {platform}")]
     #[diagnostic(
-        code(rch::update::no_release),
+        code("RCH-E509"),
         help(
             "Build from source: cargo install --git https://github.com/Dicklesworthstone/remote_compilation_helper.git"
         )
@@ -531,7 +510,7 @@ pub enum UpdateError {
     /// Checksum verification failed.
     #[error("Checksum verification failed for downloaded binary")]
     #[diagnostic(
-        code(rch::update::checksum_failed),
+        code("RCH-E406"),
         help("The download may be corrupted. Try again or download manually from GitHub.")
     )]
     ChecksumFailed { expected: String, actual: String },
@@ -539,7 +518,7 @@ pub enum UpdateError {
     /// Installation failed.
     #[error("Failed to install update")]
     #[diagnostic(
-        code(rch::update::install_failed),
+        code("RCH-E509"),
         help("Check that you have write permissions to the installation directory")
     )]
     InstallFailed {
@@ -550,7 +529,7 @@ pub enum UpdateError {
     /// Rollback not available.
     #[error("No backup available for rollback")]
     #[diagnostic(
-        code(rch::update::no_backup),
+        code("RCH-E509"),
         help("Rollback is only available after a successful update")
     )]
     NoBackup,
@@ -578,6 +557,7 @@ mod tests {
             message: "expected ']'".to_string(),
         };
 
+        let code = err.code().map(|code| code.to_string());
         let report = Report::new(err);
         let formatted = format!("{:?}", report);
 
@@ -589,10 +569,7 @@ mod tests {
             formatted.contains("expected ']'"),
             "Should include error message: {formatted}"
         );
-        assert!(
-            formatted.contains("rch::config::parse_error"),
-            "Should include error code: {formatted}"
-        );
+        assert_eq!(code, Some("RCH-E003".to_string()));
     }
 
     #[test]
@@ -602,11 +579,12 @@ mod tests {
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"),
         };
 
+        let code = err.code().map(|code| code.to_string());
         let report = Report::new(err);
         let formatted = format!("{:?}", report);
 
         assert!(formatted.contains("Failed to read config file"));
-        assert!(formatted.contains("rch::config::read_failed"));
+        assert_eq!(code, Some("RCH-E002".to_string()));
     }
 
     #[test]
@@ -615,6 +593,7 @@ mod tests {
             field: "workers".to_string(),
         };
 
+        let code = err.code().map(|code| code.to_string());
         let report = Report::new(err);
         let formatted = format!("{:?}", report);
 
@@ -623,6 +602,7 @@ mod tests {
             formatted.contains("help") || formatted.contains("Add"),
             "Should include help text: {formatted}"
         );
+        assert_eq!(code, Some("RCH-E004".to_string()));
     }
 
     // =========================================================================
@@ -639,6 +619,7 @@ mod tests {
             source: std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused"),
         };
 
+        let code = err.code().map(|code| code.to_string());
         let report = Report::new(err);
         let formatted = format!("{:?}", report);
 
@@ -650,10 +631,7 @@ mod tests {
             formatted.contains("ssh -i") || formatted.contains("Verify SSH"),
             "Should include SSH verification command: {formatted}"
         );
-        assert!(
-            formatted.contains("rch::worker::connection_failed"),
-            "Should include error code: {formatted}"
-        );
+        assert_eq!(code, Some("RCH-E100".to_string()));
     }
 
     #[test]
@@ -663,11 +641,13 @@ mod tests {
             reason: "high load".to_string(),
         };
 
+        let code = err.code().map(|code| code.to_string());
         let report = Report::new(err);
         let formatted = format!("{:?}", report);
 
         assert!(formatted.contains("slow-worker"));
         assert!(formatted.contains("rch workers probe"));
+        assert_eq!(code, Some("RCH-E202".to_string()));
     }
 
     #[test]
@@ -770,6 +750,7 @@ mod tests {
     #[test]
     fn test_daemon_not_running_has_start_command() {
         let err = DaemonError::NotRunning;
+        let code = err.code().map(|code| code.to_string());
         let report = Report::new(err);
         let formatted = format!("{:?}", report);
 
@@ -777,7 +758,7 @@ mod tests {
             formatted.contains("rch daemon start"),
             "Should suggest starting daemon: {formatted}"
         );
-        assert!(formatted.contains("rch::daemon::not_running"));
+        assert_eq!(code, Some("RCH-E502".to_string()));
     }
 
     #[test]
@@ -787,6 +768,7 @@ mod tests {
             socket_path: socket_path.clone(),
         };
 
+        let code = err.code().map(|code| code.to_string());
         let report = Report::new(err);
         let formatted = format!("{:?}", report);
 
@@ -798,12 +780,13 @@ mod tests {
             formatted.contains("rch daemon start"),
             "Should suggest starting daemon: {formatted}"
         );
-        assert!(formatted.contains("rch::daemon::socket_not_found"));
+        assert_eq!(code, Some("RCH-E502".to_string()));
     }
 
     #[test]
     fn test_daemon_port_in_use_suggests_alternative() {
         let err = DaemonError::PortInUse { port: 7800 };
+        let code = err.code().map(|code| code.to_string());
         let report = Report::new(err);
         let formatted = format!("{:?}", report);
 
@@ -812,6 +795,7 @@ mod tests {
             formatted.contains("RCH_SOCKET_PATH") || formatted.contains("socket"),
             "Should suggest alternative: {formatted}"
         );
+        assert_eq!(code, Some("RCH-E504".to_string()));
     }
 
     #[test]
@@ -822,11 +806,12 @@ mod tests {
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "socket not found"),
         };
 
+        let code = err.code().map(|code| code.to_string());
         let report = Report::new(err);
         let formatted = format!("{:?}", report);
 
         assert!(formatted.contains(&socket_path));
-        assert!(formatted.contains("rch::daemon::connection_failed"));
+        assert_eq!(code, Some("RCH-E500".to_string()));
     }
 
     // =========================================================================
@@ -839,6 +824,7 @@ mod tests {
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "directory not found"),
         };
 
+        let code = err.code().map(|code| code.to_string());
         let report = Report::new(err);
         let formatted = format!("{:?}", report);
 
@@ -846,7 +832,7 @@ mod tests {
             formatted.contains("project root"),
             "Should mention project root: {formatted}"
         );
-        assert!(formatted.contains("rch::transfer::no_project_root"));
+        assert_eq!(code, Some("RCH-E402".to_string()));
     }
 
     #[test]
@@ -856,11 +842,12 @@ mod tests {
             stderr: "connection unexpectedly closed".to_string(),
         };
 
+        let code = err.code().map(|code| code.to_string());
         let report = Report::new(err);
         let formatted = format!("{:?}", report);
 
         assert!(formatted.contains("rsync"));
-        assert!(formatted.contains("rch::transfer::rsync_failed"));
+        assert_eq!(code, Some("RCH-E400".to_string()));
     }
 
     #[test]
@@ -871,6 +858,7 @@ mod tests {
             identity_file: "~/.ssh/deploy_key".to_string(),
         };
 
+        let code = err.code().map(|code| code.to_string());
         let report = Report::new(err);
         let formatted = format!("{:?}", report);
 
@@ -882,17 +870,19 @@ mod tests {
             formatted.contains("authorized_keys") || formatted.contains("ssh-copy-id"),
             "Should mention authorized_keys: {formatted}"
         );
+        assert_eq!(code, Some("RCH-E101".to_string()));
     }
 
     #[test]
     fn test_transfer_timeout() {
         let err = TransferError::Timeout { seconds: 120 };
 
+        let code = err.code().map(|code| code.to_string());
         let report = Report::new(err);
         let formatted = format!("{:?}", report);
 
         assert!(formatted.contains("120"));
-        assert!(formatted.contains("rch::transfer::timeout"));
+        assert_eq!(code, Some("RCH-E401".to_string()));
     }
 
     // =========================================================================
@@ -905,11 +895,12 @@ mod tests {
             message: "missing tool_name".to_string(),
         };
 
+        let code = err.code().map(|code| code.to_string());
         let report = Report::new(err);
         let formatted = format!("{:?}", report);
 
         assert!(formatted.contains("missing tool_name"));
-        assert!(formatted.contains("rch::hook::invalid_input"));
+        assert_eq!(code, Some("RCH-E506".to_string()));
     }
 
     #[test]
@@ -918,11 +909,12 @@ mod tests {
             path: PathBuf::from("/home/user/.config/claude-code/settings.json"),
         };
 
+        let code = err.code().map(|code| code.to_string());
         let report = Report::new(err);
         let formatted = format!("{:?}", report);
 
         assert!(formatted.contains("settings.json"));
-        assert!(formatted.contains("rch::hook::settings_not_found"));
+        assert_eq!(code, Some("RCH-E506".to_string()));
     }
 
     // =========================================================================
@@ -935,6 +927,7 @@ mod tests {
             platform: "x86_64-unknown-freebsd".to_string(),
         };
 
+        let code = err.code().map(|code| code.to_string());
         let report = Report::new(err);
         let formatted = format!("{:?}", report);
 
@@ -943,6 +936,7 @@ mod tests {
             formatted.contains("cargo install") || formatted.contains("source"),
             "Should suggest building from source: {formatted}"
         );
+        assert_eq!(code, Some("RCH-E509".to_string()));
     }
 
     #[test]
@@ -952,10 +946,11 @@ mod tests {
             actual: "def456".to_string(),
         };
 
+        let code = err.code().map(|code| code.to_string());
         let report = Report::new(err);
         let formatted = format!("{:?}", report);
 
-        assert!(formatted.contains("rch::update::checksum_failed"));
+        assert_eq!(code, Some("RCH-E406".to_string()));
         assert!(
             formatted.contains("corrupted") || formatted.contains("download"),
             "Should suggest redownload: {formatted}"

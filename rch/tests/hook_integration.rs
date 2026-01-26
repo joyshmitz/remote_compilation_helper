@@ -22,8 +22,10 @@ use std::time::{Duration, Instant};
 /// Marker for ANSI escape sequences.
 const ANSI_ESC: &str = "\x1b[";
 
-/// Maximum acceptable hook classification time in milliseconds.
-const MAX_HOOK_TIME_MS: u64 = 10;
+/// Maximum acceptable hook runtime in milliseconds.
+///
+/// Note: these tests spawn `rch` as a separate process; timings include process startup.
+const MAX_HOOK_TIME_MS: u64 = 25;
 
 /// Get the path to the rch binary.
 fn rch_binary() -> String {

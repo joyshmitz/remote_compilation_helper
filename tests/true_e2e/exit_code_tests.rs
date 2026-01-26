@@ -189,16 +189,6 @@ fn run_local_command(cmd: &str, args: &[&str], dir: &Path) -> Option<i32> {
         .and_then(|out| out.status.code())
 }
 
-/// Run a command locally with shell and return the exit code.
-fn run_local_shell_command(cmd: &str, dir: &Path) -> Option<i32> {
-    std::process::Command::new("sh")
-        .args(["-c", cmd])
-        .current_dir(dir)
-        .output()
-        .ok()
-        .and_then(|out| out.status.code())
-}
-
 // =============================================================================
 // Test 1: Build Success Exit Code (0) - Local vs Remote Comparison
 // =============================================================================

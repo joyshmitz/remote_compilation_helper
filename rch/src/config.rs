@@ -1153,16 +1153,16 @@ fn apply_env_overrides_inner(
                 );
             }
         }
-    } else if let Some(val) = get_env("RCH_COMPRESSION") {
-        if let Ok(level) = val.parse() {
-            config.transfer.compression_level = level;
-            if let Some(ref mut sources) = sources {
-                set_source(
-                    sources,
-                    "transfer.compression_level",
-                    ConfigValueSource::EnvVar("RCH_COMPRESSION".to_string()),
-                );
-            }
+    } else if let Some(val) = get_env("RCH_COMPRESSION")
+        && let Ok(level) = val.parse()
+    {
+        config.transfer.compression_level = level;
+        if let Some(ref mut sources) = sources {
+            set_source(
+                sources,
+                "transfer.compression_level",
+                ConfigValueSource::EnvVar("RCH_COMPRESSION".to_string()),
+            );
         }
     }
 
@@ -1273,10 +1273,10 @@ fn is_valid_env_key(key: &str) -> bool {
 }
 
 fn is_valid_log_level(level: &str) -> bool {
-    match level.trim().to_ascii_lowercase().as_str() {
-        "trace" | "debug" | "info" | "warn" | "error" | "off" => true,
-        _ => false,
-    }
+    matches!(
+        level.trim().to_ascii_lowercase().as_str(),
+        "trace" | "debug" | "info" | "warn" | "error" | "off"
+    )
 }
 
 /// Workers configuration file structure.
