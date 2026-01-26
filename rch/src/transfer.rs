@@ -15,7 +15,9 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::time::Instant as TokioInstant;
 use tracing::{debug, info, warn};
 
 /// Remote project path prefix.
@@ -214,6 +216,102 @@ impl TransferPipeline {
             bytes_transferred: parse_rsync_bytes(&stdout),
             files_transferred: parse_rsync_files(&stdout),
             duration_ms: duration.as_millis() as u64,
+        })
+    }
+
+    /// Synchronize local project to remote worker with streaming output.
+    ///
+    /// The `on_line` callback receives rsync progress lines for UI rendering.
+    pub async fn sync_to_remote_streaming<F>(
+        &self,
+        worker: &WorkerConfig,
+        mut on_line: F,
+    ) -> Result<SyncResult>
+    where
+        F: FnMut(&str),
+    {
+        let remote_path = self.remote_path();
+        let escaped_remote_path = escape(Cow::from(&remote_path));
+        let destination = format!("{}@{}:{}", worker.user, worker.host, escaped_remote_path);
+
+        if use_mock_transport(worker) {
+            let rsync = MockRsync::new(MockRsyncConfig::from_env());
+            let result = rsync
+                .sync_to_remote(
+                    &self.project_root.display().to_string(),
+                    &destination,
+                    &self.transfer_config.exclude_patterns,
+                )
+                .await?;
+            return Ok(SyncResult {
+                bytes_transferred: result.bytes_transferred,
+                files_transferred: result.files_transferred,
+                duration_ms: result.duration_ms,
+            });
+        }
+
+        info!(
+            "Syncing {} -> {} on {} (streaming)",
+            self.project_root.display(),
+            remote_path,
+            worker.id
+        );
+
+        let mut cmd = Command::new("rsync");
+        // Force C locale for consistent output parsing
+        cmd.env("LC_ALL", "C");
+
+        let identity_file = shellexpand::tilde(&worker.identity_file);
+        let escaped_identity = escape(Cow::from(identity_file.as_ref()));
+
+        cmd.arg("-az") // Archive mode + compression
+            .arg("--delete") // Remove extraneous files from destination
+            .arg("--info=progress2")
+            .arg("--info=stats2")
+            .arg("-e")
+            .arg(format!(
+                "ssh -i {} -o StrictHostKeyChecking=no -o BatchMode=yes",
+                escaped_identity
+            ));
+
+        // Create remote directory implicitly using rsync-path wrapper
+        cmd.arg("--rsync-path")
+            .arg(format!("mkdir -p {} && rsync", escaped_remote_path));
+
+        // Add exclude patterns
+        for pattern in &self.transfer_config.exclude_patterns {
+            cmd.arg("--exclude").arg(pattern);
+        }
+
+        // Add zstd compression if available (rsync 3.2.3+)
+        if self.transfer_config.compression_level > 0 {
+            cmd.arg("--compress-choice=zstd");
+            cmd.arg(format!(
+                "--compress-level={}",
+                self.transfer_config.compression_level
+            ));
+        }
+
+        // Source and destination
+        cmd.arg(format!("{}/", self.project_root.display())) // Trailing slash = contents only
+            .arg(&destination);
+
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        debug!(
+            "Running (streaming): rsync {:?}",
+            cmd.as_std().get_args().collect::<Vec<_>>()
+        );
+
+        let (output, duration_ms) = run_command_streaming(cmd, |line| {
+            on_line(line);
+        })
+        .await?;
+
+        Ok(SyncResult {
+            bytes_transferred: parse_rsync_bytes(&output),
+            files_transferred: parse_rsync_files(&output),
+            duration_ms,
         })
     }
 
@@ -442,6 +540,99 @@ impl TransferPipeline {
         })
     }
 
+    /// Retrieve build artifacts with streaming progress output.
+    pub async fn retrieve_artifacts_streaming<F>(
+        &self,
+        worker: &WorkerConfig,
+        artifact_patterns: &[String],
+        mut on_line: F,
+    ) -> Result<SyncResult>
+    where
+        F: FnMut(&str),
+    {
+        let remote_path = self.remote_path();
+        let escaped_remote_path = escape(Cow::from(&remote_path));
+
+        if use_mock_transport(worker) {
+            let rsync = MockRsync::new(MockRsyncConfig::from_env());
+            let result = rsync
+                .retrieve_artifacts(
+                    &format!("{}@{}:{}/", worker.user, worker.host, escaped_remote_path),
+                    &self.project_root.display().to_string(),
+                    artifact_patterns,
+                )
+                .await?;
+            return Ok(SyncResult {
+                bytes_transferred: result.bytes_transferred,
+                files_transferred: result.files_transferred,
+                duration_ms: result.duration_ms,
+            });
+        }
+
+        info!(
+            "Retrieving artifacts from {} on {} (streaming)",
+            remote_path, worker.id
+        );
+
+        let mut cmd = Command::new("rsync");
+        // Force C locale for consistent output parsing
+        cmd.env("LC_ALL", "C");
+
+        let identity_file = shellexpand::tilde(&worker.identity_file);
+        let escaped_identity = escape(Cow::from(identity_file.as_ref()));
+
+        cmd.arg("-az")
+            .arg("--info=progress2")
+            .arg("--info=stats2")
+            .arg("-e")
+            .arg(format!(
+                "ssh -i {} -o StrictHostKeyChecking=no -o BatchMode=yes",
+                escaped_identity
+            ));
+
+        // Add zstd compression
+        if self.transfer_config.compression_level > 0 {
+            cmd.arg("--compress-choice=zstd");
+            cmd.arg(format!(
+                "--compress-level={}",
+                self.transfer_config.compression_level
+            ));
+        }
+
+        // Prune empty directories to prevent cluttering local project
+        cmd.arg("--prune-empty-dirs");
+
+        // Essential: Include all directories so rsync can traverse to match patterns.
+        cmd.arg("--include").arg("*/");
+
+        for pattern in artifact_patterns {
+            cmd.arg("--include").arg(pattern);
+        }
+        cmd.arg("--exclude").arg("*");
+
+        let source = format!("{}@{}:{}/", worker.user, worker.host, escaped_remote_path);
+        cmd.arg(&source)
+            .arg(format!("{}/", self.project_root.display()));
+
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        debug!(
+            "Running artifact retrieval (streaming): rsync {:?}",
+            cmd.as_std().get_args().collect::<Vec<_>>()
+        );
+
+        let (output, duration_ms) = run_command_streaming(cmd, |line| {
+            on_line(line);
+        })
+        .await?;
+
+        Ok(SyncResult {
+            bytes_transferred: parse_rsync_bytes(&output),
+            files_transferred: parse_rsync_files(&output),
+            duration_ms,
+        })
+    }
+
     /// Clean up remote project directory.
     #[allow(dead_code)] // Reserved for future cleanup routines
     pub async fn cleanup_remote(&self, worker: &WorkerConfig) -> Result<()> {
@@ -487,6 +678,12 @@ pub struct SyncResult {
 fn parse_rsync_bytes(output: &str) -> u64 {
     // rsync output contains "sent X bytes  received Y bytes"
     for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("Total bytes sent:")
+            && let Some(bytes_str) = rest.split_whitespace().next()
+            && let Ok(bytes) = bytes_str.replace(',', "").parse()
+        {
+            return bytes;
+        }
         if line.contains("sent")
             && line.contains("bytes")
             && let Some(bytes_str) = line.split_whitespace().nth(1)
@@ -500,11 +697,80 @@ fn parse_rsync_bytes(output: &str) -> u64 {
 
 /// Parse files transferred from rsync output.
 fn parse_rsync_files(output: &str) -> u32 {
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("Number of files transferred:")
+            && let Some(count) = rest.split_whitespace().next()
+            && let Ok(parsed) = count.replace(',', "").parse::<u32>()
+        {
+            return parsed;
+        }
+        if let Some(rest) = line.strip_prefix("Number of files:")
+            && let Some(count) = rest.split_whitespace().next()
+            && let Ok(parsed) = count.replace(',', "").parse::<u32>()
+        {
+            return parsed;
+        }
+    }
+
     // rsync verbose output lists files, count them
     output
         .lines()
         .filter(|l| !l.trim().is_empty() && !l.contains("sent"))
         .count() as u32
+}
+
+async fn run_command_streaming<F>(mut cmd: Command, mut on_line: F) -> Result<(String, u64)>
+where
+    F: FnMut(&str),
+{
+    let start = TokioInstant::now();
+    let mut child = cmd.spawn().context("Failed to execute rsync")?;
+
+    let stdout = child.stdout.take().context("Failed to capture stdout")?;
+    let stderr = child.stderr.take().context("Failed to capture stderr")?;
+
+    let mut stdout_reader = BufReader::new(stdout).lines();
+    let mut stderr_reader = BufReader::new(stderr).lines();
+
+    let mut combined = String::new();
+    let mut stdout_done = false;
+    let mut stderr_done = false;
+
+    while !stdout_done || !stderr_done {
+        tokio::select! {
+            line = stdout_reader.next_line(), if !stdout_done => {
+                match line? {
+                    Some(text) => {
+                        on_line(&text);
+                        combined.push_str(&text);
+                        combined.push('\n');
+                    }
+                    None => stdout_done = true,
+                }
+            }
+            line = stderr_reader.next_line(), if !stderr_done => {
+                match line? {
+                    Some(text) => {
+                        on_line(&text);
+                        combined.push_str(&text);
+                        combined.push('\n');
+                    }
+                    None => stderr_done = true,
+                }
+            }
+        }
+    }
+
+    let status = child.wait().await.context("Failed to wait on rsync")?;
+    if !status.success() {
+        bail!(
+            "rsync failed with exit code {:?}: {}",
+            status.code(),
+            combined.trim()
+        );
+    }
+
+    Ok((combined, start.elapsed().as_millis() as u64))
 }
 
 /// Compute a hash of the project for cache invalidation.
@@ -683,6 +949,65 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_rsync_bytes_total_format() {
+        // Test "Total bytes sent:" format (newer rsync versions)
+        let output = "Total bytes sent: 45,678\nTotal bytes received: 123";
+        assert_eq!(parse_rsync_bytes(output), 45678);
+    }
+
+    #[test]
+    fn test_parse_rsync_bytes_no_commas() {
+        let output = "sent 999 bytes  received 100 bytes  1000.00 bytes/sec";
+        assert_eq!(parse_rsync_bytes(output), 999);
+    }
+
+    #[test]
+    fn test_parse_rsync_bytes_large_number() {
+        let output = "sent 1,234,567,890 bytes  received 100 bytes  total";
+        assert_eq!(parse_rsync_bytes(output), 1234567890);
+    }
+
+    #[test]
+    fn test_parse_rsync_files() {
+        // Test "Number of files transferred:" format
+        let output = "Number of files transferred: 42";
+        assert_eq!(parse_rsync_files(output), 42);
+    }
+
+    #[test]
+    fn test_parse_rsync_files_with_comma() {
+        let output = "Number of files transferred: 1,234";
+        assert_eq!(parse_rsync_files(output), 1234);
+    }
+
+    #[test]
+    fn test_parse_rsync_files_number_of_files_format() {
+        // Test "Number of files:" format (alternate rsync output)
+        let output = "Number of files: 100\nsome other line";
+        assert_eq!(parse_rsync_files(output), 100);
+    }
+
+    #[test]
+    fn test_parse_rsync_files_empty() {
+        let empty = "";
+        assert_eq!(parse_rsync_files(empty), 0);
+    }
+
+    #[test]
+    fn test_parse_rsync_files_fallback_count() {
+        // When no "Number of files" line exists, count non-empty non-"sent" lines
+        let output = "file1.txt\nfile2.txt\nfile3.txt";
+        assert_eq!(parse_rsync_files(output), 3);
+    }
+
+    #[test]
+    fn test_parse_rsync_files_fallback_excludes_sent_line() {
+        // The fallback should exclude lines containing "sent"
+        let output = "file1.txt\nfile2.txt\nsent 100 bytes";
+        assert_eq!(parse_rsync_files(output), 2);
+    }
+
+    #[test]
     fn test_default_artifact_patterns() {
         let patterns = default_rust_artifact_patterns();
         assert!(!patterns.is_empty());
@@ -732,6 +1057,134 @@ mod tests {
 
         // Test patterns focus on results/coverage, not build artifacts
         assert!(test_patterns.iter().any(|p| p.contains("coverage")));
+    }
+
+    #[test]
+    fn test_compute_project_hash_basic() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path();
+
+        // Create a Cargo.toml file
+        fs::write(path.join("Cargo.toml"), "[package]\nname = \"test\"").expect("write cargo");
+
+        let hash1 = compute_project_hash(path);
+        assert!(!hash1.is_empty());
+        assert_eq!(hash1.len(), 16); // Should be 16 hex chars
+    }
+
+    #[test]
+    fn test_compute_project_hash_different_paths() {
+        use tempfile::tempdir;
+
+        let dir1 = tempdir().expect("create temp dir 1");
+        let dir2 = tempdir().expect("create temp dir 2");
+
+        let hash1 = compute_project_hash(dir1.path());
+        let hash2 = compute_project_hash(dir2.path());
+
+        // Different paths should produce different hashes
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_compute_project_hash_includes_key_files() {
+        use std::fs;
+        use std::thread::sleep;
+        use std::time::Duration;
+        use tempfile::tempdir;
+
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path();
+
+        let hash_before = compute_project_hash(path);
+
+        // Add a key file (Cargo.toml)
+        sleep(Duration::from_millis(10)); // Ensure mtime differs
+        fs::write(path.join("Cargo.toml"), "[package]\nname = \"test\"").expect("write cargo");
+
+        let hash_after = compute_project_hash(path);
+
+        // Hash should change when key file is added
+        assert_ne!(hash_before, hash_after);
+    }
+
+    #[test]
+    fn test_project_id_from_path_root() {
+        // Test with root path
+        assert_eq!(project_id_from_path(Path::new("/")), "");
+    }
+
+    #[test]
+    fn test_project_id_from_path_with_special_chars() {
+        // Test with path containing underscores and dashes
+        assert_eq!(
+            project_id_from_path(Path::new("/home/user/my_project-v2")),
+            "my_project-v2"
+        );
+    }
+
+    #[test]
+    fn test_default_c_cpp_artifact_patterns() {
+        let patterns = default_c_cpp_artifact_patterns();
+        assert!(!patterns.is_empty());
+        assert!(patterns.iter().any(|p| p.contains("build")));
+        assert!(patterns.iter().any(|p| p.contains(".o")));
+        assert!(patterns.iter().any(|p| p.contains(".so")));
+    }
+
+    #[test]
+    fn test_transfer_pipeline_builder_methods() {
+        let pipeline = TransferPipeline::new(
+            PathBuf::from("/tmp/test"),
+            "test-project".to_string(),
+            "abc123".to_string(),
+            TransferConfig::default(),
+        )
+        .with_color_mode(ColorMode::Always)
+        .with_env_allowlist(vec!["RUSTFLAGS".to_string(), "CC".to_string()]);
+
+        assert_eq!(pipeline.remote_path(), "/tmp/rch/test-project/abc123");
+    }
+
+    #[test]
+    fn test_transfer_pipeline_with_ssh_options() {
+        let custom_options = SshOptions {
+            connect_timeout: std::time::Duration::from_secs(30),
+            command_timeout: std::time::Duration::from_secs(120),
+            ..Default::default()
+        };
+
+        let pipeline = TransferPipeline::new(
+            PathBuf::from("/tmp/test"),
+            "test-project".to_string(),
+            "abc123".to_string(),
+            TransferConfig::default(),
+        )
+        .with_ssh_options(custom_options)
+        .with_command_timeout(std::time::Duration::from_secs(300));
+
+        // Just verify it builds without panic
+        assert_eq!(pipeline.remote_path(), "/tmp/rch/test-project/abc123");
+    }
+
+    #[test]
+    fn test_sync_result_struct() {
+        let result = SyncResult {
+            bytes_transferred: 1024,
+            files_transferred: 10,
+            duration_ms: 500,
+        };
+
+        assert_eq!(result.bytes_transferred, 1024);
+        assert_eq!(result.files_transferred, 10);
+        assert_eq!(result.duration_ms, 500);
+
+        // Test Clone
+        let cloned = result.clone();
+        assert_eq!(cloned.bytes_transferred, result.bytes_transferred);
     }
 
     #[test]

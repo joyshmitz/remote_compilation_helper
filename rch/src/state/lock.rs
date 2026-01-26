@@ -49,6 +49,7 @@ pub struct LockInfo {
 /// // Lock is released when `lock` goes out of scope
 /// # Ok::<(), anyhow::Error>(())
 /// ```
+#[derive(Debug)]
 pub struct ConfigLock {
     #[allow(dead_code)]
     file: File,
@@ -208,11 +209,19 @@ impl ConfigLock {
     /// Check if a lock is stale (holder process dead or lock too old).
     fn is_stale_lock(path: &Path) -> Result<bool> {
         let info = match Self::read_lock_info(path) {
-            Ok(info) => info,
-            Err(_) => {
-                // If we can't read the lock info, assume it's stale
+            Ok(info) => Some(info),
+            Err(_) => None,
+        };
+
+        let Some(info) = info else {
+            if let Ok(metadata) = fs::metadata(path)
+                && let Ok(modified) = metadata.modified()
+                && let Ok(age) = modified.elapsed()
+                && age > Duration::from_secs(60 * 60)
+            {
                 return Ok(true);
             }
+            return Ok(false);
         };
 
         // Check if process is still alive (Linux only - uses /proc)
@@ -333,6 +342,57 @@ impl ConfigLock {
 
         Self::read_lock_info(&path).map(Some)
     }
+
+    /// Acquire a lock in a specific directory with timeout (for testing).
+    #[cfg(test)]
+    fn acquire_in_dir_with_timeout(
+        lock_dir: &Path,
+        lock_name: &str,
+        timeout: Duration,
+        operation: &str,
+    ) -> Result<Self> {
+        fs::create_dir_all(lock_dir)
+            .with_context(|| format!("Failed to create lock directory: {:?}", lock_dir))?;
+
+        let path = lock_dir.join(format!("{}.lock", lock_name));
+        let start = Instant::now();
+        let poll_interval = Duration::from_millis(10); // Faster polling for tests
+
+        loop {
+            if path.exists() && Self::is_stale_lock(&path)? {
+                let _ = fs::remove_file(&path);
+            }
+
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    let info = LockInfo {
+                        pid: std::process::id(),
+                        hostname: hostname(),
+                        created_at: chrono::Utc::now().to_rfc3339(),
+                        operation: operation.to_string(),
+                    };
+
+                    serde_json::to_writer(&mut file, &info)?;
+                    file.sync_all()?;
+                    return Ok(ConfigLock { file, path });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if start.elapsed() >= timeout {
+                        let holder = Self::read_lock_info(&path).ok();
+                        return Err(anyhow!(
+                            "Lock acquisition timeout after {:?}. Lock held by: {:?}",
+                            timeout,
+                            holder
+                        ));
+                    }
+                    std::thread::sleep(poll_interval);
+                }
+                Err(e) => {
+                    return Err(anyhow!("Failed to create lock file: {}", e));
+                }
+            }
+        }
+    }
 }
 
 impl Drop for ConfigLock {
@@ -449,5 +509,379 @@ mod tests {
         assert_eq!(parsed.pid, 12345);
         assert_eq!(parsed.hostname, "testhost");
         assert_eq!(parsed.operation, "test");
+    }
+
+    /// Helper that uses create_new without stale lock check (avoids race in is_stale_lock)
+    fn try_acquire_in_dir_raw(
+        lock_dir: &Path,
+        lock_name: &str,
+        operation: &str,
+    ) -> Result<Option<ConfigLock>> {
+        fs::create_dir_all(lock_dir)?;
+        let path = lock_dir.join(format!("{}.lock", lock_name));
+
+        // Pure atomic create without stale lock check
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                let info = LockInfo {
+                    pid: std::process::id(),
+                    hostname: hostname(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                    operation: operation.to_string(),
+                };
+                serde_json::to_writer(&mut file, &info)?;
+                file.sync_all()?;
+                Ok(Some(ConfigLock { file, path }))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+            Err(e) => Err(anyhow!("Failed to create lock file: {}", e)),
+        }
+    }
+
+    #[test]
+    fn test_concurrent_contention_real_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        log_test_start("test_concurrent_contention_real_threads");
+
+        let tmp = TempDir::new().unwrap();
+        let lock_dir = tmp.path().join("locks");
+        fs::create_dir_all(&lock_dir).unwrap();
+
+        let lock_dir = Arc::new(lock_dir);
+        let acquired_count = Arc::new(AtomicUsize::new(0));
+        let failed_count = Arc::new(AtomicUsize::new(0));
+
+        let num_threads = 8;
+        // Barrier to start all threads at the same time
+        let start_barrier = Arc::new(Barrier::new(num_threads));
+        // Barrier to keep lock held until all threads complete their attempt
+        let done_barrier = Arc::new(Barrier::new(num_threads));
+        let mut handles = vec![];
+
+        for i in 0..num_threads {
+            let lock_dir = Arc::clone(&lock_dir);
+            let acquired = Arc::clone(&acquired_count);
+            let failed = Arc::clone(&failed_count);
+            let start = Arc::clone(&start_barrier);
+            let done = Arc::clone(&done_barrier);
+
+            handles.push(thread::spawn(move || {
+                // Wait for all threads to be ready
+                start.wait();
+
+                // Use raw helper to avoid stale lock detection race
+                match try_acquire_in_dir_raw(&lock_dir, "race_lock", &format!("thread-{}", i)) {
+                    Ok(Some(lock)) => {
+                        acquired.fetch_add(1, Ordering::SeqCst);
+                        // Wait for all threads to complete their attempt before releasing
+                        done.wait();
+                        drop(lock);
+                    }
+                    Ok(None) => {
+                        failed.fetch_add(1, Ordering::SeqCst);
+                        done.wait();
+                    }
+                    Err(e) => {
+                        done.wait();
+                        panic!("Unexpected error in thread {}: {}", i, e);
+                    }
+                }
+            }));
+        }
+
+        // Wait for all threads to finish
+        for handle in handles {
+            handle.join().expect("Thread panicked");
+        }
+
+        let total_acquired = acquired_count.load(Ordering::SeqCst);
+        let total_failed = failed_count.load(Ordering::SeqCst);
+
+        info!(
+            "TEST PASS: test_concurrent_contention_real_threads - acquired={}, failed={}",
+            total_acquired, total_failed
+        );
+
+        // Exactly one thread should have acquired the lock
+        assert_eq!(
+            total_acquired, 1,
+            "Exactly one thread should acquire the lock"
+        );
+        assert_eq!(
+            total_failed,
+            num_threads - 1,
+            "Other threads should fail to acquire"
+        );
+    }
+
+    #[test]
+    fn test_concurrent_sequential_acquisition() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::thread;
+
+        log_test_start("test_concurrent_sequential_acquisition");
+
+        let tmp = TempDir::new().unwrap();
+        let lock_dir = tmp.path().join("locks");
+        fs::create_dir_all(&lock_dir).unwrap();
+
+        let lock_dir = Arc::new(lock_dir);
+        let successful_acquisitions = Arc::new(AtomicUsize::new(0));
+
+        let num_threads = 4;
+        let mut handles = vec![];
+
+        for i in 0..num_threads {
+            let lock_dir = Arc::clone(&lock_dir);
+            let success_count = Arc::clone(&successful_acquisitions);
+
+            handles.push(thread::spawn(move || {
+                // Each thread tries to acquire with timeout
+                match ConfigLock::acquire_in_dir_with_timeout(
+                    &lock_dir,
+                    "sequential_lock",
+                    Duration::from_secs(5),
+                    &format!("thread-{}", i),
+                ) {
+                    Ok(_lock) => {
+                        success_count.fetch_add(1, Ordering::SeqCst);
+                        // Hold the lock briefly
+                        thread::sleep(Duration::from_millis(50));
+                        // Lock released on drop, allowing next thread to acquire
+                    }
+                    Err(e) => {
+                        panic!("Thread {} failed to acquire lock: {}", i, e);
+                    }
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("Thread panicked");
+        }
+
+        let total = successful_acquisitions.load(Ordering::SeqCst);
+        info!(
+            "TEST PASS: test_concurrent_sequential_acquisition - all {} threads acquired lock sequentially",
+            total
+        );
+
+        // All threads should eventually acquire the lock
+        assert_eq!(
+            total, num_threads,
+            "All threads should eventually acquire the lock"
+        );
+    }
+
+    #[test]
+    fn test_timeout_on_held_lock() {
+        log_test_start("test_timeout_on_held_lock");
+
+        let tmp = TempDir::new().unwrap();
+        let lock_dir = tmp.path().join("locks");
+
+        // Acquire a lock and hold it
+        let _lock = ConfigLock::acquire_in_dir(&lock_dir, "held_lock", "holding").unwrap();
+
+        // Try to acquire with very short timeout - should fail
+        let start = std::time::Instant::now();
+        let result = ConfigLock::acquire_in_dir_with_timeout(
+            &lock_dir,
+            "held_lock",
+            Duration::from_millis(100),
+            "waiting",
+        );
+
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err(), "Should timeout when lock is held");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("timeout"),
+            "Error should mention timeout: {}",
+            err_msg
+        );
+
+        // Verify timeout was respected (with some tolerance)
+        assert!(
+            elapsed >= Duration::from_millis(90),
+            "Should have waited at least ~100ms, got {:?}",
+            elapsed
+        );
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "Should not wait much longer than timeout, got {:?}",
+            elapsed
+        );
+
+        info!(
+            "TEST PASS: test_timeout_on_held_lock - timed out correctly in {:?}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn test_lock_released_during_wait() {
+        use std::sync::mpsc;
+        use std::thread;
+
+        log_test_start("test_lock_released_during_wait");
+
+        let tmp = TempDir::new().unwrap();
+        let lock_dir = tmp.path().join("locks");
+        fs::create_dir_all(&lock_dir).unwrap();
+
+        let lock_dir_clone = lock_dir.clone();
+        let (ready_tx, ready_rx) = mpsc::channel();
+
+        // Thread 1: Acquire lock, hold briefly, then release
+        let holder = thread::spawn(move || {
+            let lock = ConfigLock::acquire_in_dir(&lock_dir_clone, "release_test", "holder")
+                .expect("holder should acquire lock");
+            ready_tx.send(()).expect("signal holder ready");
+            thread::sleep(Duration::from_millis(100));
+            drop(lock);
+        });
+
+        // Ensure the lock is held before we start waiting (avoid racy sleeps).
+        ready_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("holder did not acquire lock in time");
+
+        // Thread 2 (main): Try to acquire with timeout longer than hold time
+        let start = std::time::Instant::now();
+        let result = ConfigLock::acquire_in_dir_with_timeout(
+            &lock_dir,
+            "release_test",
+            Duration::from_secs(2),
+            "waiter",
+        );
+
+        let elapsed = start.elapsed();
+        holder.join().expect("Holder thread panicked");
+
+        assert!(result.is_ok(), "Should acquire lock after holder releases");
+
+        // Should have acquired within reasonable time (not full timeout)
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "Should acquire soon after release, got {:?}",
+            elapsed
+        );
+
+        info!(
+            "TEST PASS: test_lock_released_during_wait - acquired after {:?}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn test_backoff_polling_interval() {
+        log_test_start("test_backoff_polling_interval");
+
+        let tmp = TempDir::new().unwrap();
+        let lock_dir = tmp.path().join("locks");
+
+        // Hold a lock
+        let _lock = ConfigLock::acquire_in_dir(&lock_dir, "backoff_test", "holder").unwrap();
+
+        // Try to acquire with short timeout
+        let start = std::time::Instant::now();
+        let _ = ConfigLock::acquire_in_dir_with_timeout(
+            &lock_dir,
+            "backoff_test",
+            Duration::from_millis(50),
+            "waiter",
+        );
+        let elapsed = start.elapsed();
+
+        // With 10ms polling interval and 50ms timeout, we should have ~5 retries
+        // The elapsed time should be roughly 50ms (not much more due to busy waiting)
+        assert!(
+            elapsed >= Duration::from_millis(45),
+            "Should wait at least close to timeout, got {:?}",
+            elapsed
+        );
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "Should not wait excessively, got {:?}",
+            elapsed
+        );
+
+        info!(
+            "TEST PASS: test_backoff_polling_interval - waited {:?} for 50ms timeout",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn test_lock_prevents_deadlock_with_timeout() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
+        use std::thread;
+
+        log_test_start("test_lock_prevents_deadlock_with_timeout");
+
+        let tmp = TempDir::new().unwrap();
+        let lock_dir = tmp.path().join("locks");
+        fs::create_dir_all(&lock_dir).unwrap();
+
+        let lock_dir = Arc::new(lock_dir);
+        let deadlock_avoided = Arc::new(AtomicBool::new(false));
+
+        let lock_dir_clone = Arc::clone(&lock_dir);
+        let deadlock_flag = Arc::clone(&deadlock_avoided);
+        let (ready_tx, ready_rx) = mpsc::channel();
+
+        // Thread holds lock forever (simulating a hung process scenario)
+        let holder = thread::spawn(move || {
+            let _lock = ConfigLock::acquire_in_dir(&lock_dir_clone, "deadlock_test", "forever")
+                .expect("holder should acquire lock");
+            ready_tx.send(()).expect("signal holder ready");
+            // Hold lock for longer than waiter's timeout
+            thread::sleep(Duration::from_millis(400));
+        });
+
+        // Ensure the lock is held before we start waiting (avoid racy sleeps).
+        ready_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("holder did not acquire lock in time");
+
+        // Waiter should timeout rather than deadlock
+        let start = std::time::Instant::now();
+        let result = ConfigLock::acquire_in_dir_with_timeout(
+            &lock_dir,
+            "deadlock_test",
+            Duration::from_millis(200),
+            "waiter",
+        );
+
+        if result.is_err() {
+            deadlock_avoided.store(true, Ordering::SeqCst);
+        }
+
+        let elapsed = start.elapsed();
+
+        holder.join().expect("holder thread panicked");
+
+        assert!(
+            deadlock_flag.load(Ordering::SeqCst),
+            "Should timeout instead of deadlocking"
+        );
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "Should return within timeout period, got {:?}",
+            elapsed
+        );
+
+        info!(
+            "TEST PASS: test_lock_prevents_deadlock_with_timeout - avoided deadlock in {:?}",
+            elapsed
+        );
     }
 }

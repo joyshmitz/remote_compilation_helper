@@ -644,6 +644,7 @@ mod tests {
                     duration_ms: 1250,
                     location: "remote".to_string(),
                     bytes_transferred: Some(2048),
+                    timing: None,
                 },
                 BuildRecordFromApi {
                     id: 3,
@@ -656,6 +657,7 @@ mod tests {
                     duration_ms: 540,
                     location: "local".to_string(),
                     bytes_transferred: None,
+                    timing: None,
                 },
             ],
             issues: vec![IssueFromApi {
