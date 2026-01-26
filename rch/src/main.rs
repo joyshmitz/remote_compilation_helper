@@ -553,6 +553,15 @@ enum WorkersAction {
         #[arg(long)]
         speedscore: bool,
     },
+    /// Show worker runtime capabilities
+    Capabilities {
+        /// Refresh cached capabilities by probing workers now
+        #[arg(long)]
+        refresh: bool,
+        /// Optional command to evaluate required runtime
+        #[arg(long)]
+        command: Option<String>,
+    },
     /// Probe worker connectivity
     Probe {
         /// Worker ID to probe, or --all for all workers
@@ -1069,6 +1078,9 @@ async fn handle_workers(action: WorkersAction, ctx: &OutputContext) -> Result<()
     match action {
         WorkersAction::List { speedscore } => {
             commands::workers_list(speedscore, ctx).await?;
+        }
+        WorkersAction::Capabilities { refresh, command } => {
+            commands::workers_capabilities(command, refresh, ctx).await?;
         }
         WorkersAction::Probe { worker, all } => {
             commands::workers_probe(worker, all, ctx).await?;
@@ -1632,6 +1644,42 @@ mod tests {
                 assert!(!speedscore);
             }
             _ => panic!("Expected workers list command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_workers_capabilities() {
+        let cli = Cli::try_parse_from(["rch", "workers", "capabilities"]).unwrap();
+        match cli.command {
+            Some(Commands::Workers {
+                action: WorkersAction::Capabilities { refresh, command },
+            }) => {
+                assert!(!refresh);
+                assert!(command.is_none());
+            }
+            _ => panic!("Expected workers capabilities command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_workers_capabilities_with_flags() {
+        let cli = Cli::try_parse_from([
+            "rch",
+            "workers",
+            "capabilities",
+            "--refresh",
+            "--command",
+            "bun test",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Workers {
+                action: WorkersAction::Capabilities { refresh, command },
+            }) => {
+                assert!(refresh);
+                assert_eq!(command.as_deref(), Some("bun test"));
+            }
+            _ => panic!("Expected workers capabilities command"),
         }
     }
 

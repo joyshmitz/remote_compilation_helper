@@ -3,6 +3,7 @@
 //! These types mirror the response structures from rchd's /status API endpoint.
 
 use serde::{Deserialize, Serialize};
+use rch_common::WorkerCapabilities;
 
 /// Full status response from daemon's GET /status.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +53,21 @@ pub struct WorkerStatusFromApi {
     /// Recent health check results (true=success, false=failure).
     #[serde(default)]
     pub failure_history: Vec<bool>,
+}
+
+/// Worker capabilities information from API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerCapabilitiesFromApi {
+    pub id: String,
+    pub host: String,
+    pub user: String,
+    pub capabilities: WorkerCapabilities,
+}
+
+/// Worker capabilities response from API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerCapabilitiesResponseFromApi {
+    pub workers: Vec<WorkerCapabilitiesFromApi>,
 }
 
 /// Active build information from API.

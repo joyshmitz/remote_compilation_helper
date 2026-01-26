@@ -8,6 +8,7 @@ use crate::DaemonContext;
 use crate::events::EventBus;
 use crate::metrics;
 use crate::metrics::budget::{self, BudgetStatusResponse};
+use crate::health::{HealthConfig, probe_worker_capabilities};
 use crate::telemetry::collect_telemetry_from_worker;
 use crate::workers::WorkerPool;
 use anyhow::{Result, anyhow};
@@ -15,7 +16,7 @@ use chrono::{Duration as ChronoDuration, Utc};
 use rch_common::{
     ApiError, BuildRecord, BuildStats, CircuitBreakerConfig, CircuitState, ErrorCode,
     ReleaseRequest, RequiredRuntime, SelectedWorker, SelectionReason, SelectionRequest,
-    SelectionResponse, WorkerId, WorkerStatus,
+    SelectionResponse, WorkerCapabilities, WorkerId, WorkerStatus,
 };
 use rch_telemetry::protocol::{TelemetrySource, TestRunRecord, TestRunStats, WorkerTelemetry};
 use rch_telemetry::speedscore::SpeedScore;
@@ -51,6 +52,9 @@ enum ApiRequest {
         offset: usize,
     },
     SpeedScores,
+    WorkersCapabilities {
+        refresh: bool,
+    },
     BenchmarkTrigger {
         worker_id: WorkerId,
     },
@@ -144,6 +148,21 @@ pub struct WorkerStatusInfo {
     /// Recent health check results (true=success, false=failure).
     /// Most recent result is at the end. Used for history visualization.
     pub failure_history: Vec<bool>,
+}
+
+/// Worker capabilities information.
+#[derive(Debug, Serialize)]
+pub struct WorkerCapabilitiesInfo {
+    pub id: String,
+    pub host: String,
+    pub user: String,
+    pub capabilities: WorkerCapabilities,
+}
+
+/// Worker capabilities response.
+#[derive(Debug, Serialize)]
+pub struct WorkerCapabilitiesResponse {
+    pub workers: Vec<WorkerCapabilitiesInfo>,
 }
 
 /// Active build information (placeholder).
@@ -438,6 +457,11 @@ pub async fn handle_connection(
             let response = handle_speedscore_list(&ctx).await;
             (serde_json::to_string(&response)?, "application/json")
         }
+        Ok(ApiRequest::WorkersCapabilities { refresh }) => {
+            metrics::inc_requests("workers-capabilities");
+            let response = handle_workers_capabilities(&ctx, refresh).await;
+            (serde_json::to_string(&response)?, "application/json")
+        }
         Ok(ApiRequest::BenchmarkTrigger { worker_id }) => {
             metrics::inc_requests("benchmark-trigger");
             let response = handle_benchmark_trigger(&ctx, &worker_id).await;
@@ -570,6 +594,27 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
 
     if path == "/speedscores" && method == "GET" {
         return Ok(ApiRequest::SpeedScores);
+    }
+
+    if path.starts_with("/workers/capabilities") && method == "GET" {
+        let (path_only, query) = split_path_query(path);
+        if path_only == "/workers/capabilities" {
+            let mut refresh = false;
+            for param in query.split('&') {
+                if param.is_empty() {
+                    continue;
+                }
+                let mut kv = param.splitn(2, '=');
+                let key = kv.next().unwrap_or("");
+                let value = kv.next().unwrap_or("");
+                if key == "refresh"
+                    && (value == "1" || value.eq_ignore_ascii_case("true"))
+                {
+                    refresh = true;
+                }
+            }
+            return Ok(ApiRequest::WorkersCapabilities { refresh });
+        }
     }
 
     if path.starts_with("/speedscore") && method == "GET" {
@@ -1220,6 +1265,35 @@ async fn handle_speedscore_list(ctx: &DaemonContext) -> ApiResponse<SpeedScoreLi
     ApiResponse::Ok(SpeedScoreListResponse { workers: entries })
 }
 
+async fn handle_workers_capabilities(
+    ctx: &DaemonContext,
+    refresh: bool,
+) -> ApiResponse<WorkerCapabilitiesResponse> {
+    let workers = ctx.pool.all_workers().await;
+    let mut entries = Vec::with_capacity(workers.len());
+    let timeout = HealthConfig::default().check_timeout;
+
+    for worker in workers {
+        if refresh {
+            if let Some(capabilities) = probe_worker_capabilities(&worker, timeout).await {
+                worker.set_capabilities(capabilities).await;
+            }
+        }
+
+        let config = worker.config.read().await;
+        let capabilities = worker.capabilities().await;
+
+        entries.push(WorkerCapabilitiesInfo {
+            id: config.id.to_string(),
+            host: config.host.clone(),
+            user: config.user.clone(),
+            capabilities,
+        });
+    }
+
+    ApiResponse::Ok(WorkerCapabilitiesResponse { workers: entries })
+}
+
 async fn handle_benchmark_trigger(
     ctx: &DaemonContext,
     worker_id: &WorkerId,
@@ -1715,6 +1789,25 @@ mod tests {
         match req {
             ApiRequest::SpeedScores => {}
             _ => panic!("expected speedscores request"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_workers_capabilities() {
+        let req = parse_request("GET /workers/capabilities").unwrap();
+        match req {
+            ApiRequest::WorkersCapabilities { refresh } => {
+                assert!(!refresh);
+            }
+            _ => panic!("expected workers capabilities request"),
+        }
+
+        let req = parse_request("GET /workers/capabilities?refresh=true").unwrap();
+        match req {
+            ApiRequest::WorkersCapabilities { refresh } => {
+                assert!(refresh);
+            }
+            _ => panic!("expected workers capabilities request"),
         }
     }
 

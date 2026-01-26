@@ -6,7 +6,8 @@ use crate::error::{ConfigError, SshError};
 use crate::status_types::{
     SelfTestHistoryResponse, SelfTestRunResponse, SelfTestStatusResponse,
     SpeedScoreHistoryResponseFromApi, SpeedScoreListResponseFromApi, SpeedScoreResponseFromApi,
-    SpeedScoreViewFromApi, extract_json_body,
+    SpeedScoreViewFromApi, WorkerCapabilitiesFromApi, WorkerCapabilitiesResponseFromApi,
+    extract_json_body,
 };
 use crate::ui::context::OutputContext;
 use crate::ui::theme::StatusIndicator;
@@ -15,8 +16,8 @@ use directories::ProjectDirs;
 use rch_common::{
     ApiError, ApiResponse, Classification, ClassificationDetails, ClassificationTier,
     ConfigValueSource, DiscoveredHost, ErrorCode, RchConfig, RequiredRuntime, SelectedWorker,
-    SelectionReason, SshClient, SshOptions, WorkerConfig, WorkerId, classify_command_detailed,
-    discover_all,
+    SelectionReason, SshClient, SshOptions, WorkerCapabilities, WorkerConfig, WorkerId,
+    classify_command_detailed, discover_all,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -130,6 +131,18 @@ pub struct WorkerProbeResult {
     pub latency_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// Worker capabilities report for JSON output.
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkersCapabilitiesReport {
+    pub workers: Vec<WorkerCapabilitiesFromApi>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local: Option<WorkerCapabilities>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_runtime: Option<RequiredRuntime>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub warnings: Vec<String>,
 }
 
 /// Daemon status response.
@@ -1006,12 +1019,15 @@ pub async fn workers_drain(worker_id: &str, ctx: &OutputContext) -> Result<()> {
         Ok(response) => {
             if response.contains("error") || response.contains("Error") {
                 if ctx.is_json() {
-                    let _ = ctx.json(&ApiResponse::ok("workers drain", WorkerActionResponse {
-                        worker_id: worker_id.to_string(),
-                        action: "drain".to_string(),
-                        success: false,
-                        message: Some(response),
-                    }));
+                    let _ = ctx.json(&ApiResponse::ok(
+                        "workers drain",
+                        WorkerActionResponse {
+                            worker_id: worker_id.to_string(),
+                            action: "drain".to_string(),
+                            success: false,
+                            message: Some(response),
+                        },
+                    ));
                 } else {
                     println!(
                         "{} Failed to drain worker: {}",
@@ -1020,12 +1036,15 @@ pub async fn workers_drain(worker_id: &str, ctx: &OutputContext) -> Result<()> {
                     );
                 }
             } else if ctx.is_json() {
-                let _ = ctx.json(&ApiResponse::ok("workers drain", WorkerActionResponse {
-                    worker_id: worker_id.to_string(),
-                    action: "drain".to_string(),
-                    success: true,
-                    message: Some("Worker is now draining".to_string()),
-                }));
+                let _ = ctx.json(&ApiResponse::ok(
+                    "workers drain",
+                    WorkerActionResponse {
+                        worker_id: worker_id.to_string(),
+                        action: "drain".to_string(),
+                        success: true,
+                        message: Some("Worker is now draining".to_string()),
+                    },
+                ));
             } else {
                 println!(
                     "{} Worker {} is now draining.",
