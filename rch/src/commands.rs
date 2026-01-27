@@ -7632,6 +7632,54 @@ pub async fn queue_status(watch: bool, ctx: &OutputContext) -> Result<()> {
         }
         println!();
 
+        // Queued builds section
+        if !status.queued_builds.is_empty() {
+            println!(
+                "  {} {}",
+                style.warning("◌"),
+                style.key(&format!("{} Queued Build(s)", status.queued_builds.len()))
+            );
+            println!();
+
+            for build in &status.queued_builds {
+                // Truncate command for display
+                let cmd_display = if build.command.len() > 50 {
+                    format!("{}...", &build.command[..47])
+                } else {
+                    build.command.clone()
+                };
+
+                // Show position and estimated wait
+                let estimate_display = build
+                    .estimated_start
+                    .as_ref()
+                    .map(|_| format!("~{}", build.wait_time))
+                    .unwrap_or_else(|| build.wait_time.clone());
+
+                println!(
+                    "  {} {} {} {} {}",
+                    style.info(&format!("#{}", build.position)),
+                    style.muted("|"),
+                    style.value(&cmd_display),
+                    style.muted("waiting"),
+                    style.warning(&format!("[{}]", estimate_display))
+                );
+
+                // Show project
+                let project_display = if build.project_id.len() > 30 {
+                    format!("...{}", &build.project_id[build.project_id.len() - 27..])
+                } else {
+                    build.project_id.clone()
+                };
+                println!(
+                    "      {} {}",
+                    style.muted("project:"),
+                    style.value(&project_display)
+                );
+            }
+            println!();
+        }
+
         // Worker availability summary
         println!("{}", style.key("Worker Availability"));
         println!();
@@ -7677,6 +7725,8 @@ pub async fn queue_status(watch: bool, ctx: &OutputContext) -> Result<()> {
         if ctx.is_json() {
             let queue_data = serde_json::json!({
                 "active_builds": status.active_builds,
+                "queued_builds": status.queued_builds,
+                "queue_depth": status.queued_builds.len(),
                 "workers_available": healthy_count,
                 "workers_busy": busy_count,
                 "workers_offline": offline_count,

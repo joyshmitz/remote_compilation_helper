@@ -48,6 +48,48 @@ pub struct DaemonConfig {
     /// Worker cache cleanup settings.
     #[serde(default)]
     pub cache_cleanup: CacheCleanupConfig,
+
+    /// Build queue settings.
+    #[serde(default)]
+    pub queue: QueueConfig,
+}
+
+/// Configuration for build queueing when all workers are busy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueConfig {
+    /// Queue builds when all workers are busy instead of failing open to local.
+    /// When false (default), builds fall back to local execution immediately.
+    /// When true, builds wait in queue for an available worker.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Maximum number of builds that can be queued (0 = unlimited).
+    /// When the queue is full, new builds fall back to local execution.
+    #[serde(default = "default_max_queue_depth")]
+    pub max_depth: usize,
+
+    /// Maximum time a build can wait in queue (seconds) before timing out.
+    /// Timed-out builds fall back to local execution.
+    #[serde(default = "default_queue_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_max_queue_depth() -> usize {
+    100
+}
+
+fn default_queue_timeout() -> u64 {
+    300 // 5 minutes
+}
+
+impl Default for QueueConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_depth: default_max_queue_depth(),
+            timeout_secs: default_queue_timeout(),
+        }
+    }
 }
 
 impl Default for DaemonConfig {
@@ -60,6 +102,7 @@ impl Default for DaemonConfig {
             connection_pooling: true,
             log_level: "info".to_string(),
             cache_cleanup: CacheCleanupConfig::default(),
+            queue: QueueConfig::default(),
         }
     }
 }

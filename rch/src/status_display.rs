@@ -639,6 +639,7 @@ mod tests {
                 command: "cargo build".to_string(),
                 started_at: "2026-01-17T00:00:01Z".to_string(),
             }],
+            queued_builds: vec![],
             recent_builds: vec![
                 BuildRecordFromApi {
                     id: 2,

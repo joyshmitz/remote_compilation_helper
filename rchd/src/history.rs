@@ -402,8 +402,7 @@ impl BuildHistory {
                 0 // No active builds, next in queue starts immediately
             };
 
-            let estimated =
-                now + chrono::Duration::milliseconds(wait_ms.max(0));
+            let estimated = now + chrono::Duration::milliseconds(wait_ms.max(0));
             build.estimated_start = Some(estimated.to_rfc3339());
         }
     }
@@ -884,23 +883,31 @@ mod tests {
         let history = BuildHistory::new(10).with_max_queue_depth(2);
 
         // First two should succeed
-        assert!(history
-            .enqueue_build("proj-a".into(), "build".into(), 1, 4)
-            .is_some());
-        assert!(history
-            .enqueue_build("proj-b".into(), "build".into(), 2, 4)
-            .is_some());
+        assert!(
+            history
+                .enqueue_build("proj-a".into(), "build".into(), 1, 4)
+                .is_some()
+        );
+        assert!(
+            history
+                .enqueue_build("proj-b".into(), "build".into(), 2, 4)
+                .is_some()
+        );
 
         // Third should fail
-        assert!(history
-            .enqueue_build("proj-c".into(), "build".into(), 3, 4)
-            .is_none());
+        assert!(
+            history
+                .enqueue_build("proj-c".into(), "build".into(), 3, 4)
+                .is_none()
+        );
 
         // Dequeue one, then third should succeed
         history.dequeue_build();
-        assert!(history
-            .enqueue_build("proj-c".into(), "build".into(), 3, 4)
-            .is_some());
+        assert!(
+            history
+                .enqueue_build("proj-c".into(), "build".into(), 3, 4)
+                .is_some()
+        );
     }
 
     #[test]
@@ -989,9 +996,11 @@ mod tests {
 
         // Should be able to enqueue many
         for i in 0..1000 {
-            assert!(history
-                .enqueue_build(format!("proj-{}", i), "build".into(), i, 4)
-                .is_some());
+            assert!(
+                history
+                    .enqueue_build(format!("proj-{}", i), "build".into(), i, 4)
+                    .is_some()
+            );
         }
 
         assert_eq!(history.queue_depth(), 1000);

@@ -341,6 +341,7 @@ mod tests {
                 command: "cargo build --release".to_string(),
                 started_at: "2026-01-19T00:00:10Z".to_string(),
             }],
+            queued_builds: vec![],
             recent_builds: vec![],
             issues: vec![IssueFromApi {
                 severity: "warning".to_string(),

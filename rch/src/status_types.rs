@@ -11,6 +11,8 @@ pub struct DaemonFullStatusResponse {
     pub daemon: DaemonInfoFromApi,
     pub workers: Vec<WorkerStatusFromApi>,
     pub active_builds: Vec<ActiveBuildFromApi>,
+    #[serde(default)]
+    pub queued_builds: Vec<QueuedBuildFromApi>,
     pub recent_builds: Vec<BuildRecordFromApi>,
     pub issues: Vec<IssueFromApi>,
     pub stats: BuildStatsFromApi,
@@ -78,6 +80,19 @@ pub struct ActiveBuildFromApi {
     pub worker_id: String,
     pub command: String,
     pub started_at: String,
+}
+
+/// Queued build information from API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueuedBuildFromApi {
+    pub id: u64,
+    pub project_id: String,
+    pub command: String,
+    pub queued_at: String,
+    pub position: usize,
+    pub slots_needed: u32,
+    pub estimated_start: Option<String>,
+    pub wait_time: String,
 }
 
 /// Build record from API.

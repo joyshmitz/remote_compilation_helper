@@ -368,6 +368,7 @@ mod tests {
             },
             workers,
             active_builds,
+            queued_builds: vec![],
             recent_builds,
             issues: vec![IssueFromApi {
                 severity: "info".to_string(),
