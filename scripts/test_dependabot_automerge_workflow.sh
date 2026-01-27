@@ -8,6 +8,7 @@
 # 3. Actor condition checks for dependabot[bot]
 # 4. dependabot/fetch-metadata action is used
 # 5. gh pr merge command is well-formed
+# 6. Failure notification step exists (warning if missing)
 #
 # Usage:
 #   ./scripts/test_dependabot_automerge_workflow.sh
@@ -167,6 +168,22 @@ else:
 
         if not has_merge_command:
             errors.append("Missing 'gh pr merge' command in steps")
+
+        # Check 6: Failure notification step exists
+        has_failure_notification = False
+        for step in steps:
+            step_if = step.get('if', '')
+            if 'failure()' in step_if:
+                has_failure_notification = True
+                # Verify it has a notification mechanism
+                run = step.get('run', '')
+                uses = step.get('uses', '')
+                if not (run or uses):
+                    warnings.append("Failure notification step should have a 'run' or 'uses' block")
+                break
+
+        if not has_failure_notification:
+            warnings.append("Consider adding 'if: failure()' step for automerge failure notifications")
 
 result = {
     "valid": len(errors) == 0,

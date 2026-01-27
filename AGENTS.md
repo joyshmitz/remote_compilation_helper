@@ -367,6 +367,24 @@ If you aren't 100% sure how to use a third-party library, **SEARCH ONLINE** to f
 
 ---
 
+## Dependabot — Update + Automerge Policy
+
+Dependabot is configured in `.github/dependabot.yml` to open weekly update PRs for:
+- GitHub Actions (grouped)
+- Cargo workspace dependencies (grouped; core deps like `tokio*`, `serde*`, `hyper*` are separated)
+- npm dependencies under `/web` (grouped dev vs prod)
+
+Automerge is handled by `.github/workflows/dependabot-automerge.yml`:
+- **Auto-merge GitHub Actions PRs** (after CI passes)
+- **Auto-merge semver patch PRs** (after CI passes)
+- Minor/major updates are **not** auto-merged and require review.
+
+Agent guidance:
+- Treat Dependabot PRs like normal code: fix CI failures rather than merging around them.
+- If you change deps manually, keep `Cargo.lock` changes in the same commit.
+
+---
+
 ## MCP Agent Mail — Multi-Agent Coordination
 
 See the MCP Agent Mail section in the DCG AGENTS.md for full details. Key points:

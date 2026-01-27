@@ -7,6 +7,7 @@ on: pull_request
 permissions:
   contents: write
   pull-requests: write
+  issues: write
 
 jobs:
   automerge:
@@ -21,6 +22,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Auto-merge patch updates
+        id: merge-patch
         if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
         run: gh pr merge --auto --squash "$PR_URL"
         env:
@@ -28,8 +30,32 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Auto-merge GitHub Actions updates
+        id: merge-actions
         if: steps.metadata.outputs.package-ecosystem == 'github-actions'
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create issue on failure
+        if: failure()
+        run: |
+          gh issue create \
+            --title "Dependabot automerge failed for PR #${{ github.event.pull_request.number }}" \
+            --body "## Automerge Failure
+
+          **PR:** #${{ github.event.pull_request.number }}
+          **Title:** ${{ github.event.pull_request.title }}
+          **Link:** ${{ github.event.pull_request.html_url }}
+          **Update Type:** ${{ steps.metadata.outputs.update-type }}
+          **Package Ecosystem:** ${{ steps.metadata.outputs.package-ecosystem }}
+
+          The Dependabot automerge workflow failed. Please investigate manually.
+
+          **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          ---
+          *This issue was automatically created by the Dependabot automerge workflow.*" \
+            --label "dependabot,automerge-failure"
+        env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
