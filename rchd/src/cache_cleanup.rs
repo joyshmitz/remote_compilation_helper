@@ -281,7 +281,7 @@ impl CacheCleanupScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rch_common::WorkerConfig;
+    use rch_common::{CircuitState, WorkerConfig};
 
     #[test]
     fn test_cleanup_config_defaults() {
@@ -443,12 +443,10 @@ mod tests {
             id: WorkerId::new(id),
             host: "test.example.com".to_string(),
             user: "testuser".to_string(),
-            identity_file: Some("/home/test/.ssh/id_rsa".into()),
-            port: 22,
+            identity_file: "/home/test/.ssh/id_rsa".to_string(),
             total_slots: 8,
             priority: 50,
             tags: vec![],
-            disabled: false,
         }
     }
 
@@ -584,8 +582,8 @@ mod tests {
         let config1 = create_test_worker_config("worker1");
         let config2 = create_test_worker_config("worker2");
 
-        pool.add(config1).await;
-        pool.add(config2).await;
+        pool.add_worker(config1).await;
+        pool.add_worker(config2).await;
 
         let cleanup_config = CacheCleanupConfig::default();
         let scheduler = CacheCleanupScheduler::new(pool, cleanup_config);
@@ -602,7 +600,7 @@ mod tests {
     async fn test_is_worker_eligible_healthy_idle() {
         let pool = WorkerPool::new();
         let config = create_test_worker_config("eligible-worker");
-        pool.add(config).await;
+        pool.add_worker(config).await;
 
         let cleanup_config = CacheCleanupConfig::default();
         let scheduler = CacheCleanupScheduler::new(pool.clone(), cleanup_config);
@@ -618,7 +616,7 @@ mod tests {
     async fn test_is_worker_eligible_unhealthy() {
         let pool = WorkerPool::new();
         let config = create_test_worker_config("unhealthy-worker");
-        pool.add(config).await;
+        pool.add_worker(config).await;
 
         let cleanup_config = CacheCleanupConfig::default();
         let scheduler = CacheCleanupScheduler::new(pool.clone(), cleanup_config);
@@ -636,7 +634,7 @@ mod tests {
     async fn test_is_worker_eligible_busy() {
         let pool = WorkerPool::new();
         let config = create_test_worker_config("busy-worker");
-        pool.add(config).await;
+        pool.add_worker(config).await;
 
         let cleanup_config = CacheCleanupConfig::default();
         let scheduler = CacheCleanupScheduler::new(pool.clone(), cleanup_config);
@@ -654,7 +652,7 @@ mod tests {
     async fn test_is_worker_eligible_circuit_open() {
         let pool = WorkerPool::new();
         let config = create_test_worker_config("circuit-open-worker");
-        pool.add(config).await;
+        pool.add_worker(config).await;
 
         let cleanup_config = CacheCleanupConfig::default();
         let scheduler = CacheCleanupScheduler::new(pool.clone(), cleanup_config);
@@ -675,7 +673,7 @@ mod tests {
     async fn test_is_worker_eligible_draining() {
         let pool = WorkerPool::new();
         let config = create_test_worker_config("draining-worker");
-        pool.add(config).await;
+        pool.add_worker(config).await;
 
         let cleanup_config = CacheCleanupConfig::default();
         let scheduler = CacheCleanupScheduler::new(pool.clone(), cleanup_config);
@@ -727,8 +725,8 @@ mod tests {
         // Add workers that will be skipped (busy)
         let config1 = create_test_worker_config("busy-worker1");
         let config2 = create_test_worker_config("busy-worker2");
-        pool.add(config1).await;
-        pool.add(config2).await;
+        pool.add_worker(config1).await;
+        pool.add_worker(config2).await;
 
         // Make workers busy
         let worker1 = pool.get(&WorkerId::new("busy-worker1")).await.unwrap();
