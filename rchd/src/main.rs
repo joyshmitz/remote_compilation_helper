@@ -174,36 +174,46 @@ async fn main() -> Result<()> {
 
     // Load RCH config for selection and circuit breaker settings
     let rch_config = match config::load_rch_config() {
-        Ok(cfg) => cfg,
+        Ok(mut cfg) => {
+            // Apply environment variable overrides to self-healing config
+            cfg.self_healing = cfg.self_healing.with_env_overrides();
+            cfg
+        }
         Err(e) => {
             warn!("Failed to load RCH config: {}, using defaults", e);
-            rch_common::RchConfig::default()
+            let mut cfg = rch_common::RchConfig::default();
+            cfg.self_healing = cfg.self_healing.with_env_overrides();
+            cfg
         }
     };
 
     // Initialize worker selector
     let worker_selector = Arc::new(WorkerSelector::with_config(
-        rch_config.selection,
-        rch_config.circuit,
+        rch_config.selection.clone(),
+        rch_config.circuit.clone(),
     ));
 
     // Verify and install Claude Code hook if needed (self-healing)
-    match rch_common::verify_and_install_claude_code_hook() {
-        Ok(rch_common::HookResult::AlreadyInstalled) => {
-            tracing::debug!("Claude Code hook already installed");
+    if rch_config.self_healing.daemon_installs_hooks {
+        match rch_common::verify_and_install_claude_code_hook() {
+            Ok(rch_common::HookResult::AlreadyInstalled) => {
+                tracing::debug!("Claude Code hook already installed");
+            }
+            Ok(rch_common::HookResult::Installed) => {
+                info!("Claude Code hook installed automatically");
+            }
+            Ok(rch_common::HookResult::NotApplicable) => {
+                tracing::debug!("Claude Code not detected, skipping hook installation");
+            }
+            Ok(rch_common::HookResult::Skipped(reason)) => {
+                tracing::debug!("Hook installation skipped: {}", reason);
+            }
+            Err(e) => {
+                warn!("Failed to verify/install Claude Code hook: {}", e);
+            }
         }
-        Ok(rch_common::HookResult::Installed) => {
-            info!("Claude Code hook installed automatically");
-        }
-        Ok(rch_common::HookResult::NotApplicable) => {
-            tracing::debug!("Claude Code not detected, skipping hook installation");
-        }
-        Ok(rch_common::HookResult::Skipped(reason)) => {
-            tracing::debug!("Hook installation skipped: {}", reason);
-        }
-        Err(e) => {
-            warn!("Failed to verify/install Claude Code hook: {}", e);
-        }
+    } else {
+        tracing::debug!("Hook auto-installation disabled via config");
     }
 
     // Initialize build history

@@ -25,6 +25,7 @@ tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
 tokio = { workspace = true }
 openssh = { workspace = true }
+rand = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 blake3 = { workspace = true }

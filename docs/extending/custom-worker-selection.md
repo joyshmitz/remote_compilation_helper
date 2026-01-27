@@ -4,33 +4,32 @@ This guide explains how to customize RCH's worker selection algorithm.
 
 ## Overview
 
-Worker selection determines which remote worker handles a compilation request. The default algorithm considers:
-- Available slots (weight: 0.4)
-- Speed score (weight: 0.5)
-- Project cache locality (weight: 0.1)
-- Circuit breaker state (filtering)
+Worker selection determines which remote worker handles a compilation request. RCH provides **five built-in selection strategies** with configurable weights.
+
+### Selection Strategies
+
+| Strategy | Best For | Description |
+|----------|----------|-------------|
+| **Priority** | Backwards compatibility, manual control | Sort by priority, select first available |
+| **Fastest** | Performance-critical builds, homogeneous workers | Select worker with highest SpeedScore |
+| **Balanced** | Default recommendation, diverse worker pools | Balance SpeedScore, load, health, cache affinity |
+| **CacheAffinity** | Incremental builds, large codebases | Prefer workers with warm caches for the project |
+| **FairFastest** | Many workers, avoid hot-spotting | Weighted random selection favoring fast workers |
+
+### Default Weights (Balanced Strategy)
+
+The balanced strategy uses these default weights:
+- Speed score: 0.5
+- Available slots: 0.4
+- Health/success rate: 0.3
+- Cache affinity: 0.2
+- Network latency: 0.1
+- Worker priority: 0.1
+- Half-open circuit penalty: 0.5 (50% score reduction)
 
 ## Selection Algorithm
 
-### Default Scoring
-
-In `rchd/src/selection.rs`:
-
-```rust
-fn compute_score(worker: &WorkerState, request: &SelectionRequest) -> f64 {
-    let slot_score = worker.available_slots() as f64 / worker.total_slots() as f64;
-    let speed_score = worker.speed_score / 100.0;
-    let cache_score = if worker.has_cached_project(&request.project) { 1.0 } else { 0.0 };
-
-    let weights = SelectionWeights::default();
-
-    slot_score * weights.slot +
-    speed_score * weights.speed +
-    cache_score * weights.cache
-}
-```
-
-### Filtering
+### Filtering (All Strategies)
 
 Workers are filtered before scoring:
 1. Circuit breaker must be closed (or half-open with probe budget)
@@ -40,21 +39,37 @@ Workers are filtered before scoring:
 
 ## Customization Options
 
-### Configuration-Based Customization
+### Strategy Selection
 
-Adjust weights via configuration:
+Choose your selection strategy in the configuration:
 
 ```toml
 # ~/.config/rch/config.toml
 [selection]
-slot_weight = 0.3      # Prefer available capacity
-speed_weight = 0.6     # Prefer faster workers
-cache_weight = 0.1     # Slight preference for cached projects
+strategy = "balanced"  # priority | fastest | balanced | cache_affinity | fair_fastest
+```
 
-# Or prioritize cache for incremental builds
-# slot_weight = 0.2
-# speed_weight = 0.3
-# cache_weight = 0.5
+### Weight Customization (Balanced Strategy)
+
+Adjust weights to tune the balanced strategy:
+
+```toml
+[selection.weights]
+speedscore = 0.5       # Weight for SpeedScore (performance)
+slots = 0.4            # Weight for available capacity
+health = 0.3           # Weight for health/success rate
+cache = 0.2            # Weight for cache affinity
+network = 0.1          # Weight for network latency
+priority = 0.1         # Weight for worker priority
+half_open_penalty = 0.5  # Penalty multiplier for half-open circuit breakers
+
+# Example: Prioritize cache for incremental builds
+# speedscore = 0.3
+# slots = 0.2
+# health = 0.2
+# cache = 0.5
+# network = 0.1
+# priority = 0.0
 ```
 
 ### Project-Level Preferences
@@ -86,116 +101,99 @@ required_tags = ["gpu"]
 preferred_tags = ["ssd"]
 ```
 
-## Custom Selection Strategies
+## Built-in Selection Strategies
 
-### Implementing a Custom Strategy
+### Priority Strategy
 
-Create a new selection strategy in `rchd/src/selection.rs`:
-
-```rust
-pub trait SelectionStrategy: Send + Sync {
-    fn select(
-        &self,
-        workers: &[Arc<WorkerState>],
-        request: &SelectionRequest,
-    ) -> Option<SelectedWorker>;
-}
-
-// Round-robin strategy
-pub struct RoundRobinStrategy {
-    counter: AtomicUsize,
-}
-
-impl SelectionStrategy for RoundRobinStrategy {
-    fn select(
-        &self,
-        workers: &[Arc<WorkerState>],
-        request: &SelectionRequest,
-    ) -> Option<SelectedWorker> {
-        let available: Vec<_> = workers
-            .iter()
-            .filter(|w| w.can_accept_build())
-            .collect();
-
-        if available.is_empty() {
-            return None;
-        }
-
-        let idx = self.counter.fetch_add(1, Ordering::Relaxed) % available.len();
-        Some(available[idx].to_selected())
-    }
-}
-
-// Least-loaded strategy
-pub struct LeastLoadedStrategy;
-
-impl SelectionStrategy for LeastLoadedStrategy {
-    fn select(
-        &self,
-        workers: &[Arc<WorkerState>],
-        request: &SelectionRequest,
-    ) -> Option<SelectedWorker> {
-        workers
-            .iter()
-            .filter(|w| w.can_accept_build())
-            .max_by_key(|w| w.available_slots())
-            .map(|w| w.to_selected())
-    }
-}
-
-// Affinity strategy - sticky to workers with project cache
-pub struct AffinityStrategy {
-    fallback: Box<dyn SelectionStrategy>,
-}
-
-impl SelectionStrategy for AffinityStrategy {
-    fn select(
-        &self,
-        workers: &[Arc<WorkerState>],
-        request: &SelectionRequest,
-    ) -> Option<SelectedWorker> {
-        // First, try workers with cached project
-        let with_cache: Vec<_> = workers
-            .iter()
-            .filter(|w| w.can_accept_build() && w.has_cached_project(&request.project))
-            .collect();
-
-        if !with_cache.is_empty() {
-            // Among cached, prefer least loaded
-            return with_cache
-                .iter()
-                .max_by_key(|w| w.available_slots())
-                .map(|w| w.to_selected());
-        }
-
-        // Fallback to normal selection
-        self.fallback.select(workers, request)
-    }
-}
-```
-
-### Registering Custom Strategies
+The original selection behavior for backwards compatibility:
 
 ```rust
-// In rchd/src/main.rs or config loading
+// Sort workers by priority, select first with available slots
+fn select_by_priority(workers: &[&WorkerState]) -> Option<WorkerId> {
+    workers.iter()
+        .min_by_key(|w| w.priority)
+        .map(|w| w.id.clone())
+}
+```
 
-fn create_selection_strategy(config: &Config) -> Box<dyn SelectionStrategy> {
-    match config.selection.strategy.as_str() {
-        "round-robin" => Box::new(RoundRobinStrategy::new()),
-        "least-loaded" => Box::new(LeastLoadedStrategy),
-        "affinity" => Box::new(AffinityStrategy {
-            fallback: Box::new(WeightedStrategy::from_config(config)),
-        }),
-        "weighted" | _ => Box::new(WeightedStrategy::from_config(config)),
+### Fastest Strategy
+
+Select the worker with the highest SpeedScore:
+
+```rust
+fn select_by_speedscore(workers: &[&WorkerState]) -> Option<WorkerId> {
+    workers.iter()
+        .max_by(|a, b| {
+            let score_a = a.speedscore.unwrap_or(50.0);
+            let score_b = b.speedscore.unwrap_or(50.0);
+            score_a.partial_cmp(&score_b).unwrap_or(Ordering::Equal)
+        })
+        .map(|w| w.id.clone())
+}
+```
+
+### Balanced Strategy (Recommended)
+
+Computes an effective score balancing multiple factors:
+
+```rust
+fn compute_balanced_score(worker: &WorkerState, request: &SelectionRequest) -> f64 {
+    // Score components (all normalized to 0-1)
+    let speed_score = worker.get_speed_score() / 100.0;
+    let slot_score = worker.available_slots() as f64 / worker.total_slots() as f64;
+    let load_factor = 1.0 - (utilization * 0.5);  // Penalize heavily loaded workers
+    let health_score = 1.0 - worker.error_rate();
+    let cache_score = cache_tracker.estimate_warmth(&worker.id, &request.project);
+    let network_score = network_tracker.get_score(&worker.id);
+    let priority_score = normalize_priority(worker.priority, min_priority, max_priority);
+
+    // Apply configurable weights
+    let base_score = weights.speedscore * speed_score
+        + weights.slots * slot_score * load_factor
+        + weights.health * health_score
+        + weights.cache * cache_score
+        + weights.network * network_score
+        + weights.priority * priority_score;
+
+    // Apply half-open penalty if applicable
+    if circuit_state == CircuitState::HalfOpen {
+        base_score * weights.half_open_penalty
+    } else {
+        base_score
     }
 }
 ```
 
-Configuration:
-```toml
-[selection]
-strategy = "affinity"  # or "weighted", "round-robin", "least-loaded"
+### CacheAffinity Strategy
+
+Prioritizes workers with warm caches:
+
+- Build < 1 hour ago: 1.0 warmth
+- Build 1-6 hours ago: 0.5-1.0 (linear decay)
+- Build 6-24 hours ago: 0.2-0.5 (linear decay)
+- Build > 24 hours ago: 0.0
+
+Test completions receive a 1.5x boost since test dependencies are warmer.
+
+### FairFastest Strategy
+
+Weighted random selection that favors fast workers while ensuring all workers get some load:
+
+```rust
+fn select_fair_fastest(workers: &[&WorkerState], history: &SelectionHistory) -> Option<WorkerId> {
+    let weights: Vec<f64> = workers.iter().map(|w| {
+        let speed = w.speedscore.unwrap_or(50.0);
+        let recent = history.recent_selections(&w.id, Duration::from_secs(300));
+        // Reduce weight for recently selected workers
+        speed / (1.0 + recent as f64)
+    }).collect();
+
+    // Weighted random selection
+    weighted_random_select(workers, &weights)
+}
 ```
+
+This prevents "hot-spotting" where the fastest worker becomes overloaded.
 
 ## Advanced Customizations
 
@@ -304,50 +302,70 @@ impl SelectionStrategy for LocalityStrategy {
 }
 ```
 
-## Testing Custom Strategies
+## Testing Selection Strategies
 
 ### Unit Tests
 
+The actual selection tests use `WorkerSelector` and `WorkerPool`:
+
 ```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[tokio::test]
+async fn test_cache_affinity_prefers_warm_cache() {
+    let pool = WorkerPool::new();
 
-    #[test]
-    fn test_affinity_prefers_cached() {
-        let workers = vec![
-            mock_worker("w1", 10, false),  // 10 slots, no cache
-            mock_worker("w2", 5, true),    // 5 slots, has cache
-        ];
+    // Add a worker with warm cache
+    pool.add_worker(make_worker("warm-cache", 8, 50.0).config.read().await.clone())
+        .await;
+    pool.add_worker(make_worker("cold-cache", 8, 80.0).config.read().await.clone())
+        .await;
 
-        let strategy = AffinityStrategy::new();
-        let request = SelectionRequest::for_project("my-project");
+    let selector = WorkerSelector::new();
 
-        let selected = strategy.select(&workers, &request).unwrap();
+    // Record recent build on warm-cache worker
+    selector.record_build("warm-cache", "my-project", false).await;
 
-        // Should select w2 despite fewer slots because it has cache
-        assert_eq!(selected.id, "w2");
-    }
+    let request = SelectionRequest {
+        project: "my-project".to_string(),
+        ..Default::default()
+    };
 
-    #[test]
-    fn test_round_robin_distributes() {
-        let workers = vec![
-            mock_worker("w1", 10, false),
-            mock_worker("w2", 10, false),
-        ];
+    let config = SelectionConfig {
+        strategy: SelectionStrategy::CacheAffinity,
+        ..Default::default()
+    };
 
-        let strategy = RoundRobinStrategy::new();
+    let result = selector.select(&pool, &request, &config).await;
 
-        let mut selections = HashMap::new();
-        for _ in 0..100 {
-            let selected = strategy.select(&workers, &default_request()).unwrap();
-            *selections.entry(selected.id.clone()).or_insert(0) += 1;
+    // Should prefer warm-cache despite lower SpeedScore
+    assert_eq!(result.selected_worker.unwrap().id, "warm-cache");
+}
+
+#[tokio::test]
+async fn test_fair_fastest_distributes_load() {
+    let pool = WorkerPool::new();
+    pool.add_worker(make_worker("worker1", 8, 80.0).config.read().await.clone())
+        .await;
+    pool.add_worker(make_worker("worker2", 8, 80.0).config.read().await.clone())
+        .await;
+
+    let selector = WorkerSelector::new();
+    let config = SelectionConfig {
+        strategy: SelectionStrategy::FairFastest,
+        ..Default::default()
+    };
+
+    let mut selections: HashMap<String, u32> = HashMap::new();
+    for _ in 0..100 {
+        let request = SelectionRequest::default();
+        let result = selector.select(&pool, &request, &config).await;
+        if let Some(worker) = result.selected_worker {
+            *selections.entry(worker.id).or_insert(0) += 1;
         }
-
-        // Should be roughly equal
-        assert!(selections["w1"] > 40);
-        assert!(selections["w2"] > 40);
     }
+
+    // Both workers should get selections (weighted random distribution)
+    assert!(selections.get("worker1").unwrap_or(&0) > &20);
+    assert!(selections.get("worker2").unwrap_or(&0) > &20);
 }
 ```
 
@@ -367,8 +385,10 @@ Compare strategies in production:
 strategy = "experiment"
 
 [selection.experiment]
-control = "weighted"
-treatment = "affinity"
+control = "balanced"
+treatment = "cache_affinity"
 treatment_percent = 20
 metrics_endpoint = "http://metrics.example.com/api"
 ```
+
+> **Note:** Experimental strategy switching is a planned feature. Currently, switch strategies by changing the `strategy` field in your config.

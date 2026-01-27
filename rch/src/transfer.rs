@@ -5,23 +5,127 @@
 
 use anyhow::{Context, Result, bail};
 use rch_common::mock::{self, MockConfig, MockRsync, MockRsyncConfig, MockSshClient};
-use rch_common::ssh::{EnvPrefix, build_env_prefix};
+use rch_common::ssh::{EnvPrefix, build_env_prefix, is_retryable_transport_error};
 use rch_common::{
-    ColorMode, CommandResult, SshClient, SshOptions, ToolchainInfo, TransferConfig, WorkerConfig,
-    wrap_command_with_color, wrap_command_with_toolchain,
+    ColorMode, CommandResult, RetryConfig, SshClient, SshOptions, ToolchainInfo, TransferConfig,
+    WorkerConfig, wrap_command_with_color, wrap_command_with_toolchain,
 };
 use shell_escape::escape;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tokio::time::sleep;
 use tokio::time::Instant as TokioInstant;
+use tokio::time::sleep;
 use tracing::{debug, info, warn};
+
+// =============================================================================
+// Retry Logic (bd-x1ek)
+// =============================================================================
+
+/// Execute an async operation with retry and exponential backoff.
+///
+/// Only retries on transient transport errors (connection timeout, reset, etc.).
+/// Non-retryable errors (auth failure, host key issues) fail immediately.
+///
+/// Returns the result of the first successful attempt or the last error.
+///
+/// This variant works with operations that return `anyhow::Result<T>`.
+async fn retry_with_backoff<T, F, Fut>(
+    config: &RetryConfig,
+    operation_name: &str,
+    mut operation: F,
+) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = anyhow::Result<T>>,
+{
+    let start = std::time::Instant::now();
+    let mut last_error: Option<anyhow::Error> = None;
+
+    for attempt in 0..config.max_attempts {
+        // Check total timeout before attempting
+        if attempt > 0 && !config.should_retry(attempt, start.elapsed()) {
+            debug!(
+                "{}: total timeout exceeded after {} attempts",
+                operation_name, attempt
+            );
+            break;
+        }
+
+        // Apply delay (exponential backoff with jitter) for retries
+        if attempt > 0 {
+            let delay = config.delay_for_attempt(attempt);
+            debug!(
+                "{}: attempt {}/{} after {}ms delay",
+                operation_name,
+                attempt + 1,
+                config.max_attempts,
+                delay.as_millis()
+            );
+            sleep(delay).await;
+        }
+
+        match operation().await {
+            Ok(result) => {
+                if attempt > 0 {
+                    info!(
+                        "{}: succeeded on attempt {}/{}",
+                        operation_name,
+                        attempt + 1,
+                        config.max_attempts
+                    );
+                }
+                return Ok(result);
+            }
+            Err(err) => {
+                // Check if error is retryable
+                if !is_retryable_transport_error(&err) {
+                    debug!(
+                        "{}: non-retryable error on attempt {}: {}",
+                        operation_name,
+                        attempt + 1,
+                        err
+                    );
+                    return Err(err);
+                }
+
+                warn!(
+                    "{}: retryable error on attempt {}/{}: {}",
+                    operation_name,
+                    attempt + 1,
+                    config.max_attempts,
+                    err
+                );
+                last_error = Some(err);
+            }
+        }
+    }
+
+    // All retries exhausted
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("{}: all retries exhausted", operation_name)))
+}
+
+/// Execute a tokio Command with retry logic.
+///
+/// Wraps the command execution in retry_with_backoff, retrying on transient
+/// rsync/SSH errors.
+async fn execute_rsync_with_retry(
+    config: &RetryConfig,
+    operation_name: &str,
+    build_command: impl Fn() -> Command,
+) -> Result<std::process::Output> {
+    retry_with_backoff(config, operation_name, || async {
+        let mut cmd = build_command();
+        cmd.output()
+            .await
+            .map_err(|e| anyhow::anyhow!("rsync I/O error: {}", e))
+    })
+    .await
+}
 
 fn use_mock_transport(worker: &WorkerConfig) -> bool {
     mock::is_mock_enabled() || mock::is_mock_worker(worker)
@@ -80,12 +184,22 @@ impl TransferPipeline {
         project_hash: String,
         transfer_config: TransferConfig,
     ) -> Self {
+        let ssh_options = SshOptions {
+            server_alive_interval: transfer_config
+                .ssh_server_alive_interval_secs
+                .map(std::time::Duration::from_secs),
+            control_persist_idle: transfer_config
+                .ssh_control_persist_secs
+                .map(std::time::Duration::from_secs),
+            ..Default::default()
+        };
+
         Self {
             project_root,
             project_id,
             project_hash,
             transfer_config,
-            ssh_options: SshOptions::default(),
+            ssh_options,
             color_mode: ColorMode::default(),
             env_allowlist: Vec::new(),
             env_overrides: None,
@@ -178,7 +292,57 @@ impl TransferPipeline {
         )
     }
 
+    /// Build rsync command for sync_to_remote.
+    fn build_sync_command(
+        &self,
+        worker: &WorkerConfig,
+        destination: &str,
+        escaped_remote_path: &str,
+        effective_excludes: &[String],
+    ) -> Command {
+        let mut cmd = Command::new("rsync");
+        // Force C locale for consistent output parsing
+        cmd.env("LC_ALL", "C");
+
+        let identity_file = shellexpand::tilde(&worker.identity_file);
+        let escaped_identity = escape(Cow::from(identity_file.as_ref()));
+        let ssh_command = self.build_rsync_ssh_command(escaped_identity.as_ref());
+
+        cmd.arg("-az") // Archive mode + compression
+            .arg("--delete") // Remove extraneous files from destination
+            .arg("-e")
+            .arg(ssh_command);
+
+        // Create remote directory implicitly using rsync-path wrapper
+        // This saves a separate SSH handshake for 'mkdir -p'
+        cmd.arg("--rsync-path")
+            .arg(format!("mkdir -p {} && rsync", escaped_remote_path));
+
+        // Add exclude patterns (config defaults + .rchignore)
+        for pattern in effective_excludes {
+            cmd.arg("--exclude").arg(pattern);
+        }
+
+        // Add zstd compression if available (rsync 3.2.3+)
+        if self.transfer_config.compression_level > 0 {
+            cmd.arg("--compress-choice=zstd");
+            cmd.arg(format!(
+                "--compress-level={}",
+                self.transfer_config.compression_level
+            ));
+        }
+
+        // Source and destination
+        cmd.arg(format!("{}/", self.project_root.display())) // Trailing slash = contents only
+            .arg(destination);
+
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd
+    }
+
     /// Synchronize local project to remote worker.
+    ///
+    /// Uses retry logic with exponential backoff for transient network errors.
     pub async fn sync_to_remote(&self, worker: &WorkerConfig) -> Result<SyncResult> {
         let remote_path = self.remote_path();
         let escaped_remote_path = escape(Cow::from(&remote_path));
@@ -188,14 +352,19 @@ impl TransferPipeline {
         let effective_excludes = self.get_effective_excludes();
 
         if use_mock_transport(worker) {
-            let rsync = MockRsync::new(MockRsyncConfig::from_env());
-            let result = rsync
-                .sync_to_remote(
-                    &self.project_root.display().to_string(),
-                    &destination,
-                    &effective_excludes,
-                )
-                .await?;
+            // Mock path also uses retry logic for consistent behavior
+            // Create MockRsync ONCE and share via Arc so failure counters persist across retries
+            let rsync = std::sync::Arc::new(MockRsync::new(MockRsyncConfig::from_env()));
+            let project_root_str = self.project_root.display().to_string();
+            let retry_config = self.transfer_config.retry.clone();
+            let result = retry_with_backoff(&retry_config, "mock_sync_to_remote", || {
+                let rsync = rsync.clone();
+                let project_root = project_root_str.clone();
+                let dest = destination.clone();
+                let excludes = effective_excludes.clone();
+                async move { rsync.sync_to_remote(&project_root, &dest, &excludes).await }
+            })
+            .await?;
             return Ok(SyncResult {
                 bytes_transferred: result.bytes_transferred,
                 files_transferred: result.files_transferred,
@@ -212,61 +381,34 @@ impl TransferPipeline {
 
         debug!("Effective exclude patterns: {:?}", effective_excludes);
 
-        // Build rsync command with excludes
-        let mut cmd = Command::new("rsync");
-        // Force C locale for consistent output parsing
-        cmd.env("LC_ALL", "C");
-
-        let identity_file = shellexpand::tilde(&worker.identity_file);
-        let escaped_identity = escape(Cow::from(identity_file.as_ref()));
-
-        cmd.arg("-az") // Archive mode + compression
-            .arg("--delete") // Remove extraneous files from destination
-            .arg("-e")
-            .arg(format!(
-                "ssh -i {} -o StrictHostKeyChecking=no -o BatchMode=yes",
-                escaped_identity
-            ));
-
-        // Create remote directory implicitly using rsync-path wrapper
-        // This saves a separate SSH handshake for 'mkdir -p'
-        cmd.arg("--rsync-path")
-            .arg(format!("mkdir -p {} && rsync", escaped_remote_path));
-
-        // Add exclude patterns (config defaults + .rchignore)
-        for pattern in &effective_excludes {
-            cmd.arg("--exclude").arg(pattern);
-        }
-
-        // Add zstd compression if available (rsync 3.2.3+)
-        if self.transfer_config.compression_level > 0 {
-            cmd.arg("--compress-choice=zstd");
-            cmd.arg(format!(
-                "--compress-level={}",
-                self.transfer_config.compression_level
-            ));
-        }
-
-        // Source and destination
-        cmd.arg(format!("{}/", self.project_root.display())) // Trailing slash = contents only
-            .arg(&destination);
-
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-        debug!(
-            "Running: rsync {:?}",
-            cmd.as_std().get_args().collect::<Vec<_>>()
-        );
-
         let start = std::time::Instant::now();
-        let output = cmd.output().await.context("Failed to execute rsync")?;
+
+        // Execute rsync with retry logic for transient errors
+        let output =
+            execute_rsync_with_retry(&self.transfer_config.retry, "sync_to_remote", || {
+                self.build_sync_command(
+                    worker,
+                    &destination,
+                    &escaped_remote_path,
+                    &effective_excludes,
+                )
+            })
+            .await?;
 
         let duration = start.elapsed();
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
         if !output.status.success() {
-            warn!("rsync failed: {}", stderr);
+            // Check if the failure is retryable (it wasn't if we got here)
+            if is_retryable_transport_error(&anyhow::anyhow!("{}", stderr)) {
+                warn!(
+                    "rsync failed with retryable error (retries exhausted): {}",
+                    stderr
+                );
+            } else {
+                warn!("rsync failed: {}", stderr);
+            }
             bail!(
                 "rsync failed with exit code {:?}: {}",
                 output.status.code(),
@@ -510,44 +652,22 @@ impl TransferPipeline {
         Ok(result)
     }
 
-    /// Retrieve build artifacts from the remote worker.
-    pub async fn retrieve_artifacts(
+    /// Build rsync command for retrieve_artifacts.
+    fn build_retrieve_command(
         &self,
         worker: &WorkerConfig,
+        escaped_remote_path: &str,
         artifact_patterns: &[String],
-    ) -> Result<SyncResult> {
-        let remote_path = self.remote_path();
-        let escaped_remote_path = escape(Cow::from(&remote_path));
-
-        if use_mock_transport(worker) {
-            let rsync = MockRsync::new(MockRsyncConfig::from_env());
-            let result = rsync
-                .retrieve_artifacts(
-                    &format!("{}@{}:{}/", worker.user, worker.host, escaped_remote_path),
-                    &self.project_root.display().to_string(),
-                    artifact_patterns,
-                )
-                .await?;
-            return Ok(SyncResult {
-                bytes_transferred: result.bytes_transferred,
-                files_transferred: result.files_transferred,
-                duration_ms: result.duration_ms,
-            });
-        }
-
-        info!("Retrieving artifacts from {} on {}", remote_path, worker.id);
-
+    ) -> Command {
         let mut cmd = Command::new("rsync");
         // Force C locale for consistent output parsing
         cmd.env("LC_ALL", "C");
 
         let identity_file = shellexpand::tilde(&worker.identity_file);
         let escaped_identity = escape(Cow::from(identity_file.as_ref()));
+        let ssh_command = self.build_rsync_ssh_command(escaped_identity.as_ref());
 
-        cmd.arg("-az").arg("-e").arg(format!(
-            "ssh -i {} -o StrictHostKeyChecking=no -o BatchMode=yes",
-            escaped_identity
-        ));
+        cmd.arg("-az").arg("-e").arg(ssh_command);
 
         // Add zstd compression
         if self.transfer_config.compression_level > 0 {
@@ -578,14 +698,97 @@ impl TransferPipeline {
             .arg(format!("{}/", self.project_root.display()));
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd
+    }
 
-        debug!(
-            "Running artifact retrieval: rsync {:?}",
-            cmd.as_std().get_args().collect::<Vec<_>>()
+    fn build_rsync_ssh_command(&self, escaped_identity: &str) -> String {
+        let mut command = format!(
+            "ssh -i {} -o StrictHostKeyChecking=no -o BatchMode=yes",
+            escaped_identity
         );
 
+        if let Some(interval) = self.ssh_options.server_alive_interval {
+            let secs = interval.as_secs();
+            if secs > 0 {
+                command.push_str(&format!(" -o ServerAliveInterval={secs}"));
+            }
+        }
+
+        if let Some(idle) = self.ssh_options.control_persist_idle {
+            let control_dir = self.rsync_control_dir();
+            if let Err(e) = std::fs::create_dir_all(&control_dir) {
+                warn!(
+                    "Failed to create rsync SSH control dir {:?}: {}",
+                    control_dir, e
+                );
+            }
+
+            let control_path = control_dir.join("rch-rsync-%C");
+            command.push_str(" -o ControlMaster=auto");
+            command.push_str(&format!(" -o ControlPath={}", control_path.display()));
+
+            if idle.is_zero() {
+                command.push_str(" -o ControlPersist=no");
+            } else {
+                command.push_str(&format!(" -o ControlPersist={}s", idle.as_secs()));
+            }
+        }
+
+        command
+    }
+
+    fn rsync_control_dir(&self) -> PathBuf {
+        if let Some(runtime_dir) = dirs::runtime_dir() {
+            runtime_dir.join("rch-ssh")
+        } else {
+            std::env::temp_dir().join("rch-ssh")
+        }
+    }
+
+    /// Retrieve build artifacts from the remote worker.
+    ///
+    /// Uses retry logic with exponential backoff for transient network errors.
+    pub async fn retrieve_artifacts(
+        &self,
+        worker: &WorkerConfig,
+        artifact_patterns: &[String],
+    ) -> Result<SyncResult> {
+        let remote_path = self.remote_path();
+        let escaped_remote_path = escape(Cow::from(&remote_path));
+
+        if use_mock_transport(worker) {
+            // Mock path also uses retry logic for consistent behavior
+            // Create MockRsync ONCE and share via Arc so failure counters persist across retries
+            let rsync = std::sync::Arc::new(MockRsync::new(MockRsyncConfig::from_env()));
+            let source = format!("{}@{}:{}/", worker.user, worker.host, escaped_remote_path);
+            let project_root_str = self.project_root.display().to_string();
+            let patterns = artifact_patterns.to_vec();
+            let retry_config = self.transfer_config.retry.clone();
+            let result = retry_with_backoff(&retry_config, "mock_retrieve_artifacts", || {
+                let rsync = rsync.clone();
+                let src = source.clone();
+                let dest = project_root_str.clone();
+                let pats = patterns.clone();
+                async move { rsync.retrieve_artifacts(&src, &dest, &pats).await }
+            })
+            .await?;
+            return Ok(SyncResult {
+                bytes_transferred: result.bytes_transferred,
+                files_transferred: result.files_transferred,
+                duration_ms: result.duration_ms,
+            });
+        }
+
+        info!("Retrieving artifacts from {} on {}", remote_path, worker.id);
+
         let start = std::time::Instant::now();
-        let output = cmd.output().await.context("Failed to retrieve artifacts")?;
+
+        // Execute rsync with retry logic for transient errors
+        let output =
+            execute_rsync_with_retry(&self.transfer_config.retry, "retrieve_artifacts", || {
+                self.build_retrieve_command(worker, &escaped_remote_path, artifact_patterns)
+            })
+            .await?;
 
         let duration = start.elapsed();
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -1243,6 +1446,55 @@ mod tests {
 
         // Just verify it builds without panic
         assert_eq!(pipeline.remote_path(), "/tmp/rch/test-project/abc123");
+    }
+
+    #[test]
+    fn test_build_sync_command_includes_keepalive_and_controlpersist_when_set() {
+        let custom_options = SshOptions {
+            server_alive_interval: Some(std::time::Duration::from_secs(30)),
+            control_persist_idle: Some(std::time::Duration::from_secs(60)),
+            ..Default::default()
+        };
+
+        let pipeline = TransferPipeline::new(
+            PathBuf::from("/tmp/test"),
+            "test-project".to_string(),
+            "abc123".to_string(),
+            TransferConfig::default(),
+        )
+        .with_ssh_options(custom_options);
+
+        let worker = WorkerConfig {
+            id: WorkerId::new("mock-worker"),
+            host: "mock://worker".to_string(),
+            user: "mockuser".to_string(),
+            identity_file: "~/.ssh/mock".to_string(),
+            total_slots: 4,
+            priority: 100,
+            tags: vec![],
+        };
+
+        let cmd = pipeline.build_sync_command(
+            &worker,
+            "mockuser@mock://worker:/tmp/rch/test-project/abc123",
+            "/tmp/rch/test-project/abc123",
+            &[],
+        );
+
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        let e_index = args.iter().position(|arg| arg == "-e").expect("-e arg");
+        let ssh_arg = args.get(e_index + 1).expect("ssh -e value");
+
+        assert!(ssh_arg.contains("ServerAliveInterval=30"));
+        assert!(ssh_arg.contains("ControlMaster=auto"));
+        assert!(ssh_arg.contains("ControlPath="));
+        assert!(ssh_arg.contains("rch-rsync-%C"));
+        assert!(ssh_arg.contains("ControlPersist=60s"));
     }
 
     #[test]

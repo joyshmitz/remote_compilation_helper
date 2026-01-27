@@ -5,9 +5,10 @@
 
 use crate::types::{WorkerConfig, WorkerId};
 use anyhow::{Context, Result};
-use openssh::{KnownHosts, Session, SessionBuilder, Stdio};
+use openssh::{ControlPersist, KnownHosts, Session, SessionBuilder, Stdio};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -181,6 +182,15 @@ pub struct SshOptions {
     pub connect_timeout: Duration,
     /// Command execution timeout.
     pub command_timeout: Duration,
+    /// Server keepalive interval (`ssh -o ServerAliveInterval`).
+    ///
+    /// Defaults to `None` (OpenSSH default; keepalive disabled).
+    pub server_alive_interval: Option<Duration>,
+    /// How long the SSH ControlMaster should remain alive while idle.
+    ///
+    /// `None` preserves the OpenSSH crate default (`ControlPersist=yes`).
+    /// `Some(0s)` sets `ControlPersist=no` (close after initial connection).
+    pub control_persist_idle: Option<Duration>,
     /// SSH control master mode for connection reuse.
     pub control_master: bool,
     /// Known hosts policy.
@@ -192,6 +202,8 @@ impl Default for SshOptions {
         Self {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             command_timeout: DEFAULT_COMMAND_TIMEOUT,
+            server_alive_interval: None,
+            control_persist_idle: None,
             control_master: true,
             known_hosts: KnownHostsPolicy::Add,
         }
@@ -292,6 +304,32 @@ impl SshClient {
         builder
             .known_hosts_check(known_hosts)
             .connect_timeout(self.options.connect_timeout);
+
+        if let Some(interval) = self.options.server_alive_interval {
+            builder.server_alive_interval(interval);
+        }
+
+        if let Some(idle) = self.options.control_persist_idle {
+            if idle.is_zero() {
+                builder.control_persist(ControlPersist::ClosedAfterInitialConnection);
+            } else {
+                match usize::try_from(idle.as_secs()) {
+                    Ok(secs) => {
+                        if let Some(nonzero) = NonZeroUsize::new(secs) {
+                            builder.control_persist(ControlPersist::IdleFor(nonzero));
+                        } else {
+                            builder.control_persist(ControlPersist::ClosedAfterInitialConnection);
+                        }
+                    }
+                    Err(_) => {
+                        warn!(
+                            "control_persist_idle too large ({}s); ignoring override",
+                            idle.as_secs()
+                        );
+                    }
+                }
+            }
+        }
 
         // Add identity file if specified
         let identity_path = shellexpand::tilde(&self.config.identity_file);
@@ -684,6 +722,8 @@ mod tests {
         let options = SshOptions::default();
         assert_eq!(options.connect_timeout, Duration::from_secs(10));
         assert_eq!(options.command_timeout, Duration::from_secs(300));
+        assert!(options.server_alive_interval.is_none());
+        assert!(options.control_persist_idle.is_none());
         assert!(options.control_master);
     }
 

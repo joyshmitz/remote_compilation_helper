@@ -679,6 +679,170 @@ br sync --flush-only  # Export to JSONL (then manually git add/commit/push)
 | `~/.config/rch/config.toml` | User configuration |
 | `~/.config/rch/workers.toml` | Worker definitions |
 
+---
+
+## UI Design Principles for AI Agents
+
+RCH uses context-aware output to work correctly with both humans and AI agents. This section explains how output modes work and how to parse RCH output programmatically.
+
+### Output Mode Detection
+
+RCH automatically detects the appropriate output mode:
+
+| Context | Mode | Detected When | Output |
+|---------|------|---------------|--------|
+| Hook mode | `hook` | Called as Claude Code hook (stdin is JSON) | Pure JSON on stdout |
+| Machine mode | `machine` | `RCH_JSON=1` or `--json` flag | Structured JSON |
+| Interactive | `interactive` | stderr is TTY, human at terminal | Rich panels, colors |
+| Colored | `colored` | `FORCE_COLOR=1` but no TTY | ANSI colors, no panels |
+| Plain | `plain` | `NO_COLOR=1` or no TTY | Plain text only |
+
+**Detection priority (first match wins):**
+1. `RCH_JSON=1` → Machine mode
+2. Hook invocation detected → Hook mode
+3. `NO_COLOR` set → Plain mode
+4. `FORCE_COLOR=0` → Plain mode
+5. stderr is TTY → Interactive mode
+6. `FORCE_COLOR` set → Colored mode
+7. Default → Plain mode
+
+### Stream Separation (Critical!)
+
+RCH follows Unix conventions:
+- **stdout** is for DATA (JSON, compilation output, artifacts)
+- **stderr** is for DIAGNOSTICS (status, progress, errors)
+
+This means:
+- Agents can reliably parse stdout without noise
+- `rch status | jq` works correctly
+- Compilation output passthrough is unaffected
+
+### Environment Variables
+
+| Variable | Effect |
+|----------|--------|
+| `RCH_JSON=1` | Force JSON output mode |
+| `RCH_HOOK_MODE=1` | Force hook mode (pure JSON) |
+| `NO_COLOR=1` | Disable all ANSI colors |
+| `FORCE_COLOR=1` | Enable colors even without TTY |
+| `FORCE_COLOR=0` | Disable colors explicitly |
+
+### For Agent Developers
+
+#### Requesting Machine Output
+
+To get parseable output:
+
+```bash
+# Option 1: Environment variable (recommended for programmatic use)
+RCH_JSON=1 rch status
+
+# Option 2: --json flag (for CLI commands)
+rch workers list --json
+```
+
+#### JSON Response Format
+
+All JSON responses follow a standard envelope:
+
+```json
+{
+  "api_version": "1.0",
+  "timestamp": 1706000000,
+  "command": "workers list",
+  "success": true,
+  "data": { ... },
+  "error": null
+}
+```
+
+On error:
+
+```json
+{
+  "api_version": "1.0",
+  "timestamp": 1706000000,
+  "command": "workers probe",
+  "success": false,
+  "data": null,
+  "error": {
+    "code": "RCH-E100",
+    "message": "SSH connection failed",
+    "category": "network",
+    "context": { "worker": "builder-1", "host": "192.168.1.100" },
+    "remediation": [
+      "Verify the worker host is reachable: ping 192.168.1.100",
+      "Check that SSH service is running on the worker",
+      "Try connecting manually: ssh user@192.168.1.100"
+    ]
+  }
+}
+```
+
+#### Error Code Reference
+
+Error codes follow the pattern `RCH-Ennn`:
+
+| Range | Category | Examples |
+|-------|----------|----------|
+| E001-E099 | Configuration | `ConfigNotFound`, `ConfigParseError` |
+| E100-E199 | Network/SSH | `SshConnectionFailed`, `SshAuthFailed` |
+| E200-E299 | Worker | `WorkerUnreachable`, `WorkerBusy` |
+| E300-E399 | Build | `BuildFailed`, `TransferError` |
+| E400-E499 | Daemon | `DaemonNotRunning`, `SocketError` |
+| E500-E599 | Internal | `InternalError` (unexpected errors) |
+
+#### Exit Code Semantics
+
+| Exit Code | Meaning |
+|-----------|---------|
+| 0 | Success |
+| 1 | General error (configuration, etc.) |
+| 2 | Command usage error |
+| 100 | Network/SSH error |
+| 101 | Worker error |
+| 102 | Build failed (remote compilation) |
+| 128+N | Process killed by signal N |
+
+### Testing with Rich Output
+
+When testing RCH UI components:
+
+```bash
+# Force interactive mode for screenshots
+FORCE_COLOR=3 rch status
+
+# Test plain text fallback
+NO_COLOR=1 rch status
+
+# Test JSON output
+RCH_JSON=1 rch status | jq .
+
+# Verify errors go to stderr
+rch workers probe 2>errors.txt
+```
+
+### Contributing to UI
+
+The UI module is located in `rch-common/src/ui/` with these components:
+
+| Module | Purpose |
+|--------|---------|
+| `context.rs` | Output mode detection (`OutputContext`) |
+| `display.rs` | Error display utilities (`display_error`, `error_to_panel`) |
+| `error.rs` | `ErrorPanel` component for rich error display |
+| `icons.rs` | Unicode icons with ASCII fallbacks |
+| `theme.rs` | `RchTheme` colors and styling |
+| `progress.rs` | Progress bars, spinners, build status |
+
+Key principles:
+- All rich output goes to stderr
+- Every error includes an error code
+- Always provide remediation steps
+- Support graceful degradation to plain text
+
+---
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.

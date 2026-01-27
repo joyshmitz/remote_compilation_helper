@@ -458,6 +458,7 @@ mod tests {
             },
             self_healing: ConfigSelfHealingSection {
                 hook_starts_daemon: true,
+                daemon_installs_hooks: true,
                 auto_start_cooldown_secs: 60,
                 auto_start_timeout_secs: 10,
             },

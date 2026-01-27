@@ -558,3 +558,93 @@ fn compute_stats(summary: &CelebrationSummary, mut stats: BuildStats) -> BuildSt
 
     stats
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_stats_sets_comparison_when_faster() {
+        let summary = CelebrationSummary::new("proj", 9_000);
+        let stats = BuildStats {
+            previous_ms: Some(10_000),
+            ..BuildStats::default()
+        };
+
+        let stats = compute_stats(&summary, stats);
+        let comparison = stats.comparison.expect("comparison should be set");
+
+        assert!(comparison.faster);
+        assert_eq!(comparison.baseline_ms, 10_000);
+        assert!((comparison.percent - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn compute_stats_sets_comparison_when_slower() {
+        let summary = CelebrationSummary::new("proj", 11_000);
+        let stats = BuildStats {
+            previous_ms: Some(10_000),
+            ..BuildStats::default()
+        };
+
+        let stats = compute_stats(&summary, stats);
+        let comparison = stats.comparison.expect("comparison should be set");
+
+        assert!(!comparison.faster);
+        assert_eq!(comparison.baseline_ms, 10_000);
+        assert!((comparison.percent - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn compute_stats_sets_record_and_milestone() {
+        let summary = CelebrationSummary::new("proj", 7_000);
+        let stats = BuildStats {
+            count: 99,
+            best_ms: Some(8_000),
+            ..BuildStats::default()
+        };
+
+        let stats = compute_stats(&summary, stats);
+        assert!(stats.is_record);
+        assert_eq!(stats.milestone, Some(100));
+    }
+
+    #[test]
+    fn cache_line_reports_saved_time_on_hit() {
+        let summary = CelebrationSummary::new("proj", 9_000).cache_hit(Some(true));
+        let stats = BuildStats {
+            average_ms: Some(20_000),
+            ..BuildStats::default()
+        };
+
+        let line = cache_line(&summary, &stats).expect("cache line");
+        assert!(line.contains("Cache: HIT"));
+        assert!(line.contains("saved ~"));
+    }
+
+    #[test]
+    fn render_box_uses_ascii_when_unicode_not_supported() {
+        let ctx = OutputContext::plain();
+        let rendered = render_box(ctx, "Build Successful", &[String::from("Duration: 1.0s")]);
+        let first_line = rendered.lines().next().unwrap_or_default();
+        assert!(first_line.starts_with('+'));
+        assert!(rendered.contains('|'));
+        assert!(!rendered.contains('╭'));
+    }
+
+    #[test]
+    fn build_history_enforces_limit() {
+        let mut history = BuildHistory::default();
+
+        for idx in 0..(HISTORY_LIMIT + 10) {
+            history.record(BuildHistoryEntry {
+                project_id: "proj".to_string(),
+                duration_ms: idx as u64,
+                timestamp: Utc::now(),
+                cache_hit: None,
+            });
+        }
+
+        assert_eq!(history.entries.len(), HISTORY_LIMIT);
+    }
+}

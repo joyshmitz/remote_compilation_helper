@@ -56,6 +56,10 @@ Sections and fields:
 - `exclude_patterns` (list) — Patterns excluded from transfer. Defaults include:
   `target/`, `.git/objects/`, `node_modules/`, common build caches, and
   coverage output. Use `rch config show` to see the full effective list.
+- `ssh_server_alive_interval_secs` (u64, optional) — Sets `ssh -o ServerAliveInterval`
+  for remote execution and rsync transfers to reduce dropped connections on flaky networks.
+- `ssh_control_persist_secs` (u64, optional) — Sets `ssh -o ControlPersist=<N>s` for
+  remote execution (ControlMaster). Use `0` to disable persistence (`ControlPersist=no`).
 
 ### `[circuit]`
 - `failure_threshold` (u32, default `3`) — Consecutive failures to open.
@@ -80,6 +84,8 @@ min_local_time_ms = 2000
 [transfer]
 compression_level = 3
 exclude_patterns = ["target/", "node_modules/"]
+ssh_server_alive_interval_secs = 30
+ssh_control_persist_secs = 60
 
 [circuit]
 failure_threshold = 3

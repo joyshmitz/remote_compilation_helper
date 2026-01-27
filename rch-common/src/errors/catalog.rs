@@ -794,7 +794,7 @@ impl fmt::Display for ErrorCode {
 }
 
 /// Error category for grouping related errors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ErrorCategory {
     /// Configuration and setup errors (E001-E099)

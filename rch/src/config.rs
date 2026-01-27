@@ -148,6 +148,8 @@ struct PartialTransferConfig {
     compression_level: Option<u32>,
     exclude_patterns: Option<Vec<String>>,
     remote_base: Option<String>,
+    ssh_server_alive_interval_secs: Option<u64>,
+    ssh_control_persist_secs: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -174,6 +176,7 @@ struct PartialOutputConfig {
 #[derive(Debug, Default, Deserialize)]
 struct PartialSelfHealingConfig {
     hook_starts_daemon: Option<bool>,
+    daemon_installs_hooks: Option<bool>,
     auto_start_cooldown_secs: Option<u64>,
     auto_start_timeout_secs: Option<u64>,
 }
@@ -313,6 +316,34 @@ pub fn validate_rch_config_file(path: &Path) -> FileValidation {
         validation.warn("transfer.compression_level should be within [1, 19]".to_string());
     } else if config.transfer.compression_level == 0 {
         validation.warn("transfer.compression_level is 0 (compression disabled)".to_string());
+    }
+
+    if let Some(interval) = config.transfer.ssh_server_alive_interval_secs {
+        if interval > 0 && interval < 5 {
+            validation.warn(format!(
+                "transfer.ssh_server_alive_interval_secs is very low ({}s)",
+                interval
+            ));
+        }
+        if interval > 600 {
+            validation.warn(format!(
+                "transfer.ssh_server_alive_interval_secs is very high ({}s)",
+                interval
+            ));
+        }
+    }
+    if let Some(persist) = config.transfer.ssh_control_persist_secs
+        && persist > 0
+        && persist < 10
+    {
+        validation.warn(format!(
+            "transfer.ssh_control_persist_secs is very low ({}s)",
+            persist
+        ));
+    }
+
+    if let Err(e) = validate_remote_base(&config.transfer.remote_base) {
+        validation.error(format!("transfer.remote_base invalid: {}", e));
     }
 
     for entry in &config.environment.allowlist {
@@ -552,6 +583,7 @@ fn default_sources_map() -> ConfigSourceMap {
         "output.visibility",
         "output.first_run_complete",
         "self_healing.hook_starts_daemon",
+        "self_healing.daemon_installs_hooks",
         "self_healing.auto_start_cooldown_secs",
         "self_healing.auto_start_timeout_secs",
         "self_test.enabled",
@@ -677,6 +709,19 @@ fn apply_layer(
         }
     }
 
+    if let Some(interval) = layer.transfer.ssh_server_alive_interval_secs {
+        config.transfer.ssh_server_alive_interval_secs = Some(interval);
+        set_source(
+            sources,
+            "transfer.ssh_server_alive_interval_secs",
+            source.clone(),
+        );
+    }
+    if let Some(persist) = layer.transfer.ssh_control_persist_secs {
+        config.transfer.ssh_control_persist_secs = Some(persist);
+        set_source(sources, "transfer.ssh_control_persist_secs", source.clone());
+    }
+
     if let Some(allowlist) = layer.environment.allowlist.as_ref()
         && allowlist != &defaults.environment.allowlist
     {
@@ -739,6 +784,16 @@ fn apply_layer(
     {
         config.self_healing.hook_starts_daemon = hook_starts_daemon;
         set_source(sources, "self_healing.hook_starts_daemon", source.clone());
+    }
+    if let Some(daemon_installs_hooks) = layer.self_healing.daemon_installs_hooks
+        && daemon_installs_hooks != defaults.self_healing.daemon_installs_hooks
+    {
+        config.self_healing.daemon_installs_hooks = daemon_installs_hooks;
+        set_source(
+            sources,
+            "self_healing.daemon_installs_hooks",
+            source.clone(),
+        );
     }
     if let Some(cooldown) = layer.self_healing.auto_start_cooldown_secs
         && cooldown != defaults.self_healing.auto_start_cooldown_secs
@@ -927,16 +982,22 @@ fn merge_transfer(
     if overlay.exclude_patterns != default.exclude_patterns {
         base.exclude_patterns.clone_from(&overlay.exclude_patterns);
     }
+    if overlay.ssh_server_alive_interval_secs != default.ssh_server_alive_interval_secs {
+        base.ssh_server_alive_interval_secs = overlay.ssh_server_alive_interval_secs;
+    }
+    if overlay.ssh_control_persist_secs != default.ssh_control_persist_secs {
+        base.ssh_control_persist_secs = overlay.ssh_control_persist_secs;
+    }
     // Override remote_base if overlay differs from default (with validation)
     if overlay.remote_base != default.remote_base {
         match rch_common::validate_remote_base(&overlay.remote_base) {
             Ok(validated) => {
                 base.remote_base = validated;
             }
-            Err(_) => {
-                // If validation fails, still allow the value but log a warning
-                // This is a merge, not initial load, so we're more permissive
-                base.remote_base.clone_from(&overlay.remote_base);
+            Err(e) => {
+                // If validation fails, do NOT apply the override.
+                // Keep the previous value (from base or default).
+                warn!("Ignoring invalid remote_base in overlay config: {}", e);
             }
         }
     }
@@ -1002,6 +1063,9 @@ fn merge_self_healing(
 ) {
     if overlay.hook_starts_daemon != default.hook_starts_daemon {
         base.hook_starts_daemon = overlay.hook_starts_daemon;
+    }
+    if overlay.daemon_installs_hooks != default.daemon_installs_hooks {
+        base.daemon_installs_hooks = overlay.daemon_installs_hooks;
     }
     if overlay.auto_start_cooldown_secs != default.auto_start_cooldown_secs {
         base.auto_start_cooldown_secs = overlay.auto_start_cooldown_secs;
@@ -1227,6 +1291,32 @@ fn apply_env_overrides_inner(
         }
     }
 
+    if let Some(val) = get_env("RCH_SSH_SERVER_ALIVE_INTERVAL_SECS")
+        && let Ok(secs) = val.parse::<u64>()
+    {
+        config.transfer.ssh_server_alive_interval_secs = Some(secs);
+        if let Some(ref mut sources) = sources {
+            set_source(
+                sources,
+                "transfer.ssh_server_alive_interval_secs",
+                ConfigValueSource::EnvVar("RCH_SSH_SERVER_ALIVE_INTERVAL_SECS".to_string()),
+            );
+        }
+    }
+
+    if let Some(val) = get_env("RCH_SSH_CONTROL_PERSIST_SECS")
+        && let Ok(secs) = val.parse::<u64>()
+    {
+        config.transfer.ssh_control_persist_secs = Some(secs);
+        if let Some(ref mut sources) = sources {
+            set_source(
+                sources,
+                "transfer.ssh_control_persist_secs",
+                ConfigValueSource::EnvVar("RCH_SSH_CONTROL_PERSIST_SECS".to_string()),
+            );
+        }
+    }
+
     if let Some(val) = get_env("RCH_ENV_ALLOWLIST") {
         let allowlist = parse_allowlist_value(&val);
         config.environment.allowlist = allowlist;
@@ -1281,6 +1371,19 @@ fn apply_env_overrides_inner(
                 sources,
                 "self_healing.hook_starts_daemon",
                 ConfigValueSource::EnvVar("RCH_HOOK_STARTS_DAEMON".to_string()),
+            );
+        }
+    }
+
+    if let Some(val) = get_env("RCH_DAEMON_INSTALLS_HOOKS")
+        && let Some(enabled) = parse_bool(&val)
+    {
+        config.self_healing.daemon_installs_hooks = enabled;
+        if let Some(ref mut sources) = sources {
+            set_source(
+                sources,
+                "self_healing.daemon_installs_hooks",
+                ConfigValueSource::EnvVar("RCH_DAEMON_INSTALLS_HOOKS".to_string()),
             );
         }
     }
@@ -2674,6 +2777,37 @@ extra_field = 123
             &ConfigValueSource::EnvVar("RCH_COMPRESSION_LEVEL".to_string())
         );
         info!("PASS: RCH_COMPRESSION_LEVEL override applied");
+    }
+
+    #[test]
+    fn test_apply_env_overrides_ssh_keepalive_and_controlpersist() {
+        info!("TEST: test_apply_env_overrides_ssh_keepalive_and_controlpersist");
+        let mut config = RchConfig::default();
+        let mut sources = default_sources_map();
+        let mut env_overrides: HashMap<String, String> = HashMap::new();
+        env_overrides.insert(
+            "RCH_SSH_SERVER_ALIVE_INTERVAL_SECS".to_string(),
+            "30".to_string(),
+        );
+        env_overrides.insert("RCH_SSH_CONTROL_PERSIST_SECS".to_string(), "60".to_string());
+
+        apply_env_overrides_inner(&mut config, Some(&mut sources), Some(&env_overrides));
+
+        assert_eq!(config.transfer.ssh_server_alive_interval_secs, Some(30));
+        assert_eq!(config.transfer.ssh_control_persist_secs, Some(60));
+        assert_eq!(
+            sources
+                .get("transfer.ssh_server_alive_interval_secs")
+                .expect("transfer.ssh_server_alive_interval_secs source present"),
+            &ConfigValueSource::EnvVar("RCH_SSH_SERVER_ALIVE_INTERVAL_SECS".to_string())
+        );
+        assert_eq!(
+            sources
+                .get("transfer.ssh_control_persist_secs")
+                .expect("transfer.ssh_control_persist_secs source present"),
+            &ConfigValueSource::EnvVar("RCH_SSH_CONTROL_PERSIST_SECS".to_string())
+        );
+        info!("PASS: SSH env overrides applied");
     }
 
     #[test]

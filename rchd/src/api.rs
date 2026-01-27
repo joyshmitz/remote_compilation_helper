@@ -14,8 +14,8 @@ use crate::telemetry::collect_telemetry_from_worker;
 use anyhow::{Result, anyhow};
 use chrono::{Duration as ChronoDuration, Utc};
 use rch_common::{
-    ApiError, BuildRecord, BuildStats, CircuitBreakerConfig, CircuitState, ErrorCode,
-    ReleaseRequest, RequiredRuntime, SelectedWorker, SelectionReason, SelectionRequest,
+    ApiError, BuildRecord, BuildStats, CircuitBreakerConfig, CircuitState, CommandPriority,
+    ErrorCode, ReleaseRequest, RequiredRuntime, SelectedWorker, SelectionReason, SelectionRequest,
     SelectionResponse, WorkerCapabilities, WorkerId, WorkerStatus,
 };
 use rch_telemetry::protocol::{TelemetrySource, TestRunRecord, TestRunStats, WorkerTelemetry};
@@ -1195,6 +1195,7 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
     let mut cores = None;
     let mut toolchain = None;
     let mut required_runtime = RequiredRuntime::default();
+    let mut command_priority = CommandPriority::Normal;
     let mut classification_duration_us = None;
     let mut hook_pid = None;
 
@@ -1223,6 +1224,10 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
                     .ok()
                     .unwrap_or_default();
             }
+            "priority" => {
+                let pr_str = urlencoding_decode(value);
+                command_priority = pr_str.parse().unwrap_or(CommandPriority::Normal);
+            }
             "classification_us" => {
                 // Classification latency from hook (for AGENTS.md compliance tracking)
                 classification_duration_us = value.parse().ok();
@@ -1240,6 +1245,7 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
     Ok(ApiRequest::SelectWorker(SelectionRequest {
         project,
         command,
+        command_priority,
         estimated_cores,
         preferred_workers: vec![],
         toolchain,
@@ -1703,6 +1709,19 @@ async fn handle_select_worker(
 
             let slots_available = worker.available_slots().await;
             let speed_score = worker.get_speed_score().await;
+
+            if request.command_priority != CommandPriority::Normal {
+                ctx.events.emit(
+                    "priority_hint",
+                    &serde_json::json!({
+                        "project": request.project.clone(),
+                        "worker_id": id.as_str(),
+                        "priority": request.command_priority.to_string(),
+                        "estimated_cores": request.estimated_cores,
+                        "command": request.command.clone(),
+                    }),
+                );
+            }
             return Ok(SelectionResponse {
                 worker: Some(SelectedWorker {
                     id,
@@ -2317,6 +2336,24 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_request_with_priority_hint() {
+        let req = parse_request("GET /select-worker?project=test&cores=2&priority=high").unwrap();
+        let ApiRequest::SelectWorker(req) = req else {
+            panic!("expected select-worker request");
+        };
+        assert_eq!(req.command_priority, rch_common::CommandPriority::High);
+    }
+
+    #[test]
+    fn test_parse_request_invalid_priority_defaults_to_normal() {
+        let req = parse_request("GET /select-worker?project=test&cores=2&priority=urgent").unwrap();
+        let ApiRequest::SelectWorker(req) = req else {
+            panic!("expected select-worker request");
+        };
+        assert_eq!(req.command_priority, rch_common::CommandPriority::Normal);
+    }
+
+    #[test]
     fn test_parse_request_status() {
         let req = parse_request("GET /status").unwrap();
         match req {
@@ -2597,7 +2634,7 @@ mod tests {
     // Selection response tests - reason field scenarios
     // =========================================================================
 
-    use rch_common::{RequiredRuntime, WorkerConfig, WorkerId, WorkerStatus};
+    use rch_common::{CommandPriority, RequiredRuntime, WorkerConfig, WorkerId, WorkerStatus};
 
     fn make_test_worker(id: &str, total_slots: u32) -> WorkerConfig {
         WorkerConfig {
@@ -2618,6 +2655,7 @@ mod tests {
         let request = SelectionRequest {
             project: "test".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 4,
             preferred_workers: vec![],
             toolchain: None,
@@ -2647,6 +2685,7 @@ mod tests {
         let request = SelectionRequest {
             project: "test".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -2673,6 +2712,7 @@ mod tests {
         let request = SelectionRequest {
             project: "test".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 8, // Request more than total slots
             preferred_workers: vec![],
             toolchain: None,
@@ -2695,6 +2735,7 @@ mod tests {
         let request = SelectionRequest {
             project: "test".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -2722,6 +2763,7 @@ mod tests {
         let request = SelectionRequest {
             project: "test-project".to_string(),
             command: Some("cargo build --release".to_string()),
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -2776,6 +2818,7 @@ mod tests {
         let request = SelectionRequest {
             project: "test".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![WorkerId::new("worker2")],
             toolchain: None,

@@ -47,6 +47,9 @@ shell-escape = "0.1.5"
 # State detection dependencies
 which = "8"
 
+# LRU cache for classification decisions
+lru = "0.12"
+
 # Markdown rendering
 pulldown-cmark = { workspace = true }
 

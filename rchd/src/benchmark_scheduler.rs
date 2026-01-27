@@ -142,6 +142,8 @@ pub struct SchedulerConfig {
     pub benchmark_timeout: Duration,
     /// Interval for checking workers for scheduling.
     pub check_interval: Duration,
+    /// Number of consecutive failures before emitting an alert.
+    pub consecutive_failure_alert_threshold: u32,
 }
 
 impl Default for SchedulerConfig {
@@ -154,6 +156,7 @@ impl Default for SchedulerConfig {
             drift_threshold_pct: 20.0,                      // 20% drift
             benchmark_timeout: Duration::from_secs(5 * 60), // 5 minutes
             check_interval: Duration::from_secs(60),        // 1 minute
+            consecutive_failure_alert_threshold: 3,         // Alert after 3 consecutive failures
         }
     }
 }
@@ -181,6 +184,9 @@ pub struct BenchmarkScheduler {
 
     /// Event bus for notifications.
     events: EventBus,
+
+    /// Consecutive failure count per worker for alerting.
+    consecutive_failures: RwLock<HashMap<WorkerId, u32>>,
 }
 
 /// Internal tracking of a running benchmark.
@@ -234,6 +240,7 @@ impl BenchmarkScheduler {
             pool,
             telemetry,
             events,
+            consecutive_failures: RwLock::new(HashMap::new()),
         };
 
         let handle = BenchmarkTriggerHandle { tx };
@@ -598,6 +605,9 @@ impl BenchmarkScheduler {
             // Release slot
             self.pool.release_slots(worker_id, 1).await;
 
+            // Reset consecutive failure counter on success
+            self.consecutive_failures.write().await.remove(worker_id);
+
             // Emit completed event
             self.events.emit(
                 "benchmark:completed",
@@ -627,6 +637,14 @@ impl BenchmarkScheduler {
             // Release slot
             self.pool.release_slots(worker_id, 1).await;
 
+            // Track consecutive failures and check for alert threshold
+            let consecutive_count = {
+                let mut failures = self.consecutive_failures.write().await;
+                let count = failures.entry(worker_id.clone()).or_insert(0);
+                *count += 1;
+                *count
+            };
+
             // Emit failed event
             self.events.emit(
                 "benchmark:failed",
@@ -635,8 +653,28 @@ impl BenchmarkScheduler {
                     "worker_id": worker_id.as_str(),
                     "error": error,
                     "retryable": retryable,
+                    "consecutive_failures": consecutive_count,
                 }),
             );
+
+            // Emit alert if consecutive failure threshold exceeded
+            if consecutive_count >= self.config.consecutive_failure_alert_threshold {
+                warn!(
+                    worker_id = %worker_id,
+                    consecutive_failures = consecutive_count,
+                    threshold = self.config.consecutive_failure_alert_threshold,
+                    "Worker benchmark repeatedly failing - alerting"
+                );
+                self.events.emit(
+                    "benchmark:alert:repeated_failures",
+                    &serde_json::json!({
+                        "worker_id": worker_id.as_str(),
+                        "consecutive_failures": consecutive_count,
+                        "threshold": self.config.consecutive_failure_alert_threshold,
+                        "last_error": error,
+                    }),
+                );
+            }
 
             // Re-queue if retryable (with lower priority)
             if retryable {
@@ -686,6 +724,7 @@ mod tests {
             drift_threshold_pct: 20.0,
             benchmark_timeout: Duration::from_secs(30),
             check_interval: Duration::from_secs(1),
+            consecutive_failure_alert_threshold: 3,
         }
     }
 
@@ -1028,5 +1067,83 @@ mod tests {
 
         // Check it was NOT re-queued
         assert_eq!(scheduler.pending_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_consecutive_failures_tracked_and_reset() {
+        // Create a scheduler with low threshold for testing
+        let pool = WorkerPool::new();
+        pool.add_worker(make_worker_config("alert-test")).await;
+
+        let telemetry = Arc::new(TelemetryStore::new(Duration::from_secs(300), None));
+        let events = EventBus::new(16);
+
+        let mut config = make_test_config();
+        config.consecutive_failure_alert_threshold = 2; // Alert after 2 consecutive failures
+
+        let (scheduler, _handle) = BenchmarkScheduler::new(config, pool.clone(), telemetry, events);
+
+        let worker_id = WorkerId::new("alert-test");
+
+        // Helper to simulate a running benchmark
+        async fn simulate_running_benchmark(
+            scheduler: &BenchmarkScheduler,
+            pool: &WorkerPool,
+            worker_id: &WorkerId,
+        ) {
+            // Insert into running map
+            {
+                let mut running = scheduler.running.write().await;
+                running.insert(
+                    worker_id.clone(),
+                    RunningBenchmark {
+                        request: ScheduledBenchmarkRequest::new(
+                            worker_id.clone(),
+                            BenchmarkPriority::Normal,
+                            BenchmarkReason::Scheduled,
+                        ),
+                        started_at: Utc::now(),
+                    },
+                );
+            }
+            // Reserve a slot
+            if let Some(worker) = pool.get(worker_id).await {
+                worker.reserve_slots(1).await;
+            }
+        }
+
+        // Simulate first benchmark run and failure
+        simulate_running_benchmark(&scheduler, &pool, &worker_id).await;
+        scheduler
+            .mark_failed(&worker_id, "Connection timeout", true)
+            .await;
+
+        // Check consecutive failure count is 1
+        {
+            let failures = scheduler.consecutive_failures.read().await;
+            assert_eq!(*failures.get(&worker_id).unwrap(), 1);
+        }
+
+        // Simulate second benchmark run and failure (should trigger alert with threshold=2)
+        simulate_running_benchmark(&scheduler, &pool, &worker_id).await;
+        scheduler.mark_failed(&worker_id, "SSH error", true).await;
+
+        // Check consecutive failure count incremented to 2
+        {
+            let failures = scheduler.consecutive_failures.read().await;
+            assert_eq!(*failures.get(&worker_id).unwrap(), 2);
+        }
+
+        // Simulate third benchmark run and successful completion - should reset counter
+        simulate_running_benchmark(&scheduler, &pool, &worker_id).await;
+        scheduler
+            .mark_completed(&worker_id, 75.0, Duration::from_secs(30))
+            .await;
+
+        // Check counter is reset (removed)
+        {
+            let failures = scheduler.consecutive_failures.read().await;
+            assert!(failures.get(&worker_id).is_none());
+        }
     }
 }

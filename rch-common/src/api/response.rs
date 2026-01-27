@@ -4,6 +4,7 @@
 //! envelope format.
 
 use super::ApiError;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -41,7 +42,7 @@ pub const API_VERSION: &str = "1.0";
 /// let error = ApiError::from_code(ErrorCode::ConfigNotFound);
 /// let response: ApiResponse<()> = ApiResponse::err("config show", error);
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ApiResponse<T: Serialize> {
     /// API version for compatibility detection.
     pub api_version: &'static str,
@@ -67,6 +68,26 @@ pub struct ApiResponse<T: Serialize> {
     /// Error details on failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ApiError>,
+}
+
+/// JSON "any" value for schema generation.
+///
+/// This exists so we can generate a stable schema for `ApiResponse<T>` where
+/// `data` is intentionally unconstrained (any JSON value).
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AnyJson(pub serde_json::Value);
+
+impl JsonSchema for AnyJson {
+    fn schema_name() -> String {
+        "AnyJson".to_string()
+    }
+
+    fn json_schema(_gen: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        // Accept any JSON value.
+        schemars::schema::Schema::Bool(true)
+    }
 }
 
 impl<T: Serialize> ApiResponse<T> {

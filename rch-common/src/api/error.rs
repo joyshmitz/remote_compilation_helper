@@ -4,6 +4,7 @@
 //! error codes across CLI and daemon.
 
 use crate::errors::catalog::{ErrorCategory, ErrorCode};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -11,7 +12,7 @@ use std::collections::HashMap;
 ///
 /// Contains key-value pairs providing additional context about the error,
 /// such as worker IDs, file paths, or other relevant identifiers.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, JsonSchema)]
 pub struct ErrorContext {
     /// Key-value pairs of context information.
     #[serde(flatten)]
@@ -57,7 +58,7 @@ impl ErrorContext {
 ///
 /// assert_eq!(error.code, "RCH-E100");
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
 pub struct ApiError {
     /// Error code in RCH-Exxx format (e.g., "RCH-E100").
     pub code: String,

@@ -3,7 +3,7 @@
 //! Loads worker definitions from workers.toml and daemon settings from config.toml.
 
 use anyhow::{Context, Result};
-use rch_common::{RchConfig, SelfTestConfig, WorkerConfig};
+use rch_common::{RchConfig, SelfTestConfig, WorkerConfig, validate_remote_base};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
@@ -257,8 +257,15 @@ pub fn load_daemon_config(path: Option<&Path>) -> Result<DaemonConfig> {
     let contents = std::fs::read_to_string(&config_path)
         .with_context(|| format!("Failed to read daemon config from {:?}", config_path))?;
 
-    let config: DaemonConfig = toml::from_str(&contents)
+    let mut config: DaemonConfig = toml::from_str(&contents)
         .with_context(|| format!("Failed to parse daemon config from {:?}", config_path))?;
+
+    // Validate remote_base for cache cleanup safety
+    if config.cache_cleanup.enabled {
+        let validated = validate_remote_base(&config.cache_cleanup.remote_base)
+            .map_err(|e| anyhow::anyhow!("Invalid remote_base in {:?}: {}", config_path, e))?;
+        config.cache_cleanup.remote_base = validated;
+    }
 
     Ok(config)
 }

@@ -14,8 +14,8 @@ use crate::ui::workers::{debug_routing_enabled, log_routing_decision};
 use crate::workers::{WorkerPool, WorkerState};
 use rand::Rng;
 use rch_common::{
-    CircuitBreakerConfig, CircuitState, RequiredRuntime, SelectionConfig, SelectionReason,
-    SelectionRequest, SelectionStrategy, SelectionWeightConfig, classify_command,
+    CircuitBreakerConfig, CircuitState, CommandPriority, RequiredRuntime, SelectionConfig,
+    SelectionReason, SelectionRequest, SelectionStrategy, SelectionWeightConfig, classify_command,
 };
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -189,10 +189,19 @@ impl CacheTracker {
                     .last_activity()
                     .map(|instant| instant.elapsed() < max_age)
                     .unwrap_or(false),
-                CacheUse::Test => state
-                    .last_test
-                    .map(|instant| instant.elapsed() < max_age)
-                    .unwrap_or(false),
+                CacheUse::Test => {
+                    // Check last_test first
+                    if let Some(last_test) = state.last_test
+                        && last_test.elapsed() < max_age
+                    {
+                        return true;
+                    }
+                    // Fallback to last_build (artifacts are useful for tests)
+                    state
+                        .last_build
+                        .map(|instant| instant.elapsed() < max_age)
+                        .unwrap_or(false)
+                }
             })
             .unwrap_or(false)
     }
@@ -357,18 +366,35 @@ impl WorkerSelector {
             };
         }
 
-        // Apply the configured selection strategy
+        // Apply the configured selection strategy (with per-command priority hint).
         let selected = match self.config.strategy {
-            SelectionStrategy::Priority => self.select_by_priority(&eligible).await,
-            SelectionStrategy::Fastest => self.select_by_fastest(&eligible).await,
+            SelectionStrategy::Priority => {
+                self.select_by_priority(&eligible, request, cache_use).await
+            }
+            SelectionStrategy::Fastest => {
+                if request.command_priority == CommandPriority::Low {
+                    self.select_fair_fastest(&eligible).await
+                } else {
+                    self.select_by_fastest(&eligible).await
+                }
+            }
             SelectionStrategy::Balanced => {
                 self.select_balanced(&eligible, request, cache_use).await
             }
-            SelectionStrategy::CacheAffinity => {
-                self.select_cache_affinity(&eligible, request, cache_use)
-                    .await
+            SelectionStrategy::CacheAffinity => match request.command_priority {
+                CommandPriority::High => self.select_by_fastest(&eligible).await,
+                CommandPriority::Normal | CommandPriority::Low => {
+                    self.select_cache_affinity(&eligible, request, cache_use)
+                        .await
+                }
+            },
+            SelectionStrategy::FairFastest => {
+                if request.command_priority == CommandPriority::High {
+                    self.select_by_fastest(&eligible).await
+                } else {
+                    self.select_fair_fastest(&eligible).await
+                }
             }
-            SelectionStrategy::FairFastest => self.select_fair_fastest(&eligible).await,
         };
 
         if let Some((worker, circuit_state)) = selected {
@@ -452,7 +478,7 @@ impl WorkerSelector {
             }
             SelectionStrategy::Balanced => {
                 let cache = self.cache_tracker.read().await;
-                let weights = &self.config.weights;
+                let weights = adjust_weights_for_priority(&self.config.weights, request);
                 let (min_priority, max_priority) = Self::priority_range(workers).await;
                 for (worker, circuit_state) in workers {
                     let score = self
@@ -462,7 +488,7 @@ impl WorkerSelector {
                             &request.project,
                             &cache,
                             cache_use,
-                            weights,
+                            &weights,
                             min_priority,
                             max_priority,
                         )
@@ -551,17 +577,6 @@ impl WorkerSelector {
                 CircuitState::Closed => {}
             }
 
-            // Filter by slot availability
-            if worker.available_slots().await < request.estimated_cores {
-                debug!(
-                    "Worker {} excluded: insufficient slots ({} < {})",
-                    worker_id,
-                    worker.available_slots().await,
-                    request.estimated_cores
-                );
-                continue;
-            }
-
             // Filter by required runtime
             let has_required_runtime = match &request.required_runtime {
                 RequiredRuntime::None => true,
@@ -575,6 +590,17 @@ impl WorkerSelector {
             }
 
             any_has_runtime = true;
+
+            // Filter by slot availability
+            if worker.available_slots().await < request.estimated_cores {
+                debug!(
+                    "Worker {} excluded: insufficient slots ({} < {})",
+                    worker_id,
+                    worker.available_slots().await,
+                    request.estimated_cores
+                );
+                continue;
+            }
 
             if has_preferred && preferred_set.contains(worker_id.as_str()) {
                 preferred_without_health.push((worker.clone(), circuit_state));
@@ -630,22 +656,47 @@ impl WorkerSelector {
     async fn select_by_priority(
         &self,
         workers: &[(Arc<WorkerState>, CircuitState)],
+        request: &SelectionRequest,
+        cache_use: CacheUse,
     ) -> Option<(Arc<WorkerState>, CircuitState)> {
-        let mut best: Option<&(Arc<WorkerState>, CircuitState)> = None;
-        for pair in workers {
-            let (worker, _) = pair;
+        // Preserve existing behavior for the default case: pick the first worker with the
+        // highest worker.priority (in the pool's iteration order).
+        let mut best_priority: Option<u32> = None;
+        for (worker, _) in workers {
             let priority = worker.config.read().await.priority;
-            match best {
-                None => best = Some(pair),
-                Some((best_worker, _)) => {
-                    let best_priority = best_worker.config.read().await.priority;
-                    if priority > best_priority {
-                        best = Some(pair);
-                    }
-                }
+            best_priority = Some(best_priority.map_or(priority, |best: u32| best.max(priority)));
+        }
+
+        let best_priority = best_priority?;
+        let mut candidates: Vec<(Arc<WorkerState>, CircuitState)> = Vec::new();
+
+        for (worker, circuit_state) in workers {
+            let priority = worker.config.read().await.priority;
+            if priority == best_priority {
+                candidates.push((worker.clone(), *circuit_state));
             }
         }
-        best.cloned()
+
+        match request.command_priority {
+            CommandPriority::High => self.select_by_fastest(&candidates).await,
+            CommandPriority::Low => {
+                let cache = self.cache_tracker.read().await;
+                let mut best_idx: Option<usize> = None;
+                let mut best_warmth = f64::NEG_INFINITY;
+
+                for (idx, (worker, _)) in candidates.iter().enumerate() {
+                    let id = worker.config.read().await.id.as_str().to_string();
+                    let warmth = cache.estimate_warmth(id.as_str(), &request.project, cache_use);
+                    if warmth > best_warmth {
+                        best_warmth = warmth;
+                        best_idx = Some(idx);
+                    }
+                }
+
+                best_idx.map(|idx| (candidates[idx].0.clone(), candidates[idx].1))
+            }
+            CommandPriority::Normal => candidates.first().cloned(),
+        }
     }
 
     /// Fastest strategy: select worker with highest SpeedScore.
@@ -678,7 +729,7 @@ impl WorkerSelector {
         cache_use: CacheUse,
     ) -> Option<(Arc<WorkerState>, CircuitState)> {
         let cache = self.cache_tracker.read().await;
-        let weights = &self.config.weights;
+        let weights = adjust_weights_for_priority(&self.config.weights, request);
 
         let (min_priority, max_priority) = Self::priority_range(workers).await;
 
@@ -694,7 +745,7 @@ impl WorkerSelector {
                     &request.project,
                     &cache,
                     cache_use,
-                    weights,
+                    &weights,
                     min_priority,
                     max_priority,
                 )
@@ -909,6 +960,30 @@ impl Default for WorkerSelector {
     }
 }
 
+fn adjust_weights_for_priority(
+    weights: &SelectionWeightConfig,
+    request: &SelectionRequest,
+) -> SelectionWeightConfig {
+    let mut adjusted = weights.clone();
+
+    match request.command_priority {
+        CommandPriority::Normal => {}
+        CommandPriority::High => {
+            adjusted.speedscore *= 1.25;
+            adjusted.network *= 1.15;
+            adjusted.cache *= 0.85;
+        }
+        CommandPriority::Low => {
+            adjusted.cache *= 1.25;
+            adjusted.slots *= 1.15;
+            adjusted.speedscore *= 0.85;
+            adjusted.network *= 0.85;
+        }
+    }
+
+    adjusted
+}
+
 // ============================================================================
 // Legacy API (for backwards compatibility)
 // ============================================================================
@@ -1025,17 +1100,6 @@ pub async fn select_worker_with_config(
             }
         }
 
-        // Check slot availability
-        if worker.available_slots().await < request.estimated_cores {
-            debug!(
-                "Worker {} excluded: insufficient slots ({} < {})",
-                worker_id,
-                worker.available_slots().await,
-                request.estimated_cores
-            );
-            continue;
-        }
-
         // Check required runtime capability
         let has_required_runtime = match &request.required_runtime {
             RequiredRuntime::None => true,
@@ -1053,6 +1117,18 @@ pub async fn select_worker_with_config(
         }
 
         any_has_runtime = true;
+
+        // Check slot availability
+        if worker.available_slots().await < request.estimated_cores {
+            debug!(
+                "Worker {} excluded: insufficient slots ({} < {})",
+                worker_id,
+                worker.available_slots().await,
+                request.estimated_cores
+            );
+            continue;
+        }
+
         any_has_slots = true;
 
         // Compute score with circuit state penalty
@@ -1225,7 +1301,9 @@ mod tests {
     use super::*;
     use crate::workers::WorkerState;
     use rch_common::WorkerStatus;
-    use rch_common::{RequiredRuntime, SelectionWeightConfig, WorkerConfig, WorkerId};
+    use rch_common::{
+        CommandPriority, RequiredRuntime, SelectionWeightConfig, WorkerConfig, WorkerId,
+    };
 
     fn make_worker(id: &str, total_slots: u32, speed: f64) -> WorkerState {
         let config = WorkerConfig {
@@ -1253,6 +1331,7 @@ mod tests {
             let request = SelectionRequest {
                 project: "myproject".to_string(),
                 command: None,
+                command_priority: CommandPriority::Normal,
                 estimated_cores: 4,
                 preferred_workers: vec![],
                 toolchain: None,
@@ -1276,6 +1355,7 @@ mod tests {
             let request = SelectionRequest {
                 project: "myproject".to_string(),
                 command: None,
+                command_priority: CommandPriority::Normal,
                 estimated_cores: 1,
                 preferred_workers: vec![],
                 toolchain: None,
@@ -1311,6 +1391,7 @@ mod tests {
         let request = SelectionRequest {
             project: "myproject".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -1347,6 +1428,7 @@ mod tests {
         let request = SelectionRequest {
             project: "myproject".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -1376,6 +1458,7 @@ mod tests {
         let request = SelectionRequest {
             project: "myproject".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -1409,6 +1492,7 @@ mod tests {
         let request = SelectionRequest {
             project: "myproject".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -1444,6 +1528,7 @@ mod tests {
         let request = SelectionRequest {
             project: "myproject".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -1495,6 +1580,7 @@ mod tests {
         let request = SelectionRequest {
             project: "myproject".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -1535,6 +1621,7 @@ mod tests {
         let request = SelectionRequest {
             project: "myproject".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -1569,6 +1656,7 @@ mod tests {
         let request = SelectionRequest {
             project: "myproject".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![WorkerId::new("preferred")],
             toolchain: None,
@@ -1599,6 +1687,7 @@ mod tests {
         let request = SelectionRequest {
             project: "myproject".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![WorkerId::new("missing")],
             toolchain: None,
@@ -1634,6 +1723,7 @@ mod tests {
         let request = SelectionRequest {
             project: "myproject".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -1683,6 +1773,7 @@ mod tests {
         let request = SelectionRequest {
             project: "myproject".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -1740,6 +1831,21 @@ mod tests {
             "worker1",
             "project-b",
             CacheUse::Build,
+            Duration::from_secs(60)
+        ));
+    }
+
+    #[test]
+    fn test_cache_tracker_has_recent_build_fallback_for_test() {
+        let mut tracker = CacheTracker::new();
+        // Record only a build (not a test)
+        tracker.record_build("worker1", "project-a", CacheUse::Build);
+
+        // Should report recent build for CacheUse::Test (fallback behavior)
+        assert!(tracker.has_recent_build(
+            "worker1",
+            "project-a",
+            CacheUse::Test,
             Duration::from_secs(60)
         ));
     }
@@ -1820,6 +1926,7 @@ mod tests {
         let request = SelectionRequest {
             project: "test-project".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -1864,6 +1971,7 @@ mod tests {
         let request = SelectionRequest {
             project: "test-project".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -1905,6 +2013,7 @@ mod tests {
         let request = SelectionRequest {
             project: "test-project".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -1937,6 +2046,7 @@ mod tests {
         let request = SelectionRequest {
             project: "test-project".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -1952,7 +2062,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_worker_selector_balanced_health_weight_prefers_healthy() {
+    async fn test_command_priority_hint_influences_balanced_selection() {
+        let pool = WorkerPool::new();
+        pool.add_worker_state(make_worker("fast", 8, 90.0)).await;
+        pool.add_worker_state(make_worker("cached", 8, 60.0)).await;
+
+        let selector = WorkerSelector::with_config(
+            SelectionConfig {
+                strategy: SelectionStrategy::Balanced,
+                ..Default::default()
+            },
+            CircuitBreakerConfig::default(),
+        );
+
+        // Make the "cached" worker warm for this project.
+        selector.record_build("cached", "proj", false).await;
+
+        let base_request = SelectionRequest {
+            project: "proj".to_string(),
+            command: None,
+            command_priority: CommandPriority::Normal,
+            estimated_cores: 2,
+            preferred_workers: vec![],
+            toolchain: None,
+            required_runtime: RequiredRuntime::default(),
+            classification_duration_us: None,
+            hook_pid: None,
+        };
+
+        let mut high = base_request.clone();
+        high.command_priority = CommandPriority::High;
+        let result = selector.select(&pool, &high).await;
+        let selected = result.worker.expect("Expected a worker");
+        assert_eq!(selected.config.read().await.id.as_str(), "fast");
+
+        let mut low = base_request.clone();
+        low.command_priority = CommandPriority::Low;
+        let result = selector.select(&pool, &low).await;
+        let selected = result.worker.expect("Expected a worker");
+        assert_eq!(selected.config.read().await.id.as_str(), "cached");
+    }
+
+    #[tokio::test]
+    async fn test_select_worker_balanced_health_weight_prefers_healthy() {
         let pool = WorkerPool::new();
 
         let unhealthy = make_worker("unhealthy", 8, 70.0);
@@ -1984,6 +2136,7 @@ mod tests {
         let request = SelectionRequest {
             project: "test-project".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -1995,6 +2148,52 @@ mod tests {
         let result = selector.select(&pool, &request).await;
         let selected = result.worker.expect("Expected a worker");
         assert_eq!(selected.config.read().await.id.as_str(), "healthy");
+    }
+
+    #[tokio::test]
+    async fn test_bug_repro_no_workers_with_runtime_when_busy() {
+        // Regression test for: NoWorkersWithRuntime returned when worker exists but is busy
+        let pool = WorkerPool::new();
+
+        let worker = make_worker("busy-rust", 4, 80.0);
+        worker
+            .set_capabilities(rch_common::WorkerCapabilities {
+                rustc_version: Some("1.75.0".to_string()),
+                bun_version: None,
+                node_version: None,
+                npm_version: None,
+            })
+            .await;
+
+        // Exhaust slots
+        assert!(worker.reserve_slots(4).await);
+
+        pool.add_worker_state(worker).await;
+
+        let selector = WorkerSelector::default();
+        let request = SelectionRequest {
+            project: "test".to_string(),
+            command: None,
+            command_priority: CommandPriority::Normal,
+            estimated_cores: 1,
+            preferred_workers: vec![],
+            toolchain: None,
+            required_runtime: RequiredRuntime::Rust,
+            classification_duration_us: None,
+            hook_pid: None,
+        };
+
+        let result = selector.select(&pool, &request).await;
+        assert!(result.worker.is_none());
+
+        // BUG: Currently returns NoWorkersWithRuntime because runtime check is after slot check
+        // Correct behavior should be AllWorkersBusy
+        assert_eq!(
+            result.reason,
+            SelectionReason::AllWorkersBusy,
+            "Expected AllWorkersBusy, got {:?}",
+            result.reason
+        );
     }
 
     #[tokio::test]
@@ -2030,6 +2229,7 @@ mod tests {
         let request = SelectionRequest {
             project: "test-project".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -2079,6 +2279,7 @@ mod tests {
         let request = SelectionRequest {
             project: "test-project".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -2114,6 +2315,7 @@ mod tests {
         let request = SelectionRequest {
             project: "proj".to_string(),
             command: Some("cargo test".to_string()),
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -2154,6 +2356,7 @@ mod tests {
         let request = SelectionRequest {
             project: "new-project".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -2187,6 +2390,7 @@ mod tests {
         let request = SelectionRequest {
             project: "test-project".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -2243,6 +2447,7 @@ mod tests {
         let request = SelectionRequest {
             project: "test-project".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![],
             toolchain: None,
@@ -2281,6 +2486,7 @@ mod tests {
         let request = SelectionRequest {
             project: "test-project".to_string(),
             command: None,
+            command_priority: CommandPriority::Normal,
             estimated_cores: 2,
             preferred_workers: vec![WorkerId::new("preferred")],
             toolchain: None,

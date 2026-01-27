@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod agent;
+mod cache;
 mod commands;
 mod completions;
 mod config;
@@ -73,6 +74,8 @@ ENVIRONMENT VARIABLES:
     RCH_DAEMON_SOCKET     Path to daemon Unix socket
     RCH_DAEMON_TIMEOUT_MS Timeout for daemon communication (default: 5000)
     RCH_SSH_KEY           Path to SSH private key for worker connections
+    RCH_SSH_SERVER_ALIVE_INTERVAL_SECS  SSH keepalive interval (ServerAliveInterval)
+    RCH_SSH_CONTROL_PERSIST_SECS        SSH ControlPersist idle seconds (0 disables persistence)
     RCH_TRANSFER_ZSTD_LEVEL  Compression level 1-22 (default: 3)
     RCH_ENV_ALLOWLIST     Comma-separated env vars to forward (e.g., RUSTFLAGS,CARGO_TARGET_DIR)
     RCH_VISIBILITY        Hook output visibility: none, summary, verbose

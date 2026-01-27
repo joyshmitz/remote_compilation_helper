@@ -20,6 +20,7 @@ use serde_json::json;
 
 use crate::metrics::{self, budget};
 use crate::workers::WorkerPool;
+use rch_common::WorkerStatus;
 
 /// Shared state for HTTP handlers.
 #[derive(Clone)]
@@ -84,9 +85,12 @@ async fn ready_handler(State(state): State<Arc<HttpState>>) -> impl IntoResponse
     let mut total_slots = 0;
 
     for w in workers {
-        // Consider a worker available if it has available slots
+        // Consider a worker available if it is healthy/degraded AND has available slots
+        let status = w.status().await;
+        let is_status_healthy = matches!(status, WorkerStatus::Healthy | WorkerStatus::Degraded);
         let available = w.available_slots().await;
-        if available > 0 {
+
+        if is_status_healthy && available > 0 {
             healthy_workers.push(w);
             total_slots += available;
         }

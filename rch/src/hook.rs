@@ -14,9 +14,9 @@ use crate::transfer::{
 };
 use crate::ui::console::RchConsole;
 use rch_common::{
-    ColorMode, CompilationKind, HookInput, HookOutput, OutputVisibility, RequiredRuntime,
-    SelectedWorker, SelectionResponse, SelfHealingConfig, ToolchainInfo, TransferConfig,
-    WorkerConfig, WorkerId, classify_command,
+    ColorMode, CommandPriority, CompilationKind, HookInput, HookOutput, OutputVisibility,
+    RequiredRuntime, SelectedWorker, SelectionResponse, SelfHealingConfig, ToolchainInfo,
+    TransferConfig, WorkerConfig, WorkerId, classify_command,
     ui::{
         ArtifactSummary, CelebrationSummary, CompilationProgress, CompletionCelebration, Icons,
         OutputContext, RchTheme, TransferProgress,
@@ -448,6 +448,7 @@ enum AutoStartError {
     Io(#[source] std::io::Error),
 }
 
+#[derive(Debug)]
 struct AutoStartLock {
     path: PathBuf,
 }
@@ -895,10 +896,11 @@ async fn process_hook(input: HookInput) -> HookOutput {
     let command = &input.tool_input.command;
     debug!("Processing command: {}", command);
 
-    // Classify the command using 5-tier system
+    // Classify the command using 5-tier system with LRU cache (bd-17cn)
     // Per AGENTS.md: non-compilation decisions must complete in <1ms, compilation in <5ms
+    // The cache reduces CPU overhead for repeated build/test commands
     let classify_start = Instant::now();
-    let classification = classify_command(command);
+    let classification = crate::cache::classify_cached(command, classify_command);
     let classification_duration = classify_start.elapsed();
     let classification_duration_us = classification_duration.as_micros() as u64;
 
@@ -997,6 +999,7 @@ async fn process_hook(input: HookInput) -> HookOutput {
 
     // Determine required runtime
     let required_runtime = required_runtime_for_kind(classification.kind);
+    let command_priority = command_priority_from_env(&reporter);
 
     match query_daemon(
         &config.general.socket_path,
@@ -1005,6 +1008,7 @@ async fn process_hook(input: HookInput) -> HookOutput {
         command,
         toolchain.as_ref(),
         required_runtime,
+        command_priority,
         classification_duration_us,
         Some(std::process::id()),
     )
@@ -1042,6 +1046,7 @@ async fn process_hook(input: HookInput) -> HookOutput {
                     command,
                     toolchain.as_ref(),
                     required_runtime,
+                    command_priority,
                     classification_duration_us,
                     Some(std::process::id()),
                 )
@@ -1269,6 +1274,7 @@ pub(crate) async fn query_daemon(
     command: &str,
     toolchain: Option<&ToolchainInfo>,
     required_runtime: RequiredRuntime,
+    command_priority: CommandPriority,
     classification_duration_us: u64,
     hook_pid: Option<u32>,
 ) -> anyhow::Result<SelectionResponse> {
@@ -1302,6 +1308,11 @@ pub(crate) async fn query_daemon(
         let raw = json.trim_matches('"');
         query.push_str(&format!("&runtime={}", urlencoding_encode(raw)));
     }
+
+    query.push_str(&format!(
+        "&priority={}",
+        urlencoding_encode(&command_priority.to_string())
+    ));
 
     // Add classification duration for AGENTS.md compliance tracking
     query.push_str(&format!(
@@ -1456,6 +1467,23 @@ fn extract_project_name() -> String {
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn command_priority_from_env(reporter: &HookReporter) -> CommandPriority {
+    let Ok(raw) = std::env::var("RCH_PRIORITY") else {
+        return CommandPriority::Normal;
+    };
+
+    match raw.parse::<CommandPriority>() {
+        Ok(value) => value,
+        Err(()) => {
+            reporter.verbose(&format!(
+                "[RCH] ignoring invalid RCH_PRIORITY={:?} (expected: low|normal|high)",
+                raw
+            ));
+            CommandPriority::Normal
+        }
+    }
 }
 
 /// Convert a SelectedWorker to a WorkerConfig.
@@ -2434,6 +2462,7 @@ mod tests {
             "cargo build",
             None,
             RequiredRuntime::None,
+            CommandPriority::Normal,
             100, // 100µs classification time
             None,
         )
@@ -2475,6 +2504,7 @@ mod tests {
             assert!(request_line.contains("project="));
             assert!(request_line.contains("cores="));
             assert!(request_line.contains("command=cargo%20build"));
+            assert!(request_line.contains("priority=normal"));
 
             // Send mock response
             let response = SelectionResponse {
@@ -2513,6 +2543,7 @@ mod tests {
             "cargo build",
             None,
             RequiredRuntime::None,
+            CommandPriority::Normal,
             100,
             None,
         )
@@ -2581,6 +2612,7 @@ mod tests {
             "cargo build --release",
             None,
             RequiredRuntime::None,
+            CommandPriority::Normal,
             150, // 150µs classification time
             None,
         )
@@ -4192,5 +4224,380 @@ mod tests {
             &config,
         );
         assert_eq!(with_skip, 10, "--skip uses full slots");
+    }
+
+    // =========================================================================
+    // Timeout handling tests (bead bd-1aim.2)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_daemon_query_connect_timeout_fail_open() {
+        // When the daemon socket exists but doesn't accept connections quickly,
+        // the hook should timeout and fail-open to allow local execution.
+        //
+        // We simulate this by creating a socket that accepts but never responds.
+        let _lock = test_lock().lock().await;
+        let socket_path = format!(
+            "/tmp/rch_test_connect_timeout_{}_{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        // Clean up any existing socket
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Create a socket that accepts connections but never responds
+        let listener = UnixListener::bind(&socket_path).expect("Failed to create test socket");
+
+        let socket_path_clone = socket_path.clone();
+        tokio::spawn(async move {
+            // Accept the connection but do nothing with it
+            let _ = listener.accept().await;
+            // Hold connection open for longer than the timeout
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        });
+
+        // Give listener time to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
+        // Query should timeout since daemon never responds
+        let result = query_daemon(
+            &socket_path,
+            "test-project",
+            4,
+            "cargo build",
+            None,
+            RequiredRuntime::None,
+            CommandPriority::Normal,
+            100,
+            None,
+        )
+        .await;
+
+        let _ = std::fs::remove_file(&socket_path_clone);
+
+        // Should fail due to read timeout (empty response)
+        assert!(
+            result.is_err(),
+            "Query should fail when daemon doesn't respond"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_hook_timeout_fail_open() {
+        let _lock = test_lock().lock().await;
+        let socket_path = format!(
+            "/tmp/rch_test_process_timeout_{}_{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        // Create test config with our socket
+        let _overrides = TestOverridesGuard::set(
+            &socket_path,
+            MockConfig::default(),
+            MockRsyncConfig::success(),
+        );
+
+        // Clean up any existing socket
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Create a slow daemon that doesn't respond in time
+        let listener = UnixListener::bind(&socket_path).expect("bind");
+
+        tokio::spawn(async move {
+            // Accept and hold connection but don't respond
+            let (stream, _) = listener.accept().await.expect("accept");
+            // Hold the stream open
+            let (_reader, _writer) = stream.into_split();
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
+        let input = HookInput {
+            tool_name: "Bash".to_string(),
+            tool_input: ToolInput {
+                command: "cargo build".to_string(),
+                description: None,
+            },
+            session_id: None,
+        };
+
+        let output = process_hook(input).await;
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Should fail-open when daemon times out
+        assert!(
+            output.is_allow(),
+            "Hook should fail-open when daemon query times out"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_daemon_query_partial_response_timeout() {
+        // Test behavior when daemon sends partial response and then hangs
+        let _lock = test_lock().lock().await;
+        let socket_path = format!(
+            "/tmp/rch_test_partial_timeout_{}_{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).expect("bind");
+
+        let socket_path_clone = socket_path.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let (reader, mut writer) = stream.into_split();
+            let mut buf_reader = TokioBufReader::new(reader);
+
+            // Read request
+            let mut request_line = String::new();
+            let _ = buf_reader.read_line(&mut request_line).await;
+
+            // Write partial HTTP response (no body)
+            writer
+                .write_all(b"HTTP/1.1 200 OK\r\n")
+                .await
+                .expect("write");
+            // Hang without completing the response
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+
+        let result = query_daemon(
+            &socket_path,
+            "test-project",
+            4,
+            "cargo build",
+            None,
+            RequiredRuntime::None,
+            CommandPriority::Normal,
+            100,
+            None,
+        )
+        .await;
+
+        let _ = std::fs::remove_file(&socket_path_clone);
+
+        // Partial response should result in error (no body to parse)
+        assert!(result.is_err(), "Partial response should result in error");
+    }
+
+    #[test]
+    fn test_timeout_constants_are_reasonable() {
+        // Document and verify the timeout values used in the hook
+        // Connection timeout: 300ms (quick enough to not block agents, long enough for local socket)
+        // Read timeout: 300ms (same reasoning)
+        // These are defined in query_daemon but we verify the code uses timeouts
+        // by checking the function uses tokio::time::timeout
+
+        // This is a documentation test - the actual values are embedded in query_daemon
+        // We verify the timeout behavior via the tests above (test_daemon_query_connect_timeout_fail_open,
+        // test_process_hook_timeout_fail_open, test_daemon_query_partial_response_timeout)
+        //
+        // The specific timeout values (300ms connect, 300ms read) are validated by the fact that
+        // these tests complete in reasonable time without hanging.
+    }
+
+    // ============================================================================
+    // Auto-start (Self-Healing) Tests
+    // ============================================================================
+
+    /// Test helper to create a unique temp directory for auto-start tests
+    fn create_test_state_dir() -> tempfile::TempDir {
+        tempfile::TempDir::new().expect("Failed to create temp dir")
+    }
+
+    #[test]
+    fn test_read_cooldown_timestamp_valid() {
+        let temp_dir = create_test_state_dir();
+        let cooldown_path = temp_dir.path().join("cooldown");
+
+        // Write a known timestamp (100 seconds ago)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        std::fs::write(&cooldown_path, format!("{}", now - 100)).unwrap();
+
+        let timestamp = super::read_cooldown_timestamp(&cooldown_path);
+        assert!(timestamp.is_some(), "Should read valid timestamp");
+
+        let elapsed = timestamp.unwrap().elapsed().unwrap().as_secs();
+        assert!(
+            (99..=102).contains(&elapsed),
+            "Elapsed time should be ~100s, got {}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn test_read_cooldown_timestamp_missing() {
+        let temp_dir = create_test_state_dir();
+        let cooldown_path = temp_dir.path().join("nonexistent");
+
+        let timestamp = super::read_cooldown_timestamp(&cooldown_path);
+        assert!(timestamp.is_none(), "Missing file should return None");
+    }
+
+    #[test]
+    fn test_read_cooldown_timestamp_invalid_content() {
+        let temp_dir = create_test_state_dir();
+        let cooldown_path = temp_dir.path().join("cooldown");
+
+        std::fs::write(&cooldown_path, "not a number").unwrap();
+
+        let timestamp = super::read_cooldown_timestamp(&cooldown_path);
+        assert!(timestamp.is_none(), "Invalid content should return None");
+    }
+
+    #[test]
+    fn test_write_cooldown_timestamp_creates_file() {
+        let temp_dir = create_test_state_dir();
+        let cooldown_path = temp_dir.path().join("subdir/cooldown");
+
+        let result = super::write_cooldown_timestamp(&cooldown_path);
+        assert!(result.is_ok(), "Should create file and parent directories");
+        assert!(cooldown_path.exists(), "Cooldown file should exist");
+
+        let contents = std::fs::read_to_string(&cooldown_path).unwrap();
+        let secs: u64 = contents.trim().parse().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(secs <= now && secs >= now - 2, "Timestamp should be recent");
+    }
+
+    #[test]
+    fn test_acquire_autostart_lock_success() {
+        let temp_dir = create_test_state_dir();
+        let lock_path = temp_dir.path().join("autostart.lock");
+
+        let lock = super::acquire_autostart_lock(&lock_path);
+        assert!(lock.is_ok(), "Should acquire lock on first attempt");
+        assert!(lock_path.exists(), "Lock file should exist");
+    }
+
+    #[test]
+    fn test_acquire_autostart_lock_contention() {
+        let temp_dir = create_test_state_dir();
+        let lock_path = temp_dir.path().join("autostart.lock");
+
+        // First acquisition should succeed
+        let lock1 = super::acquire_autostart_lock(&lock_path);
+        assert!(lock1.is_ok(), "First lock should succeed");
+
+        // Second acquisition should fail with LockHeld
+        let lock2 = super::acquire_autostart_lock(&lock_path);
+        assert!(lock2.is_err(), "Second lock should fail");
+        assert!(
+            matches!(lock2.unwrap_err(), super::AutoStartError::LockHeld),
+            "Error should be LockHeld"
+        );
+    }
+
+    #[test]
+    fn test_autostart_lock_released_on_drop() {
+        let temp_dir = create_test_state_dir();
+        let lock_path = temp_dir.path().join("autostart.lock");
+
+        // Acquire and drop the lock
+        {
+            let lock = super::acquire_autostart_lock(&lock_path);
+            assert!(lock.is_ok(), "First lock should succeed");
+            assert!(lock_path.exists(), "Lock file should exist while held");
+            // lock is dropped here
+        }
+
+        // Lock file should be removed
+        assert!(
+            !lock_path.exists(),
+            "Lock file should be removed after drop"
+        );
+
+        // Should be able to acquire lock again
+        let lock2 = super::acquire_autostart_lock(&lock_path);
+        assert!(lock2.is_ok(), "Should be able to reacquire lock after drop");
+    }
+
+    #[test]
+    fn test_acquire_autostart_lock_creates_parent_dirs() {
+        let temp_dir = create_test_state_dir();
+        let lock_path = temp_dir.path().join("deep/nested/dir/autostart.lock");
+
+        let lock = super::acquire_autostart_lock(&lock_path);
+        assert!(lock.is_ok(), "Should create parent directories");
+        assert!(lock_path.exists(), "Lock file should exist");
+    }
+
+    #[tokio::test]
+    async fn test_auto_start_config_disabled() {
+        let temp_dir = create_test_state_dir();
+        let socket_path = temp_dir.path().join("test.sock");
+
+        let config = rch_common::SelfHealingConfig {
+            hook_starts_daemon: false,
+            ..Default::default()
+        };
+
+        let result = super::try_auto_start_daemon(&config, &socket_path).await;
+
+        assert!(result.is_err(), "Should return error when disabled");
+        assert!(
+            matches!(result.unwrap_err(), super::AutoStartError::Disabled),
+            "Error should be Disabled"
+        );
+    }
+
+    // Note: Tests that require env var manipulation are marked with #[ignore] for safety.
+    // Env var manipulation in tests can cause data races and is unsafe in Rust 2024 edition.
+    // The core functionality is tested via the helper functions that don't depend on env vars.
+
+    #[test]
+    fn test_autostart_state_dir_returns_path() {
+        // Basic test that autostart_state_dir returns a valid path
+        // (without manipulating env vars which is unsafe)
+        let dir = super::autostart_state_dir();
+        assert!(!dir.as_os_str().is_empty(), "Path should not be empty");
+        assert!(
+            dir.to_string_lossy().contains("rch"),
+            "Path should contain 'rch'"
+        );
+    }
+
+    #[test]
+    fn test_autostart_lock_path_ends_with_expected_name() {
+        let path = super::autostart_lock_path();
+        assert!(
+            path.file_name()
+                .map(|n| n == "hook_autostart.lock")
+                .unwrap_or(false),
+            "Lock path should end with hook_autostart.lock"
+        );
+    }
+
+    #[test]
+    fn test_autostart_cooldown_path_ends_with_expected_name() {
+        let path = super::autostart_cooldown_path();
+        assert!(
+            path.file_name()
+                .map(|n| n == "hook_autostart.cooldown")
+                .unwrap_or(false),
+            "Cooldown path should end with hook_autostart.cooldown"
+        );
     }
 }

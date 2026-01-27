@@ -597,12 +597,13 @@ pub async fn probe_worker_capabilities(
 
     // Check if mock mode is enabled
     if is_mock_transport(worker) {
-        // In mock mode, return default capabilities (no Bun)
+        // In mock mode, return mock capabilities that include Rust
+        // (so mock workers can be selected for Rust compilation)
         debug!(
-            "Worker {} capabilities probe: mock mode, returning defaults",
+            "Worker {} capabilities probe: mock mode, returning mock capabilities",
             worker_config.id
         );
-        return Some(WorkerCapabilities::new());
+        return Some(WorkerCapabilities::mock_with_rust());
     }
 
     let ssh_options = SshOptions {
@@ -948,7 +949,7 @@ mod tests {
         use super::*;
         use crate::selection::{SelectionWeights, select_worker_with_config};
         use crate::workers::WorkerPool;
-        use rch_common::{RequiredRuntime, SelectionRequest};
+        use rch_common::{CommandPriority, RequiredRuntime, SelectionRequest};
 
         fn make_worker_config(id: &str) -> WorkerConfig {
             WorkerConfig {
@@ -966,6 +967,7 @@ mod tests {
             SelectionRequest {
                 project: project.to_string(),
                 command: None,
+                command_priority: CommandPriority::Normal,
                 estimated_cores: cores,
                 preferred_workers: vec![],
                 toolchain: None,

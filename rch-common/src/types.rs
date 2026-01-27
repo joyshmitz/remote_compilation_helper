@@ -1,6 +1,7 @@
 //! Common types used across RCH components.
 
 use crate::{CompilationKind, toolchain::ToolchainInfo};
+use rand::Rng;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -70,6 +71,43 @@ pub enum RequiredRuntime {
     Node,
 }
 
+/// Per-command priority hint for worker selection.
+///
+/// This is an *input hint* from the caller (typically the hook) and should not
+/// change default behavior when omitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CommandPriority {
+    Low,
+    #[default]
+    Normal,
+    High,
+}
+
+impl std::fmt::Display for CommandPriority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Low => "low",
+            Self::Normal => "normal",
+            Self::High => "high",
+        };
+        write!(f, "{}", value)
+    }
+}
+
+impl std::str::FromStr for CommandPriority {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "low" => Ok(Self::Low),
+            "normal" => Ok(Self::Normal),
+            "high" => Ok(Self::High),
+            _ => Err(()),
+        }
+    }
+}
+
 /// Worker selection request sent from hook to daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelectionRequest {
@@ -78,6 +116,9 @@ pub struct SelectionRequest {
     /// Full command being executed (optional, for active build tracking).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// Priority hint for this request.
+    #[serde(default)]
+    pub command_priority: CommandPriority,
     /// Estimated CPU cores needed for this compilation.
     pub estimated_cores: u32,
     /// Preferred worker IDs (e.g., from project config).
@@ -435,6 +476,16 @@ impl WorkerCapabilities {
         Self::default()
     }
 
+    /// Create mock capabilities with Rust installed.
+    ///
+    /// Used by mock transport to simulate a worker with Rust toolchain.
+    pub fn mock_with_rust() -> Self {
+        Self {
+            rustc_version: Some("1.85.0-nightly (mock)".to_string()),
+            ..Self::default()
+        }
+    }
+
     /// Check if this worker has Bun installed.
     pub fn has_bun(&self) -> bool {
         self.bun_version.is_some()
@@ -641,11 +692,18 @@ pub struct SelfHealingConfig {
     /// Whether the hook should attempt to auto-start the daemon.
     #[serde(default = "default_true")]
     pub hook_starts_daemon: bool,
+    /// Whether the daemon should auto-install Claude Code hooks on startup.
+    #[serde(default = "default_true")]
+    pub daemon_installs_hooks: bool,
     /// Cooldown between auto-start attempts in seconds.
     #[serde(default = "default_autostart_cooldown_secs")]
     pub auto_start_cooldown_secs: u64,
     /// Time to wait for the daemon socket after spawning in seconds.
-    #[serde(default = "default_autostart_timeout_secs")]
+    /// Also aliased as `daemon_start_timeout` for backwards compatibility.
+    #[serde(
+        default = "default_autostart_timeout_secs",
+        alias = "daemon_start_timeout"
+    )]
     pub auto_start_timeout_secs: u64,
 }
 
@@ -653,9 +711,53 @@ impl Default for SelfHealingConfig {
     fn default() -> Self {
         Self {
             hook_starts_daemon: default_true(),
+            daemon_installs_hooks: default_true(),
             auto_start_cooldown_secs: default_autostart_cooldown_secs(),
             auto_start_timeout_secs: default_autostart_timeout_secs(),
         }
+    }
+}
+
+impl SelfHealingConfig {
+    /// Apply environment variable overrides to this config.
+    ///
+    /// Supported environment variables:
+    /// - `RCH_NO_SELF_HEALING=1` - Master switch to disable all self-healing
+    /// - `RCH_HOOK_STARTS_DAEMON=0|1` - Control hook auto-starting daemon
+    /// - `RCH_DAEMON_INSTALLS_HOOKS=0|1` - Control daemon auto-installing hooks
+    /// - `RCH_DAEMON_START_TIMEOUT=<seconds>` - Max wait for daemon start
+    /// - `RCH_AUTO_START_COOLDOWN=<seconds>` - Min time between auto-starts
+    pub fn with_env_overrides(mut self) -> Self {
+        // Master disable switch
+        if let Ok(val) = std::env::var("RCH_NO_SELF_HEALING")
+            && (val == "1" || val.eq_ignore_ascii_case("true"))
+        {
+            self.hook_starts_daemon = false;
+            self.daemon_installs_hooks = false;
+            return self;
+        }
+
+        // Individual toggles
+        if let Ok(val) = std::env::var("RCH_HOOK_STARTS_DAEMON") {
+            self.hook_starts_daemon = val != "0" && !val.eq_ignore_ascii_case("false");
+        }
+        if let Ok(val) = std::env::var("RCH_DAEMON_INSTALLS_HOOKS") {
+            self.daemon_installs_hooks = val != "0" && !val.eq_ignore_ascii_case("false");
+        }
+
+        // Numeric settings
+        if let Ok(val) = std::env::var("RCH_DAEMON_START_TIMEOUT")
+            && let Ok(secs) = val.parse()
+        {
+            self.auto_start_timeout_secs = secs;
+        }
+        if let Ok(val) = std::env::var("RCH_AUTO_START_COOLDOWN")
+            && let Ok(secs) = val.parse()
+        {
+            self.auto_start_cooldown_secs = secs;
+        }
+
+        self
     }
 }
 
@@ -1160,10 +1262,24 @@ pub struct TransferConfig {
     /// Patterns to exclude from transfer.
     #[serde(default = "default_excludes")]
     pub exclude_patterns: Vec<String>,
+    /// SSH keepalive interval in seconds (`ssh -o ServerAliveInterval=<N>`).
+    ///
+    /// When unset, OpenSSH defaults apply (keepalive disabled).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_server_alive_interval_secs: Option<u64>,
+    /// SSH ControlPersist idle timeout in seconds (`ssh -o ControlPersist=<N>s`).
+    ///
+    /// - Unset preserves OpenSSH defaults (ControlPersist enabled by default via mux).
+    /// - `0` disables persistence (`ControlPersist=no`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_control_persist_secs: Option<u64>,
     /// Remote base directory for project sync and build execution.
     /// Must be an absolute path. Defaults to /tmp/rch.
     #[serde(default = "default_remote_base")]
     pub remote_base: String,
+    /// Retry policy for transient network errors during transfer.
+    #[serde(default)]
+    pub retry: RetryConfig,
 }
 
 impl Default for TransferConfig {
@@ -1171,8 +1287,119 @@ impl Default for TransferConfig {
         Self {
             compression_level: 3,
             exclude_patterns: default_excludes(),
+            ssh_server_alive_interval_secs: None,
+            ssh_control_persist_secs: None,
             remote_base: default_remote_base(),
+            retry: RetryConfig::default(),
         }
+    }
+}
+
+// =============================================================================
+// Retry Configuration (bd-x1ek)
+// =============================================================================
+
+fn default_retry_max_attempts() -> u32 {
+    3
+}
+
+fn default_retry_base_delay_ms() -> u64 {
+    100
+}
+
+fn default_retry_max_delay_ms() -> u64 {
+    5000
+}
+
+fn default_retry_jitter_factor() -> f64 {
+    0.1
+}
+
+fn default_retry_total_timeout_ms() -> u64 {
+    30000
+}
+
+/// Configuration for retry behavior on transient errors.
+///
+/// Used by rsync and SSH operations to recover from transient network failures
+/// without blocking too long or retrying non-recoverable errors.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryConfig {
+    /// Maximum number of retry attempts (1 = no retries, just initial attempt).
+    #[serde(default = "default_retry_max_attempts")]
+    pub max_attempts: u32,
+
+    /// Initial delay between retries in milliseconds.
+    #[serde(default = "default_retry_base_delay_ms")]
+    pub base_delay_ms: u64,
+
+    /// Maximum delay between retries in milliseconds (caps exponential backoff).
+    #[serde(default = "default_retry_max_delay_ms")]
+    pub max_delay_ms: u64,
+
+    /// Jitter factor (0.0 - 1.0) to randomize delay.
+    /// A value of 0.1 means ±10% randomization.
+    #[serde(default = "default_retry_jitter_factor")]
+    pub jitter_factor: f64,
+
+    /// Total timeout for all retry attempts in milliseconds.
+    /// After this, retries stop even if max_attempts not reached.
+    #[serde(default = "default_retry_total_timeout_ms")]
+    pub total_timeout_ms: u64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: default_retry_max_attempts(),
+            base_delay_ms: default_retry_base_delay_ms(),
+            max_delay_ms: default_retry_max_delay_ms(),
+            jitter_factor: default_retry_jitter_factor(),
+            total_timeout_ms: default_retry_total_timeout_ms(),
+        }
+    }
+}
+
+impl RetryConfig {
+    /// Create a config that disables retries (single attempt only).
+    pub fn no_retry() -> Self {
+        Self {
+            max_attempts: 1,
+            ..Default::default()
+        }
+    }
+
+    /// Calculate delay for a given attempt number (0-indexed).
+    ///
+    /// Uses exponential backoff with optional jitter.
+    pub fn delay_for_attempt(&self, attempt: u32) -> std::time::Duration {
+        if attempt == 0 {
+            return std::time::Duration::ZERO;
+        }
+
+        // Exponential backoff: base * 2^attempt
+        let base = self.base_delay_ms as f64;
+        let delay = base * (2.0_f64.powi(attempt as i32 - 1));
+        let capped = delay.min(self.max_delay_ms as f64);
+
+        // Apply jitter: delay ± (delay * jitter_factor)
+        let jittered = if self.jitter_factor > 0.0 {
+            let jitter_range = capped * self.jitter_factor;
+            let jitter = (rand::rng().random::<f64>() * 2.0 - 1.0) * jitter_range;
+            (capped + jitter).max(0.0)
+        } else {
+            capped
+        };
+
+        std::time::Duration::from_millis(jittered as u64)
+    }
+
+    /// Check if we should retry given elapsed time since start.
+    pub fn should_retry(&self, attempt: u32, elapsed: std::time::Duration) -> bool {
+        if attempt >= self.max_attempts {
+            return false;
+        }
+        elapsed.as_millis() < self.total_timeout_ms as u128
     }
 }
 
@@ -1206,9 +1433,20 @@ pub fn validate_remote_base(path: &str) -> Result<String, String> {
     // Normalize: remove trailing slashes
     let normalized = expanded.trim_end_matches('/').to_string();
 
-    // Ensure we don't end up with empty path
-    if normalized.is_empty() {
-        return Ok("/".to_string());
+    // Safety checks
+    if normalized.is_empty() || normalized == "/" {
+        return Err("remote_base cannot be the root directory (safety restriction)".to_string());
+    }
+
+    // Enforce at least 2 levels deep (e.g. /tmp/rch, /home/user/rch)
+    // /tmp -> depth 1 (unsafe for recursive delete)
+    // /tmp/rch -> depth 2 (safe)
+    let components: Vec<&str> = normalized.split('/').filter(|c| !c.is_empty()).collect();
+    if components.len() < 2 {
+        return Err(format!(
+            "remote_base must be at least 2 levels deep (e.g. /tmp/rch), got: {}",
+            normalized
+        ));
     }
 
     Ok(normalized)
@@ -2740,8 +2978,24 @@ mod tests {
 
     #[test]
     fn test_validate_remote_base_root_path() {
-        // Root path should be allowed (though unusual)
-        assert_eq!(validate_remote_base("/").unwrap(), "/");
+        // Root path should be rejected
+        let result = validate_remote_base("/");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("root directory"));
+    }
+
+    #[test]
+    fn test_validate_remote_base_rejects_top_level() {
+        // Top-level directories should be rejected (depth 1)
+        let result = validate_remote_base("/tmp");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("at least 2 levels deep"));
+
+        let result = validate_remote_base("/home");
+        assert!(result.is_err());
+
+        // Depth 2 should be allowed
+        assert_eq!(validate_remote_base("/tmp/rch").unwrap(), "/tmp/rch");
     }
 
     #[test]
@@ -2753,5 +3007,122 @@ mod tests {
     fn test_transfer_config_default_has_remote_base() {
         let config = TransferConfig::default();
         assert_eq!(config.remote_base, "/tmp/rch");
+    }
+
+    // ========================================================================
+    // RetryConfig Tests (bd-x1ek)
+    // ========================================================================
+
+    #[test]
+    fn test_retry_config_default() {
+        let config = RetryConfig::default();
+        assert_eq!(config.max_attempts, 3);
+        assert_eq!(config.base_delay_ms, 100);
+        assert_eq!(config.max_delay_ms, 5000);
+        assert_eq!(config.jitter_factor, 0.1);
+        assert_eq!(config.total_timeout_ms, 30000);
+    }
+
+    #[test]
+    fn test_retry_config_no_retry() {
+        let config = RetryConfig::no_retry();
+        assert_eq!(config.max_attempts, 1);
+    }
+
+    #[test]
+    fn test_retry_config_delay_for_attempt_zero() {
+        let config = RetryConfig::default();
+        assert_eq!(config.delay_for_attempt(0), std::time::Duration::ZERO);
+    }
+
+    #[test]
+    fn test_retry_config_delay_for_attempt_exponential() {
+        let config = RetryConfig {
+            base_delay_ms: 100,
+            max_delay_ms: 10000,
+            jitter_factor: 0.0, // No jitter for deterministic test
+            ..Default::default()
+        };
+
+        // attempt 1: 100 * 2^0 = 100ms
+        assert_eq!(
+            config.delay_for_attempt(1),
+            std::time::Duration::from_millis(100)
+        );
+        // attempt 2: 100 * 2^1 = 200ms
+        assert_eq!(
+            config.delay_for_attempt(2),
+            std::time::Duration::from_millis(200)
+        );
+        // attempt 3: 100 * 2^2 = 400ms
+        assert_eq!(
+            config.delay_for_attempt(3),
+            std::time::Duration::from_millis(400)
+        );
+    }
+
+    #[test]
+    fn test_retry_config_delay_capped_at_max() {
+        let config = RetryConfig {
+            base_delay_ms: 1000,
+            max_delay_ms: 2000,
+            jitter_factor: 0.0,
+            ..Default::default()
+        };
+
+        // attempt 2: 1000 * 2^1 = 2000ms (at cap)
+        assert_eq!(
+            config.delay_for_attempt(2),
+            std::time::Duration::from_millis(2000)
+        );
+        // attempt 3: 1000 * 2^2 = 4000ms, capped to 2000ms
+        assert_eq!(
+            config.delay_for_attempt(3),
+            std::time::Duration::from_millis(2000)
+        );
+    }
+
+    #[test]
+    fn test_retry_config_should_retry() {
+        let config = RetryConfig {
+            max_attempts: 3,
+            total_timeout_ms: 1000,
+            ..Default::default()
+        };
+
+        // Before max attempts and within timeout
+        assert!(config.should_retry(0, std::time::Duration::from_millis(0)));
+        assert!(config.should_retry(1, std::time::Duration::from_millis(500)));
+        assert!(config.should_retry(2, std::time::Duration::from_millis(900)));
+
+        // At max attempts
+        assert!(!config.should_retry(3, std::time::Duration::from_millis(0)));
+
+        // Past timeout
+        assert!(!config.should_retry(1, std::time::Duration::from_millis(1001)));
+    }
+
+    #[test]
+    fn test_retry_config_serde_roundtrip() {
+        let config = RetryConfig {
+            max_attempts: 5,
+            base_delay_ms: 200,
+            max_delay_ms: 8000,
+            jitter_factor: 0.2,
+            total_timeout_ms: 60000,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: RetryConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.max_attempts, 5);
+        assert_eq!(parsed.base_delay_ms, 200);
+        assert_eq!(parsed.max_delay_ms, 8000);
+        assert_eq!(parsed.jitter_factor, 0.2);
+        assert_eq!(parsed.total_timeout_ms, 60000);
+    }
+
+    #[test]
+    fn test_transfer_config_includes_retry() {
+        let config = TransferConfig::default();
+        assert_eq!(config.retry.max_attempts, 3);
     }
 }

@@ -118,6 +118,8 @@ Use these flags and environment variables to force the desired output mode:
 - `-q/--quiet` -> errors only
 - `-v/--verbose` -> extra details (timings, diagnostics)
 
+See [docs/RICH_OUTPUT_MIGRATION.md](docs/RICH_OUTPUT_MIGRATION.md) for a detailed migration guide and compatibility info.
+
 ### Before / After (Plain vs Rich)
 
 Plain fallback (no colors, no tables):
@@ -421,6 +423,9 @@ exclude_patterns = [
     "*.rlib",
     "*.rmeta",
 ]
+# Optional SSH stability knobs (useful on flaky networks)
+ssh_server_alive_interval_secs = 30  # ssh -o ServerAliveInterval
+ssh_control_persist_secs = 60        # ssh -o ControlPersist=60s (0 disables)
 
 # Optional: project-local excludes
 #
@@ -499,7 +504,10 @@ allowlist = ["RUSTFLAGS", "CARGO_TARGET_DIR"]
 | `RCH_LOCAL_ONLY` | Force local execution | `false` |
 | `RCH_BYPASS` | Disable RCH entirely | `false` |
 | `RCH_ENV_ALLOWLIST` | Comma-separated env vars to forward | unset |
+| `RCH_SSH_SERVER_ALIVE_INTERVAL_SECS` | SSH keepalive interval (ServerAliveInterval) | unset |
+| `RCH_SSH_CONTROL_PERSIST_SECS` | SSH ControlPersist idle seconds (0 disables) | unset |
 | `RCH_VERBOSE` | Enable verbose logging | `false` |
+| `RCH_PRIORITY` | Per-command selection hint: `low|normal|high` | unset |
 | `RCH_OUTPUT_FORMAT` | Machine output format: `json` or `toon` | unset |
 | `TOON_DEFAULT_FORMAT` | Default machine format when `--json` is set | unset |
 

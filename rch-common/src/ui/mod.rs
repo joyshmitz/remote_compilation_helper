@@ -32,6 +32,7 @@
 //! ```
 
 pub mod context;
+pub mod display;
 pub mod error;
 pub mod errors;
 pub mod icons;
@@ -39,6 +40,10 @@ pub mod progress;
 pub mod theme;
 
 pub use context::OutputContext;
+pub use display::{
+    IntoErrorPanel, ResultExt, anyhow_to_json, anyhow_to_panel, display_anyhow_error,
+    display_error, display_error_with_code, error_to_json, error_to_panel,
+};
 pub use error::{ErrorContext, ErrorPanel, ErrorSeverity, show_error, show_info, show_warning};
 pub use errors::NetworkErrorDisplay;
 pub use icons::Icons;

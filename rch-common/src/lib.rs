@@ -26,6 +26,7 @@ pub mod remote_compilation;
 pub mod remote_verification;
 pub mod ssh;
 pub mod test_change;
+pub mod testing;
 pub mod toolchain;
 pub mod types;
 pub mod ui;
@@ -45,14 +46,17 @@ pub use test_change::{TestChangeGuard, TestCodeChange};
 pub use toolchain::{ToolchainInfo, wrap_command_with_color, wrap_command_with_toolchain};
 pub use types::{
     BuildLocation, BuildRecord, BuildStats, CircuitBreakerConfig, CircuitState, CircuitStats,
-    ColorMode, CommandTimingBreakdown, CompilationConfig, CompilationMetrics, CompilationTimer,
-    CompilationTimingBreakdown, EnvironmentConfig, FairnessConfig, GeneralConfig,
+    ColorMode, CommandPriority, CommandTimingBreakdown, CompilationConfig, CompilationMetrics,
+    CompilationTimer, CompilationTimingBreakdown, EnvironmentConfig, FairnessConfig, GeneralConfig,
     MetricsAggregator, OutputConfig, OutputVisibility, RchConfig, ReleaseRequest, RequiredRuntime,
-    SelectedWorker, SelectionConfig, SelectionReason, SelectionRequest, SelectionResponse,
-    SelectionStrategy, SelectionWeightConfig, SelfHealingConfig, SelfTestConfig,
+    RetryConfig, SelectedWorker, SelectionConfig, SelectionReason, SelectionRequest,
+    SelectionResponse, SelectionStrategy, SelectionWeightConfig, SelfHealingConfig, SelfTestConfig,
     SelfTestFailureAction, SelfTestWorkers, TransferConfig, WorkerCapabilities, WorkerConfig,
     WorkerId, WorkerStatus, default_socket_path, validate_remote_base,
 };
+
+// Testing module re-exports
+pub use testing::{TestLogEntry, TestLogger, TestPhase, TestResult};
 
 // Config module re-exports
 pub use config::{
@@ -67,7 +71,11 @@ pub use discovery::{
 };
 
 // UI module re-exports
-pub use ui::{Icons, OutputContext, RchTheme};
+pub use ui::{
+    ErrorPanel, ErrorSeverity, Icons, IntoErrorPanel, OutputContext, RchTheme, ResultExt,
+    anyhow_to_json, anyhow_to_panel, display_anyhow_error, display_error, display_error_with_code,
+    error_to_json, error_to_panel,
+};
 
 // Errors module re-exports
 pub use errors::{ErrorCategory, ErrorCode, ErrorEntry};

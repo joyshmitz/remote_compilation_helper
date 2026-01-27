@@ -15,9 +15,9 @@ use anyhow::{Context, Result, bail};
 use directories::ProjectDirs;
 use rch_common::{
     ApiError, ApiResponse, Classification, ClassificationDetails, ClassificationTier,
-    ConfigValueSource, DiscoveredHost, ErrorCode, RchConfig, RequiredRuntime, SelectedWorker,
-    SelectionReason, SshClient, SshOptions, WorkerCapabilities, WorkerConfig, WorkerId,
-    classify_command_detailed, discover_all,
+    CommandPriority, ConfigValueSource, DiscoveredHost, ErrorCode, RchConfig, RequiredRuntime,
+    SelectedWorker, SelectionReason, SshClient, SshOptions, WorkerCapabilities, WorkerConfig,
+    WorkerId, classify_command_detailed, discover_all,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -505,6 +505,7 @@ pub struct ConfigOutputSection {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ConfigSelfHealingSection {
     pub hook_starts_daemon: bool,
+    pub daemon_installs_hooks: bool,
     pub auto_start_cooldown_secs: u64,
     pub auto_start_timeout_secs: u64,
 }
@@ -4159,6 +4160,7 @@ pub fn config_show(show_sources: bool, ctx: &OutputContext) -> Result<()> {
             },
             self_healing: ConfigSelfHealingSection {
                 hook_starts_daemon: config.self_healing.hook_starts_daemon,
+                daemon_installs_hooks: config.self_healing.daemon_installs_hooks,
                 auto_start_cooldown_secs: config.self_healing.auto_start_cooldown_secs,
                 auto_start_timeout_secs: config.self_healing.auto_start_timeout_secs,
             },
@@ -4388,6 +4390,15 @@ pub fn config_show(show_sources: bool, ctx: &OutputContext) -> Result<()> {
     );
     println!(
         "  {} = {}",
+        style.key("daemon_installs_hooks"),
+        format_with_source(
+            "self_healing.daemon_installs_hooks",
+            &style.value(&config.self_healing.daemon_installs_hooks.to_string()),
+            &value_sources
+        )
+    );
+    println!(
+        "  {} = {}",
         style.key("auto_start_cooldown_secs"),
         format_with_source(
             "self_healing.auto_start_cooldown_secs",
@@ -4545,6 +4556,12 @@ fn collect_value_sources(
         &mut values,
         "self_healing.hook_starts_daemon",
         config.self_healing.hook_starts_daemon.to_string(),
+        sources,
+    );
+    push_value_source(
+        &mut values,
+        "self_healing.daemon_installs_hooks",
+        config.self_healing.daemon_installs_hooks.to_string(),
         sources,
     );
     push_value_source(
@@ -5940,6 +5957,12 @@ pub fn config_diff(ctx: &OutputContext) -> Result<()> {
         "self_healing.hook_starts_daemon"
     );
     diff_field!(
+        "self_healing.daemon_installs_hooks",
+        config.self_healing.daemon_installs_hooks,
+        defaults.self_healing.daemon_installs_hooks,
+        "self_healing.daemon_installs_hooks"
+    );
+    diff_field!(
         "self_healing.auto_start_cooldown_secs",
         config.self_healing.auto_start_cooldown_secs,
         defaults.self_healing.auto_start_cooldown_secs,
@@ -6275,6 +6298,7 @@ pub async fn diagnose(command: &str, ctx: &OutputContext) -> Result<()> {
             command,
             toolchain.as_ref(),
             required_runtime,
+            CommandPriority::Normal,
             0,
             None,
         )
@@ -8326,6 +8350,7 @@ mod tests {
             },
             self_healing: ConfigSelfHealingSection {
                 hook_starts_daemon: true,
+                daemon_installs_hooks: true,
                 auto_start_cooldown_secs: 30,
                 auto_start_timeout_secs: 3,
             },
