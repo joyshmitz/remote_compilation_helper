@@ -1,0 +1,59 @@
+# Codecov configuration for Remote Compilation Helper
+# https://docs.codecov.com/docs/codecov-yaml
+
+coverage:
+  precision: 2
+  round: down
+  range: "60...100"
+
+  status:
+    project:
+      default:
+        target: 65%
+        threshold: 2%
+        informational: false
+    patch:
+      default:
+        target: 70%
+        threshold: 5%
+        informational: false
+
+# Ignore files that shouldn't affect coverage metrics
+ignore:
+  - "tests/**/*"
+  - "**/tests/**/*"
+  - "benches/**/*"
+  - "**/benches/**/*"
+  - "**/mod.rs"  # Often just re-exports
+  - "rch-telemetry/**/*"  # Telemetry is optional tooling
+
+# Flag management for per-crate breakdown
+flags:
+  rch:
+    paths:
+      - rch/src/
+    carryforward: true
+  rchd:
+    paths:
+      - rchd/src/
+    carryforward: true
+  rch-common:
+    paths:
+      - rch-common/src/
+    carryforward: true
+  rch-wkr:
+    paths:
+      - rch-wkr/src/
+    carryforward: true
+
+# Comment configuration for PRs
+comment:
+  layout: "header, diff, flags, components"
+  behavior: default
+  require_changes: true
+  require_base: false
+  require_head: true
+
+# GitHub checks integration
+github_checks:
+  annotations: true
