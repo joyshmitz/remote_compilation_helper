@@ -501,6 +501,13 @@ fn restore_from_backup(
 }
 
 /// Stop daemon gracefully, waiting for builds to complete.
+#[cfg(not(unix))]
+async fn stop_daemon_gracefully(_timeout_secs: u64) -> Result<bool, UpdateError> {
+    Ok(false)
+}
+
+/// Stop daemon gracefully, waiting for builds to complete.
+#[cfg(unix)]
 async fn stop_daemon_gracefully(_timeout_secs: u64) -> Result<bool, UpdateError> {
     use std::path::Path;
     use tokio::io::AsyncWriteExt;

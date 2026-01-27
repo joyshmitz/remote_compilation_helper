@@ -8,6 +8,7 @@ description = "Remote Compilation Helper - Local daemon for worker orchestration
 [[bin]]
 name = "rchd"
 path = "src/main.rs"
+required-features = ["unix-sockets"]
 
 [dependencies]
 rch-common = { workspace = true }
@@ -50,8 +51,9 @@ hyper = { workspace = true }
 rich_rust = { workspace = true, optional = true }
 
 [features]
-default = ["rich-ui"]
+default = ["rich-ui", "unix-sockets"]
 rich-ui = ["rich_rust"]
+unix-sockets = []
 
 [dev-dependencies]
 tempfile = "3.22.0"

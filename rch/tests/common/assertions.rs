@@ -1,5 +1,6 @@
 use std::path::Path;
 
+#[allow(dead_code)]
 pub fn assert_contains(haystack: &str, needle: &str) {
     assert!(
         haystack.contains(needle),

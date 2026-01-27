@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Daemon stability smoke tests.
 //!
 //! These tests exercise rchd startup/shutdown cycles and bursty request

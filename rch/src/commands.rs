@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+#[cfg(unix)]
 use tokio::net::UnixStream;
 use tokio::process::Command;
 use tracing::debug;
@@ -6241,6 +6242,12 @@ struct DaemonHealthResponse {
     uptime_seconds: u64,
 }
 
+#[cfg(not(unix))]
+async fn query_daemon_health(_socket_path: &str) -> Result<DaemonHealthResponse> {
+    bail!("daemon health check is only supported on Unix-like platforms");
+}
+
+#[cfg(unix)]
 async fn query_daemon_health(socket_path: &str) -> Result<DaemonHealthResponse> {
     let stream = UnixStream::connect(socket_path).await?;
     let (reader, mut writer) = stream.into_split();
@@ -7238,6 +7245,12 @@ fn which_rchd() -> PathBuf {
 }
 
 /// Helper to send command to daemon socket.
+#[cfg(not(unix))]
+async fn send_daemon_command(_command: &str) -> Result<String> {
+    bail!("daemon commands are only supported on Unix-like platforms");
+}
+
+#[cfg(unix)]
 async fn send_daemon_command(command: &str) -> Result<String> {
     let socket_path = Path::new(DEFAULT_SOCKET_PATH);
     if !socket_path.exists() {

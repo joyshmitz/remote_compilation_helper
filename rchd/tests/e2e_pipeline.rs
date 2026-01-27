@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! E2E Tests for Full Build Pipeline
 //!
 //! Tests the complete build pipeline from hook interception to artifact retrieval:

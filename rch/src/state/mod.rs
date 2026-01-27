@@ -476,8 +476,15 @@ fn detect_daemon_state(issues: &mut Vec<StateIssue>) -> Result<DaemonState> {
 
     // Try to check if daemon is responsive
     let socket_responsive = if socket_exists {
-        // A simple check - try to connect
-        std::os::unix::net::UnixStream::connect(&socket_path).is_ok()
+        // A simple check - try to connect (Unix sockets only).
+        #[cfg(unix)]
+        {
+            std::os::unix::net::UnixStream::connect(&socket_path).is_ok()
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
     } else {
         false
     };

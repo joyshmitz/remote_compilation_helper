@@ -12,6 +12,7 @@ use directories::ProjectDirs;
 use rch_common::ApiResponse;
 use rch_telemetry::TelemetryStorage;
 use serde::Serialize;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -808,6 +809,7 @@ fn check_ssh_keys(
     }
 }
 
+#[cfg(unix)]
 fn check_ssh_key_permissions(
     key_path: &Path,
     options: &DoctorOptions,
@@ -928,6 +930,30 @@ fn check_ssh_key_permissions(
             fix_applied: false,
             fix_message: None,
         },
+    }
+}
+
+#[cfg(not(unix))]
+fn check_ssh_key_permissions(
+    key_path: &Path,
+    _options: &DoctorOptions,
+    _fixes_applied: &mut Vec<FixApplied>,
+) -> CheckResult {
+    let key_name = key_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    CheckResult {
+        category: "ssh".to_string(),
+        name: key_name,
+        status: CheckStatus::Skipped,
+        message: "SSH key permission checks are not supported on this platform".to_string(),
+        details: Some(key_path.display().to_string()),
+        suggestion: None,
+        fixable: false,
+        fix_applied: false,
+        fix_message: None,
     }
 }
 
@@ -2471,6 +2497,7 @@ mod tests {
         // TEST PASS: wait_for_socket timeout
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_start_daemon_with_fake_rchd_creates_socket_file() {
         // TEST START: start_daemon_with_binary uses -s socket path and waits for file

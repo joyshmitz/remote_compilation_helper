@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! E2E Tests for Worker Connectivity and Execution
 //!
 //! Tests worker connectivity, health checks, circuit breaker states,

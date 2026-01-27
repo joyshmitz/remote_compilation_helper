@@ -1,3 +1,4 @@
+#![cfg(unix)]
 #[path = "../common/mod.rs"]
 mod common;
 

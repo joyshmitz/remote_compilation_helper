@@ -22,6 +22,7 @@
 //! 9. stdout/stderr stream separation
 
 use rch_common::classify_command;
+use rch_common::testing::{TestLogger, TestPhase};
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -98,12 +99,23 @@ fn make_hook_input(command: &str) -> String {
 // =============================================================================
 #[test]
 fn test_cargo_build_json_response_purity() {
+    let logger = TestLogger::for_test("test_cargo_build_json_response_purity");
+
     let input = make_hook_input("cargo build --release");
+    logger.log(
+        TestPhase::Execute,
+        "Running hook with cargo build --release",
+    );
     let (exit_code, stdout, _stderr, _duration) = run_hook(&input);
 
-    // Hook should exit 0 (either allow or successful deny)
-    // Non-zero may indicate daemon issues but shouldn't affect JSON purity
-    eprintln!("Exit code: {}", exit_code);
+    logger.log_with_data(
+        TestPhase::Verify,
+        "Checking JSON response purity",
+        serde_json::json!({
+            "exit_code": exit_code,
+            "stdout_len": stdout.len()
+        }),
+    );
 
     // If there's output, it must be valid JSON
     if !stdout.is_empty() {
@@ -120,6 +132,7 @@ fn test_cargo_build_json_response_purity() {
         !contains_ansi_codes(&stdout),
         "cargo build stdout contains ANSI codes!"
     );
+    logger.pass();
 }
 
 // =============================================================================
@@ -210,12 +223,21 @@ fn test_no_rch_rich_output_leakage() {
 // =============================================================================
 #[test]
 fn test_compilation_classification_timing() {
+    let logger = TestLogger::for_test("test_compilation_classification_timing");
     let commands = [
         "cargo build",
         "cargo test",
         "cargo check",
         "cargo build --release",
     ];
+
+    logger.log(
+        TestPhase::Setup,
+        format!(
+            "Testing classification timing for {} commands",
+            commands.len()
+        ),
+    );
 
     for cmd in commands {
         // NOTE: This test measures classifier latency, not full hook process startup.
@@ -237,6 +259,18 @@ fn test_compilation_classification_timing() {
         }
         let total = start.elapsed();
 
+        logger.log_with_data(
+            TestPhase::Verify,
+            format!("Classification timing for '{}'", cmd),
+            serde_json::json!({
+                "command": cmd,
+                "iterations": iterations,
+                "total_ns": total.as_nanos() as u64,
+                "avg_ns": (total.as_nanos() / u128::from(iterations)) as u64,
+                "threshold_ms": MAX_COMPILATION_HOOK_TIME_MS
+            }),
+        );
+
         let avg_ns = total.as_nanos() / u128::from(iterations);
         let max_allowed_ns = u128::from(MAX_COMPILATION_HOOK_TIME_MS) * 1_000_000;
         assert!(
@@ -252,6 +286,7 @@ fn test_compilation_classification_timing() {
             cmd, avg_ns, iterations
         );
     }
+    logger.pass();
 }
 
 // =============================================================================

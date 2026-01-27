@@ -184,8 +184,28 @@ impl TestLogger {
     }
 
     /// Create log file in target/test-logs/.
+    ///
+    /// Uses CARGO_TARGET_DIR or falls back to looking for target/ in current dir
+    /// or parent directories.
     fn create_log_file(test_name: &str) -> std::io::Result<std::fs::File> {
-        let log_dir = PathBuf::from("target/test-logs");
+        // Try to find workspace target dir from environment
+        let log_dir = if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
+            PathBuf::from(target_dir).join("test-logs")
+        } else {
+            // Look for target/ directory starting from current dir
+            let mut cwd = std::env::current_dir().unwrap_or_default();
+            loop {
+                let target = cwd.join("target");
+                if target.is_dir() {
+                    break target.join("test-logs");
+                }
+                if !cwd.pop() {
+                    // Fallback to current directory
+                    break PathBuf::from("target/test-logs");
+                }
+            }
+        };
+
         std::fs::create_dir_all(&log_dir)?;
 
         let safe_name = test_name.replace("::", "_").replace(['/', '\\'], "_");

@@ -14,6 +14,7 @@ mod config;
 mod doctor;
 pub mod error;
 pub mod fleet;
+#[cfg_attr(not(unix), path = "hook_windows.rs")]
 mod hook;
 pub mod state;
 mod status_display;

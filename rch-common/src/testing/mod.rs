@@ -26,4 +26,4 @@
 
 mod log;
 
-pub use log::{TestLogEntry, TestLogger, TestPhase, TestResult};
+pub use log::{TerminalInfo, TestLogEntry, TestLogger, TestPhase, TestResult};

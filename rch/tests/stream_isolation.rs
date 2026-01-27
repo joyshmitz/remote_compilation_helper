@@ -10,6 +10,9 @@
 //!
 //! Implements bead: bd-2ans
 
+mod common;
+
+use common::logging::{TestLogger, TestPhase, init_test_logging};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -105,10 +108,15 @@ fn run_hook(input: &str) -> (i32, String, String) {
 
 #[test]
 fn test_status_json_outputs_to_stdout() {
+    init_test_logging();
+    let logger = TestLogger::for_test("test_status_json_outputs_to_stdout");
+
     require_binary!();
 
+    logger.log(TestPhase::Execute, "Running status --json");
     let (_exit, stdout, _stderr) = run_rch(&["status", "--json"]);
 
+    logger.log(TestPhase::Verify, "Checking JSON validity");
     // stdout should be valid JSON or empty
     if !stdout.is_empty() {
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
@@ -125,14 +133,21 @@ fn test_status_json_outputs_to_stdout() {
         "status --json stdout contains ANSI codes: {}",
         stdout
     );
+
+    logger.pass();
 }
 
 #[test]
 fn test_workers_list_json_outputs_to_stdout() {
+    init_test_logging();
+    let logger = TestLogger::for_test("test_workers_list_json_outputs_to_stdout");
+
     require_binary!();
 
+    logger.log(TestPhase::Execute, "Running workers list --json");
     let (_exit, stdout, _stderr) = run_rch(&["workers", "list", "--json"]);
 
+    logger.log(TestPhase::Verify, "Checking JSON validity");
     if !stdout.is_empty() {
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
         assert!(
@@ -147,6 +162,8 @@ fn test_workers_list_json_outputs_to_stdout() {
         "workers list --json stdout contains ANSI codes: {}",
         stdout
     );
+
+    logger.pass();
 }
 
 #[test]

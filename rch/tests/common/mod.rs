@@ -6,4 +6,5 @@ pub mod logging;
 pub use assertions::{assert_contains, assert_path_exists};
 #[allow(unused_imports)]
 pub use fixtures::TestProject;
+#[allow(unused_imports)]
 pub use logging::init_test_logging;

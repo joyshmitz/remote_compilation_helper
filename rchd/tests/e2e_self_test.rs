@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! E2E tests for self-test infrastructure (hash verification + remote compilation).
 
 use anyhow::{Context, Result, bail};

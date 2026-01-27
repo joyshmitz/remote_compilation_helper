@@ -10,6 +10,7 @@ use crate::events::EventBus;
 use crate::health::{HealthConfig, probe_worker_capabilities};
 use crate::metrics;
 use crate::metrics::budget::{self, BudgetStatusResponse};
+use crate::reload;
 use crate::telemetry::collect_telemetry_from_worker;
 use anyhow::{Result, anyhow};
 use chrono::{Duration as ChronoDuration, Utc};
@@ -71,6 +72,8 @@ enum ApiRequest {
     },
     SelfTestRun(SelfTestRunRequest),
     Shutdown,
+    /// Reload configuration (workers.toml) without restart.
+    Reload,
     CancelBuild {
         build_id: u64,
         force: bool,
@@ -640,6 +643,31 @@ pub async fn handle_connection(
                 "application/json",
             )
         }
+        Ok(ApiRequest::Reload) => {
+            metrics::inc_requests("reload");
+            // Perform reload using the reload module
+            let result = reload::reload_workers(&ctx.pool, None, true).await;
+            match result {
+                Ok(reload_result) => {
+                    let response = serde_json::json!({
+                        "success": true,
+                        "added": reload_result.added,
+                        "updated": reload_result.updated,
+                        "removed": reload_result.removed,
+                        "warnings": reload_result.warnings
+                    });
+                    (response.to_string(), "application/json")
+                }
+                Err(e) => {
+                    warn!("Configuration reload failed: {}", e);
+                    let response = serde_json::json!({
+                        "success": false,
+                        "error": e.to_string()
+                    });
+                    (response.to_string(), "application/json")
+                }
+            }
+        }
         Ok(ApiRequest::CancelBuild { build_id, force }) => {
             metrics::inc_requests("cancel-build");
             let response = handle_cancel_build(&ctx, build_id, force).await;
@@ -834,6 +862,10 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
 
     if path == "/shutdown" && method == "POST" {
         return Ok(ApiRequest::Shutdown);
+    }
+
+    if path == "/reload" && method == "POST" {
+        return Ok(ApiRequest::Reload);
     }
 
     // Build cancellation endpoints
@@ -2461,6 +2493,22 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_request_reload() {
+        let req = parse_request("POST /reload").unwrap();
+        match req {
+            ApiRequest::Reload => {}
+            _ => panic!("expected reload request"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_reload_get_fails() {
+        // GET method should not work for reload
+        let result = parse_request("GET /reload");
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_parse_request_telemetry_poll() {
         let req = parse_request("POST /telemetry/poll?worker=css").unwrap();
         match req {
@@ -2841,5 +2889,24 @@ mod tests {
         let response = handle_select_worker(&ctx, request).await.unwrap();
         let worker = response.worker.unwrap();
         assert_eq!(worker.id.as_str(), "worker2");
+    }
+
+    // =========================================================================
+    // Reload API tests
+    // =========================================================================
+
+    #[test]
+    fn test_parse_request_reload_requires_post() {
+        // Only POST should work for reload
+        let result = parse_request("POST /reload");
+        assert!(result.is_ok());
+        match result.unwrap() {
+            ApiRequest::Reload => {}
+            _ => panic!("expected reload request"),
+        }
+
+        // GET should fail
+        let result = parse_request("GET /reload");
+        assert!(result.is_err());
     }
 }

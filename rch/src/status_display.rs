@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use std::io::Write;
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(unix)]
 use tokio::net::UnixStream;
 
 /// Default daemon socket path.
@@ -34,6 +35,12 @@ pub async fn query_daemon_full_status() -> Result<DaemonFullStatusResponse> {
 }
 
 /// Send a status command to the daemon.
+#[cfg(not(unix))]
+async fn send_status_command() -> Result<String> {
+    anyhow::bail!("daemon status is only supported on Unix-like platforms");
+}
+
+#[cfg(unix)]
 async fn send_status_command() -> Result<String> {
     let stream = UnixStream::connect(default_socket_path())
         .await

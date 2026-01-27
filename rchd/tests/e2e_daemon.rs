@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! E2E Tests for Daemon Lifecycle and API
 //!
 //! Tests daemon start/stop/restart and all API endpoints.
