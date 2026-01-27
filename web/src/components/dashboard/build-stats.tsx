@@ -18,7 +18,7 @@ function formatDuration(ms: number): string {
 
 export function BuildStatsCard({ stats }: BuildStatsProps) {
   const successRate = stats.total_builds > 0
-    ? Math.round((stats.successful_builds / stats.total_builds) * 100)
+    ? Math.round((stats.success_count / stats.total_builds) * 100)
     : 0;
 
   return (
@@ -43,14 +43,14 @@ export function BuildStatsCard({ stats }: BuildStatsProps) {
             <CheckCircle className="w-4 h-4 text-healthy" />
             <div>
               <div className="text-sm text-muted-foreground">Successful</div>
-              <div className="font-mono">{stats.successful_builds}</div>
+              <div className="font-mono">{stats.success_count}</div>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <XCircle className="w-4 h-4 text-error" />
             <div>
               <div className="text-sm text-muted-foreground">Failed</div>
-              <div className="font-mono">{stats.failed_builds}</div>
+              <div className="font-mono">{stats.failure_count}</div>
             </div>
           </div>
         </div>

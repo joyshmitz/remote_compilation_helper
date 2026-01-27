@@ -95,7 +95,7 @@ export function BuildHistoryTable({ activeBuilds, recentBuilds }: BuildHistoryTa
       kind: 'completed' as const,
       status: (build.exit_code === 0 ? 'success' : 'failed') as BuildStatus,
       project_id: build.project_id,
-      worker_id: build.worker_id,
+      worker_id: build.worker_id ?? (build.location === 'local' ? 'local' : 'unknown'),
       command: build.command,
       duration_ms: build.duration_ms,
       timestamp: build.completed_at,
