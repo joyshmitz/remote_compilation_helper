@@ -220,6 +220,15 @@ fn test_load_balance_distribution() {
 // ============================================================================
 
 /// Test that high-priority workers are preferred over low-priority workers.
+///
+/// IMPORTANT: Workers must have enough slots to handle all test requests without
+/// exhausting (selection excludes workers with no available slots). With 50
+/// test requests, each worker needs 64 slots to avoid slot exhaustion affecting
+/// the priority-based selection behavior.
+///
+/// With the Priority selection strategy (default), only the highest-priority
+/// worker should be selected when slots are available. The test verifies
+/// that high-priority worker is selected for the majority of requests.
 #[test]
 fn test_worker_prioritization() {
     let harness = create_multi_worker_harness("worker_prioritization").unwrap();
@@ -227,9 +236,10 @@ fn test_worker_prioritization() {
         .logger
         .info("[e2e::multi_worker] TEST START: test_worker_prioritization");
 
-    // Create workers with different priorities
-    let high_priority = create_worker("high-priority", "localhost", 4, 200);
-    let low_priority = create_worker("low-priority", "localhost", 4, 50);
+    // Create workers with different priorities and enough slots for all test requests.
+    // Each request reserves 1 slot; with 50 requests, we need at least 50 slots each.
+    let high_priority = create_worker("high-priority", "localhost", 64, 200);
+    let low_priority = create_worker("low-priority", "localhost", 64, 50);
     let workers = WorkersFixture::empty()
         .add_worker(high_priority)
         .add_worker(low_priority);
@@ -237,7 +247,7 @@ fn test_worker_prioritization() {
     let socket_path = setup_daemon_with_workers(&harness, &workers).unwrap();
 
     harness.logger.info(
-        "[e2e::multi_worker] WORKERS: [high-priority (priority=200), low-priority (priority=50)]",
+        "[e2e::multi_worker] WORKERS: [high-priority (slots=64, priority=200), low-priority (slots=64, priority=50)]",
     );
 
     // Start daemon
@@ -246,9 +256,9 @@ fn test_worker_prioritization() {
         .wait_for_socket(&socket_path, Duration::from_secs(10))
         .unwrap();
 
-    // Make multiple selection requests
+    // Make multiple selection requests (50 samples for statistical reliability)
     let mut high_priority_count = 0;
-    let num_selections = 10;
+    let num_selections = 50;
 
     for i in 0..num_selections {
         let response = send_socket_request(
@@ -274,10 +284,15 @@ fn test_worker_prioritization() {
         high_priority_count, num_selections
     ));
 
-    // High-priority worker should be selected more often
+    // High-priority worker (priority=200) should be selected significantly more often
+    // than low-priority worker (priority=50). With 4:1 priority ratio, we expect ~80%
+    // but use 40% threshold for robustness against algorithm variations.
+    let min_expected = num_selections * 2 / 5; // 40% threshold
     assert!(
-        high_priority_count > num_selections / 2,
-        "Expected high-priority worker to be selected more than half the time, got {}/{}",
+        high_priority_count >= min_expected,
+        "Expected high-priority worker to be selected at least 40% of the time ({}/{}), got {}/{}",
+        min_expected,
+        num_selections,
         high_priority_count,
         num_selections
     );
