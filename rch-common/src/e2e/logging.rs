@@ -1,7 +1,9 @@
 //! E2E Test Logging Library
 //!
 //! Provides comprehensive logging infrastructure for end-to-end tests.
-//! Captures detailed logs including process output, timing, and structured data.
+//!
+//! - Real-time console output (human-readable)
+//! - Per-test JSONL log files under `target/test-logs/` (machine-readable)
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -244,7 +246,7 @@ impl TestLogger {
         let file_writer = if let Some(ref dir) = config.log_dir {
             if fs::create_dir_all(dir).is_ok() {
                 let filename = format!(
-                    "{}_{}.log",
+                    "{}_{}.jsonl",
                     test_name.replace("::", "_").replace(" ", "_"),
                     Utc::now().format("%Y%m%d_%H%M%S")
                 );
@@ -323,11 +325,12 @@ impl TestLogger {
             }
         }
 
-        // Write to file if configured
+        // Write JSONL to file if configured
         if let Ok(mut writer) = self.file_writer.lock()
             && let Some(ref mut w) = *writer
+            && let Ok(json) = serde_json::to_string(&entry)
         {
-            let _ = writeln!(w, "{entry}");
+            let _ = writeln!(w, "{json}");
             let _ = w.flush();
         }
 
@@ -589,7 +592,8 @@ impl TestLoggerBuilder {
     /// Create a new builder for the given test name.
     ///
     /// By default, logs are written to `target/test-logs/` relative to the
-    /// workspace root (auto-detected via CARGO_MANIFEST_DIR).
+    /// workspace root (auto-detected via CARGO_MANIFEST_DIR) as JSONL (one
+    /// JSON object per line).
     pub fn new(test_name: &str) -> Self {
         // Auto-set log directory for standardized JSONL output
         let config = LoggerConfig {
