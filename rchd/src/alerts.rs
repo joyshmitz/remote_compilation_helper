@@ -393,18 +393,25 @@ impl AlertManager {
             },
         };
 
-        // Spawn a blocking task for the HTTP request
-        // Note: In production, this should use an async HTTP client
+        // Spawn a blocking task for the HTTP request with retry support
         let url = url.clone();
         let timeout_secs = webhook.timeout_secs;
-        let _retry_count = webhook.retry_count;
+        let retry_count = webhook.retry_count;
+        let secret = webhook.secret.clone();
 
         std::thread::spawn(move || {
-            if let Err(e) = send_webhook_sync(&url, &payload, timeout_secs) {
+            if let Err(e) = send_webhook_with_retries(
+                &url,
+                &payload,
+                timeout_secs,
+                retry_count,
+                secret.as_deref(),
+            ) {
                 warn!(
                     url = %url,
                     error = %e,
-                    "Failed to dispatch webhook"
+                    retries = retry_count,
+                    "Failed to dispatch webhook after all retries"
                 );
             } else {
                 debug!(
@@ -434,8 +441,82 @@ struct WebhookDetails {
     alert_id: String,
 }
 
+/// Send webhook with retry support.
+fn send_webhook_with_retries(
+    url: &str,
+    payload: &WebhookPayload,
+    timeout_secs: u64,
+    retry_count: u32,
+    secret: Option<&str>,
+) -> Result<(), String> {
+    let mut last_error = String::new();
+    let max_attempts = retry_count.saturating_add(1); // retry_count=0 means 1 attempt
+
+    for attempt in 0..max_attempts {
+        if attempt > 0 {
+            // Exponential backoff: 100ms, 200ms, 400ms, ...
+            let backoff_ms = 100 * (1u64 << (attempt - 1).min(5));
+            std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+            debug!(
+                url = %url,
+                attempt = attempt + 1,
+                max_attempts = max_attempts,
+                "Retrying webhook dispatch"
+            );
+        }
+
+        match send_webhook_sync(url, payload, timeout_secs, secret) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last_error = e;
+                // Only retry on transient errors (network issues, 5xx)
+                if !is_retryable_webhook_error(&last_error) {
+                    return Err(last_error);
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "Failed after {} attempts: {}",
+        max_attempts, last_error
+    ))
+}
+
+/// Check if a webhook error is worth retrying.
+fn is_retryable_webhook_error(error: &str) -> bool {
+    // Retry on network errors and server errors (5xx)
+    error.contains("timed out")
+        || error.contains("connection")
+        || error.contains("HTTP 5")
+        || error.contains("network")
+}
+
+/// Compute HMAC-SHA256 signature for webhook payload.
+fn compute_hmac_signature(body: &str, secret: &str) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    type HmacSha256 = Hmac<Sha256>;
+
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
+    mac.update(body.as_bytes());
+    let result = mac.finalize();
+    let bytes = result.into_bytes();
+
+    // Return as hex string with sha256= prefix (GitHub-style)
+    let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+    format!("sha256={}", hex)
+}
+
 /// Send webhook synchronously (blocking).
-fn send_webhook_sync(url: &str, payload: &WebhookPayload, timeout_secs: u64) -> Result<(), String> {
+fn send_webhook_sync(
+    url: &str,
+    payload: &WebhookPayload,
+    timeout_secs: u64,
+    secret: Option<&str>,
+) -> Result<(), String> {
     let body = serde_json::to_string(payload).map_err(|e| e.to_string())?;
 
     // Build agent with timeout configuration
@@ -444,10 +525,18 @@ fn send_webhook_sync(url: &str, payload: &WebhookPayload, timeout_secs: u64) -> 
         .build();
     let agent = ureq::Agent::new_with_config(config);
 
-    let response = agent
+    let mut request = agent
         .post(url)
         .content_type("application/json")
-        .header("User-Agent", "rchd-alerts/1.0")
+        .header("User-Agent", "rchd-alerts/1.0");
+
+    // Add HMAC signature if secret is configured
+    if let Some(secret) = secret {
+        let signature = compute_hmac_signature(&body, secret);
+        request = request.header("X-Signature-256", &signature);
+    }
+
+    let response = request
         .send(&body)
         .map_err(|e: ureq::Error| e.to_string())?;
 
@@ -1053,5 +1142,80 @@ mod tests {
 
         let alerts = manager.active_alerts();
         assert_ne!(alerts[0].id, alerts[1].id);
+    }
+
+    // ============== HMAC Signing Tests ==============
+
+    #[test]
+    fn test_hmac_signature_format() {
+        let _guard = test_guard!();
+        let body = r#"{"event":"test"}"#;
+        let secret = "test-secret-key";
+
+        let signature = compute_hmac_signature(body, secret);
+
+        // Should start with sha256= prefix
+        assert!(signature.starts_with("sha256="));
+
+        // Signature should be hex-encoded (64 chars for SHA256)
+        let hex_part = &signature[7..];
+        assert_eq!(hex_part.len(), 64);
+        assert!(hex_part.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_hmac_signature_consistency() {
+        let _guard = test_guard!();
+        let body = r#"{"event":"worker_offline","message":"test"}"#;
+        let secret = "my-webhook-secret";
+
+        // Same input should produce same signature
+        let sig1 = compute_hmac_signature(body, secret);
+        let sig2 = compute_hmac_signature(body, secret);
+        assert_eq!(sig1, sig2);
+    }
+
+    #[test]
+    fn test_hmac_signature_different_secrets() {
+        let _guard = test_guard!();
+        let body = r#"{"event":"test"}"#;
+
+        let sig1 = compute_hmac_signature(body, "secret-1");
+        let sig2 = compute_hmac_signature(body, "secret-2");
+
+        // Different secrets should produce different signatures
+        assert_ne!(sig1, sig2);
+    }
+
+    #[test]
+    fn test_hmac_signature_different_bodies() {
+        let _guard = test_guard!();
+        let secret = "same-secret";
+
+        let sig1 = compute_hmac_signature(r#"{"a":1}"#, secret);
+        let sig2 = compute_hmac_signature(r#"{"a":2}"#, secret);
+
+        // Different bodies should produce different signatures
+        assert_ne!(sig1, sig2);
+    }
+
+    // ============== Retry Logic Tests ==============
+
+    #[test]
+    fn test_retryable_webhook_error_detection() {
+        let _guard = test_guard!();
+
+        // Should retry on network/server errors
+        assert!(is_retryable_webhook_error("connection timed out"));
+        assert!(is_retryable_webhook_error("HTTP 502"));
+        assert!(is_retryable_webhook_error("HTTP 503"));
+        assert!(is_retryable_webhook_error("HTTP 500"));
+        assert!(is_retryable_webhook_error("network unreachable"));
+
+        // Should NOT retry on client errors
+        assert!(!is_retryable_webhook_error("HTTP 400"));
+        assert!(!is_retryable_webhook_error("HTTP 401"));
+        assert!(!is_retryable_webhook_error("HTTP 404"));
+        assert!(!is_retryable_webhook_error("invalid JSON"));
     }
 }

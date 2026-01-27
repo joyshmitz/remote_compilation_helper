@@ -682,7 +682,10 @@ mod tests {
         let build: QueuedBuildFromApi = serde_json::from_value(json).unwrap();
         assert_eq!(build.position, 3);
         assert_eq!(build.slots_needed, 4);
-        assert_eq!(build.estimated_start, Some("2026-01-16T12:05:00Z".to_string()));
+        assert_eq!(
+            build.estimated_start,
+            Some("2026-01-16T12:05:00Z".to_string())
+        );
     }
 
     #[test]
@@ -718,7 +721,10 @@ mod tests {
 
         let issue: IssueFromApi = serde_json::from_value(json).unwrap();
         assert_eq!(issue.severity, "warning");
-        assert_eq!(issue.remediation, Some("Check network connection".to_string()));
+        assert_eq!(
+            issue.remediation,
+            Some("Check network connection".to_string())
+        );
     }
 
     #[test]

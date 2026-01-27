@@ -166,10 +166,7 @@ mod tests {
         let output = HookOutput::deny(reason);
 
         if let HookOutput::Deny(deny) = output {
-            assert_eq!(
-                deny.hook_specific_output.permission_decision_reason,
-                reason
-            );
+            assert_eq!(deny.hook_specific_output.permission_decision_reason, reason);
             assert_eq!(deny.hook_specific_output.permission_decision, "deny");
             assert_eq!(deny.hook_specific_output.hook_event_name, "PreToolUse");
         } else {

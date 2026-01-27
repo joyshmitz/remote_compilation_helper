@@ -417,4 +417,375 @@ mod tests {
         let uptime = json["uptime_seconds"].as_u64().unwrap();
         assert!((100..=105).contains(&uptime));
     }
+
+    // ==================== Additional Coverage Tests ====================
+
+    #[test]
+    fn test_http_state_clone() {
+        let state1 = make_test_state();
+        let state2 = state1.clone();
+
+        assert_eq!(state1.version, state2.version);
+        assert_eq!(state1.pid, state2.pid);
+        // started_at is Copy, so we can compare durations
+        let diff = state1.started_at.elapsed().as_nanos() as i64
+            - state2.started_at.elapsed().as_nanos() as i64;
+        assert!(diff.abs() < 1_000_000); // Within 1ms
+    }
+
+    #[test]
+    fn test_http_state_fields() {
+        let pool = WorkerPool::new();
+        let started_at = Instant::now();
+        let state = HttpState {
+            pool,
+            version: "1.2.3-custom",
+            started_at,
+            pid: 54321,
+        };
+
+        assert_eq!(state.version, "1.2.3-custom");
+        assert_eq!(state.pid, 54321);
+    }
+
+    #[tokio::test]
+    async fn test_create_router_returns_valid_router() {
+        let state = make_test_state();
+        let router = create_router(state);
+
+        // Test that the router responds to all registered routes
+        let routes = ["/health", "/ready", "/budget", "/metrics"];
+
+        for route in routes {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(route).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+
+            // All routes should return either 200 or 503 (for ready without workers)
+            let status = response.status();
+            assert!(
+                status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
+                "Route {} returned unexpected status {}",
+                route,
+                status
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_router_returns_404_for_unknown_routes() {
+        let state = make_test_state();
+        let router = create_router(state);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/unknown")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_ready_endpoint_with_degraded_worker() {
+        use rch_common::{WorkerConfig, WorkerId, WorkerStatus};
+
+        let pool = WorkerPool::new();
+
+        let worker_config = WorkerConfig {
+            id: WorkerId::new("degraded-worker"),
+            host: "degraded.example.com".to_string(),
+            user: "testuser".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 4,
+            priority: 100,
+            tags: vec![],
+        };
+        pool.add_worker(worker_config.clone()).await;
+
+        // Set worker status to Degraded
+        if let Some(worker) = pool.get(&worker_config.id).await {
+            worker.set_status(WorkerStatus::Degraded).await;
+        }
+
+        let state = HttpState {
+            pool,
+            version: "0.1.0-test",
+            started_at: Instant::now(),
+            pid: 12345,
+        };
+        let router = create_router(state);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Degraded workers are still considered available
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["status"], "ready");
+        assert_eq!(json["workers_available"], true);
+    }
+
+    #[tokio::test]
+    async fn test_ready_endpoint_with_unreachable_worker() {
+        use rch_common::{WorkerConfig, WorkerId, WorkerStatus};
+
+        let pool = WorkerPool::new();
+
+        let worker_config = WorkerConfig {
+            id: WorkerId::new("unreachable-worker"),
+            host: "unreachable.example.com".to_string(),
+            user: "testuser".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 4,
+            priority: 100,
+            tags: vec![],
+        };
+        pool.add_worker(worker_config.clone()).await;
+
+        // Set worker status to Unreachable
+        if let Some(worker) = pool.get(&worker_config.id).await {
+            worker.set_status(WorkerStatus::Unreachable).await;
+        }
+
+        let state = HttpState {
+            pool,
+            version: "0.1.0-test",
+            started_at: Instant::now(),
+            pid: 12345,
+        };
+        let router = create_router(state);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Unreachable workers are NOT considered available
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["status"], "not_ready");
+        assert_eq!(json["workers_available"], false);
+    }
+
+    #[tokio::test]
+    async fn test_ready_endpoint_mixed_worker_status() {
+        use rch_common::{WorkerConfig, WorkerId, WorkerStatus};
+
+        let pool = WorkerPool::new();
+
+        // Add healthy worker
+        let healthy_config = WorkerConfig {
+            id: WorkerId::new("healthy-worker"),
+            host: "healthy.example.com".to_string(),
+            user: "testuser".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 4,
+            priority: 100,
+            tags: vec![],
+        };
+        pool.add_worker(healthy_config).await;
+
+        // Add unreachable worker
+        let unreachable_config = WorkerConfig {
+            id: WorkerId::new("unreachable-worker"),
+            host: "unreachable.example.com".to_string(),
+            user: "testuser".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 8,
+            priority: 50,
+            tags: vec![],
+        };
+        pool.add_worker(unreachable_config.clone()).await;
+
+        // Set second worker as unreachable
+        if let Some(worker) = pool.get(&unreachable_config.id).await {
+            worker.set_status(WorkerStatus::Unreachable).await;
+        }
+
+        let state = HttpState {
+            pool,
+            version: "0.1.0-test",
+            started_at: Instant::now(),
+            pid: 12345,
+        };
+        let router = create_router(state);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Should be ready because at least one worker is healthy
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["status"], "ready");
+        assert_eq!(json["available_workers"], 1); // Only healthy worker
+        assert_eq!(json["total_available_slots"], 4); // Only healthy worker's slots
+    }
+
+    #[tokio::test]
+    async fn test_ready_endpoint_worker_with_no_slots() {
+        use rch_common::{WorkerConfig, WorkerId};
+
+        let pool = WorkerPool::new();
+
+        let worker_config = WorkerConfig {
+            id: WorkerId::new("busy-worker"),
+            host: "busy.example.com".to_string(),
+            user: "testuser".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 2,
+            priority: 100,
+            tags: vec![],
+        };
+        pool.add_worker(worker_config.clone()).await;
+
+        // Reserve all slots
+        if let Some(worker) = pool.get(&worker_config.id).await {
+            worker.reserve_slots(2).await;
+        }
+
+        let state = HttpState {
+            pool,
+            version: "0.1.0-test",
+            started_at: Instant::now(),
+            pid: 12345,
+        };
+        let router = create_router(state);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Worker is healthy but has no slots - should be not ready
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["status"], "not_ready");
+        assert_eq!(json["workers_available"], false);
+    }
+
+    #[tokio::test]
+    async fn test_health_endpoint_json_content_type() {
+        let state = make_test_state();
+        let router = create_router(state);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Check content type is JSON
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .map(|v| v.to_str().unwrap_or(""));
+        assert!(content_type.unwrap().contains("application/json"));
+    }
+
+    #[tokio::test]
+    async fn test_metrics_endpoint_content_type() {
+        let _ = metrics::register_metrics();
+        let state = make_test_state();
+        let router = create_router(state);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Check content type is text/plain with version
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .map(|v| v.to_str().unwrap_or(""));
+        assert!(
+            content_type.unwrap().contains("text/plain"),
+            "Expected text/plain content type for metrics"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_budget_endpoint_returns_json() {
+        let state = make_test_state();
+        let router = create_router(state);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/budget")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Check content type is JSON
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .map(|v| v.to_str().unwrap_or(""));
+        assert!(content_type.unwrap().contains("application/json"));
+    }
 }

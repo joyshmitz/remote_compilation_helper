@@ -414,4 +414,300 @@ mod tests {
         let empty_stats = CacheStats::default();
         assert_eq!(empty_stats.hit_rate(), 0.0);
     }
+
+    // ==================== Additional Coverage Tests ====================
+
+    #[test]
+    fn test_cache_config_default() {
+        let config = CacheConfig::default();
+        assert_eq!(config.max_entries, DEFAULT_CACHE_CAPACITY);
+        assert_eq!(config.ttl, Duration::from_secs(DEFAULT_TTL_SECS));
+        assert!(config.enabled);
+    }
+
+    #[test]
+    fn test_cache_config_clone() {
+        let config = CacheConfig {
+            max_entries: 500,
+            ttl: Duration::from_secs(60),
+            enabled: false,
+        };
+
+        let cloned = config.clone();
+        assert_eq!(cloned.max_entries, 500);
+        assert_eq!(cloned.ttl, Duration::from_secs(60));
+        assert!(!cloned.enabled);
+    }
+
+    #[test]
+    fn test_cache_config_debug() {
+        let config = CacheConfig {
+            max_entries: 100,
+            ttl: Duration::from_secs(10),
+            enabled: true,
+        };
+
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("max_entries"));
+        assert!(debug.contains("100"));
+        assert!(debug.contains("enabled"));
+    }
+
+    #[test]
+    fn test_cache_stats_clone() {
+        let stats = CacheStats {
+            hits: 100,
+            misses: 50,
+            len: 25,
+        };
+
+        let cloned = stats.clone();
+        assert_eq!(cloned.hits, 100);
+        assert_eq!(cloned.misses, 50);
+        assert_eq!(cloned.len, 25);
+    }
+
+    #[test]
+    fn test_cache_stats_debug() {
+        let stats = CacheStats {
+            hits: 42,
+            misses: 13,
+            len: 10,
+        };
+
+        let debug = format!("{:?}", stats);
+        assert!(debug.contains("hits"));
+        assert!(debug.contains("42"));
+        assert!(debug.contains("misses"));
+        assert!(debug.contains("13"));
+    }
+
+    #[test]
+    fn test_cache_stats_default() {
+        let stats = CacheStats::default();
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.misses, 0);
+        assert_eq!(stats.len, 0);
+        assert_eq!(stats.hit_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_classification_cache_default() {
+        let cache = ClassificationCache::default();
+        // Default cache should be enabled with default capacity
+        let stats = cache.stats();
+        assert_eq!(stats.len, 0);
+
+        // Should be able to store and retrieve
+        cache.put("test cmd", make_classification(true));
+        assert!(cache.get("test cmd").is_some());
+    }
+
+    #[test]
+    fn test_cache_clear() {
+        let cache = ClassificationCache::with_defaults();
+
+        // Add some entries
+        cache.put("cmd1", make_classification(true));
+        cache.put("cmd2", make_classification(true));
+        cache.put("cmd3", make_classification(false));
+
+        let stats = cache.stats();
+        assert_eq!(stats.len, 3);
+
+        // Clear the cache
+        cache.clear();
+
+        let stats = cache.stats();
+        assert_eq!(stats.len, 0);
+
+        // All entries should be gone
+        assert!(cache.get("cmd1").is_none());
+        assert!(cache.get("cmd2").is_none());
+        assert!(cache.get("cmd3").is_none());
+    }
+
+    #[test]
+    fn test_cache_zero_capacity() {
+        // Zero capacity should be clamped to 1
+        let config = CacheConfig {
+            max_entries: 0,
+            ttl: Duration::from_secs(30),
+            enabled: true,
+        };
+        let cache = ClassificationCache::new(config);
+
+        // Should still be able to cache one entry
+        cache.put("cmd1", make_classification(true));
+        assert!(cache.get("cmd1").is_some());
+
+        // Adding another will evict the first
+        cache.put("cmd2", make_classification(true));
+        assert!(cache.get("cmd2").is_some());
+        assert!(cache.get("cmd1").is_none());
+    }
+
+    #[test]
+    fn test_global_cache_returns_same_instance() {
+        let cache1 = global_cache();
+        let cache2 = global_cache();
+
+        // Should be the same instance (pointer equality)
+        assert!(std::ptr::eq(cache1, cache2));
+    }
+
+    #[test]
+    fn test_cache_hit_rate_various_scenarios() {
+        // 50% hit rate
+        let stats = CacheStats {
+            hits: 50,
+            misses: 50,
+            len: 10,
+        };
+        assert!((stats.hit_rate() - 50.0).abs() < 0.001);
+
+        // 100% hit rate
+        let stats = CacheStats {
+            hits: 100,
+            misses: 0,
+            len: 5,
+        };
+        assert!((stats.hit_rate() - 100.0).abs() < 0.001);
+
+        // 0% hit rate
+        let stats = CacheStats {
+            hits: 0,
+            misses: 100,
+            len: 0,
+        };
+        assert!((stats.hit_rate() - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_cache_put_overwrites_existing() {
+        let cache = ClassificationCache::with_defaults();
+
+        // Store initial classification
+        let class1 = make_classification(true);
+        cache.put("cmd", class1);
+
+        let cached = cache.get("cmd").unwrap();
+        assert!(cached.is_compilation);
+
+        // Overwrite with different classification
+        let class2 = make_classification(false);
+        cache.put("cmd", class2);
+
+        let cached = cache.get("cmd").unwrap();
+        assert!(!cached.is_compilation);
+    }
+
+    #[test]
+    fn test_cache_normalize_key_consistency() {
+        let cache = ClassificationCache::with_defaults();
+
+        // All these should normalize to the same key
+        cache.put("  command  ", make_classification(true));
+        assert!(cache.get("command").is_some());
+        assert!(cache.get("  command").is_some());
+        assert!(cache.get("command  ").is_some());
+        assert!(cache.get("  command  ").is_some());
+
+        // Stats should show only 1 entry
+        let stats = cache.stats();
+        assert_eq!(stats.len, 1);
+    }
+
+    #[test]
+    fn test_cache_multiple_misses_tracked() {
+        let cache = ClassificationCache::with_defaults();
+
+        // Multiple misses on different commands
+        cache.get("missing1");
+        cache.get("missing2");
+        cache.get("missing3");
+        cache.get("missing4");
+        cache.get("missing5");
+
+        let stats = cache.stats();
+        assert_eq!(stats.misses, 5);
+        assert_eq!(stats.hits, 0);
+    }
+
+    #[test]
+    fn test_cache_multiple_hits_tracked() {
+        let cache = ClassificationCache::with_defaults();
+
+        cache.put("cmd", make_classification(true));
+
+        // Multiple hits on same command
+        cache.get("cmd");
+        cache.get("cmd");
+        cache.get("cmd");
+
+        let stats = cache.stats();
+        assert_eq!(stats.hits, 3);
+    }
+
+    #[test]
+    fn test_cached_classification_debug() {
+        // Test CachedClassification Debug trait
+        let entry = CachedClassification {
+            classification: make_classification(true),
+            inserted_at: Instant::now(),
+            ttl: Duration::from_secs(30),
+        };
+
+        let debug = format!("{:?}", entry);
+        assert!(debug.contains("classification"));
+        assert!(debug.contains("inserted_at"));
+        assert!(debug.contains("ttl"));
+    }
+
+    #[test]
+    fn test_cached_classification_clone() {
+        let entry = CachedClassification {
+            classification: make_classification(true),
+            inserted_at: Instant::now(),
+            ttl: Duration::from_secs(60),
+        };
+
+        let cloned = entry.clone();
+        assert_eq!(
+            cloned.classification.is_compilation,
+            entry.classification.is_compilation
+        );
+        assert_eq!(cloned.ttl, entry.ttl);
+    }
+
+    #[test]
+    fn test_cached_classification_is_expired() {
+        let entry = CachedClassification {
+            classification: make_classification(true),
+            inserted_at: Instant::now(),
+            ttl: Duration::from_millis(10),
+        };
+
+        // Should not be expired immediately
+        assert!(!entry.is_expired());
+
+        // Wait for expiration
+        std::thread::sleep(Duration::from_millis(15));
+
+        // Should be expired now
+        assert!(entry.is_expired());
+    }
+
+    #[test]
+    fn test_cache_non_compilation_classification() {
+        let cache = ClassificationCache::with_defaults();
+
+        // Cache a non-compilation command
+        let class = make_classification(false);
+        cache.put("echo hello", class);
+
+        let cached = cache.get("echo hello").unwrap();
+        assert!(!cached.is_compilation);
+        assert!(cached.kind.is_none());
+    }
 }

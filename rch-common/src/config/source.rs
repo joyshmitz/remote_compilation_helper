@@ -278,7 +278,8 @@ mod tests {
 
     #[test]
     fn test_config_value_source_user_config_label() {
-        let source = ConfigValueSource::UserConfig(PathBuf::from("/home/user/.config/rch/config.toml"));
+        let source =
+            ConfigValueSource::UserConfig(PathBuf::from("/home/user/.config/rch/config.toml"));
         assert!(source.label().starts_with("user:"));
         assert!(source.label().contains("config.toml"));
     }
@@ -437,9 +438,7 @@ mod tests {
     #[test]
     fn test_sourced_map_chain() {
         let sourced = Sourced::new("hello".to_string(), ConfigSource::UserConfig);
-        let mapped = sourced
-            .map(|s| s.len())
-            .map(|n| n * 2);
+        let mapped = sourced.map(|s| s.len()).map(|n| n * 2);
 
         assert_eq!(mapped.value, 10);
         assert_eq!(mapped.source, ConfigSource::UserConfig);
@@ -453,7 +452,10 @@ mod tests {
             retries: u32,
         }
 
-        let config = Config { timeout: 30, retries: 3 };
+        let config = Config {
+            timeout: 30,
+            retries: 3,
+        };
         let sourced = Sourced::new(config.clone(), ConfigSource::Environment);
 
         assert_eq!(sourced.value.timeout, 30);

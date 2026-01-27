@@ -1449,9 +1449,7 @@ mod tests {
         let _guard = test_guard!();
         let pool = WorkerPool::new();
         let config = HealthConfig::default();
-        let alert_manager = Arc::new(AlertManager::new(
-            crate::alerts::AlertConfig::default(),
-        ));
+        let alert_manager = Arc::new(AlertManager::new(crate::alerts::AlertConfig::default()));
 
         let monitor = HealthMonitor::new(pool, config).with_alert_manager(alert_manager.clone());
 

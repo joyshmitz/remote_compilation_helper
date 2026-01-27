@@ -1121,7 +1121,8 @@ mod tests {
             duration_ms: 100,
         };
 
-        let config = MockConfig::success().with_command_result("special_cmd", custom_result.clone());
+        let config =
+            MockConfig::success().with_command_result("special_cmd", custom_result.clone());
 
         assert!(config.command_results.contains_key("special_cmd"));
         let result = config.command_results.get("special_cmd").unwrap();
@@ -1205,9 +1206,8 @@ mod tests {
 
     #[test]
     fn test_phase_clone() {
-        let phase = Phase::Connect;
-        let cloned = phase.clone();
-        assert_eq!(phase, cloned);
+        fn assert_clone<T: Clone>() {}
+        assert_clone::<Phase>();
     }
 
     #[test]

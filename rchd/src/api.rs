@@ -4145,8 +4145,7 @@ mod tests {
         }
 
         // Request limit of 5000 - should be clamped to 1000
-        let response =
-            handle_speedscore_history(&ctx, &WorkerId::new("worker1"), 7, 5000, 0).await;
+        let response = handle_speedscore_history(&ctx, &WorkerId::new("worker1"), 7, 5000, 0).await;
         match response {
             ApiResponse::Ok(r) => {
                 assert_eq!(r.pagination.limit, 1000);
@@ -4297,8 +4296,7 @@ mod tests {
         let ctx = make_test_context(pool);
 
         // Record a test build
-        let result =
-            handle_record_build(&ctx, &WorkerId::new("worker1"), "my-project", true).await;
+        let result = handle_record_build(&ctx, &WorkerId::new("worker1"), "my-project", true).await;
         assert!(result.is_ok());
     }
 

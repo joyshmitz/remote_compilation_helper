@@ -323,4 +323,268 @@ mod tests {
 
         info!("TEST PASS: test_request_contains_timestamp");
     }
+
+    // ==================== Additional Coverage Tests ====================
+
+    #[test]
+    fn test_benchmark_request_clone() {
+        let request = BenchmarkRequest {
+            request_id: "req-clone".to_string(),
+            worker_id: WorkerId::new("clone-worker"),
+            requested_at: Utc::now(),
+        };
+
+        let cloned = request.clone();
+        assert_eq!(cloned.request_id, request.request_id);
+        assert_eq!(cloned.worker_id, request.worker_id);
+        assert_eq!(cloned.requested_at, request.requested_at);
+    }
+
+    #[test]
+    fn test_benchmark_request_debug() {
+        let request = BenchmarkRequest {
+            request_id: "req-debug".to_string(),
+            worker_id: WorkerId::new("debug-worker"),
+            requested_at: Utc::now(),
+        };
+
+        let debug_str = format!("{:?}", request);
+        assert!(debug_str.contains("req-debug"));
+        assert!(debug_str.contains("debug-worker"));
+    }
+
+    #[test]
+    fn test_rate_limit_info_clone() {
+        let info = RateLimitInfo {
+            retry_after: ChronoDuration::seconds(30),
+            last_triggered_at: Utc::now(),
+        };
+
+        let cloned = info.clone();
+        assert_eq!(cloned.retry_after, info.retry_after);
+        assert_eq!(cloned.last_triggered_at, info.last_triggered_at);
+    }
+
+    #[test]
+    fn test_rate_limit_info_debug() {
+        let info = RateLimitInfo {
+            retry_after: ChronoDuration::seconds(45),
+            last_triggered_at: Utc::now(),
+        };
+
+        let debug_str = format!("{:?}", info);
+        assert!(debug_str.contains("retry_after"));
+        assert!(debug_str.contains("last_triggered_at"));
+    }
+
+    #[test]
+    fn test_pop_empty_queue() {
+        let queue = BenchmarkQueue::new(ChronoDuration::seconds(10));
+        assert!(queue.pop().is_none());
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn test_is_empty_after_pop_all() {
+        let queue = BenchmarkQueue::new(ChronoDuration::seconds(0));
+
+        // Add some requests
+        for i in 0..3 {
+            queue
+                .enqueue(WorkerId::new(format!("w{}", i)), format!("r{}", i))
+                .unwrap();
+        }
+
+        assert!(!queue.is_empty());
+        assert_eq!(queue.len(), 3);
+
+        // Pop all
+        queue.pop();
+        queue.pop();
+        queue.pop();
+
+        assert!(queue.is_empty());
+        assert_eq!(queue.len(), 0);
+    }
+
+    #[test]
+    fn test_len_accurate() {
+        let queue = BenchmarkQueue::new(ChronoDuration::seconds(0));
+
+        assert_eq!(queue.len(), 0);
+
+        queue
+            .enqueue(WorkerId::new("w1"), "r1".to_string())
+            .unwrap();
+        assert_eq!(queue.len(), 1);
+
+        queue
+            .enqueue(WorkerId::new("w2"), "r2".to_string())
+            .unwrap();
+        assert_eq!(queue.len(), 2);
+
+        queue.pop();
+        assert_eq!(queue.len(), 1);
+
+        queue.pop();
+        assert_eq!(queue.len(), 0);
+    }
+
+    #[test]
+    fn test_clear_does_not_affect_rate_limits() {
+        let queue = BenchmarkQueue::new(ChronoDuration::seconds(60));
+        let worker_id = WorkerId::new("clear-test");
+
+        // First enqueue should succeed
+        queue.enqueue(worker_id.clone(), "r1".to_string()).unwrap();
+
+        // Clear the queue
+        queue.clear();
+        assert!(queue.is_empty());
+
+        // Second enqueue for same worker should still be rate limited
+        let result = queue.enqueue(worker_id.clone(), "r2".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rate_limit_info_fields() {
+        let queue = BenchmarkQueue::new(ChronoDuration::seconds(100));
+        let worker_id = WorkerId::new("rate-info-test");
+
+        // First enqueue
+        let before_first = Utc::now();
+        queue.enqueue(worker_id.clone(), "r1".to_string()).unwrap();
+        let after_first = Utc::now();
+
+        // Second enqueue should fail with rate limit info
+        let result = queue.enqueue(worker_id.clone(), "r2".to_string());
+        let info = result.unwrap_err();
+
+        // Verify retry_after is reasonable (close to 100 seconds)
+        assert!(info.retry_after.num_seconds() > 90);
+        assert!(info.retry_after.num_seconds() <= 100);
+
+        // Verify last_triggered_at is from the first request
+        assert!(info.last_triggered_at >= before_first);
+        assert!(info.last_triggered_at <= after_first);
+    }
+
+    #[test]
+    fn test_min_interval_accessor() {
+        let interval = ChronoDuration::minutes(5);
+        let queue = BenchmarkQueue::new(interval);
+
+        assert_eq!(queue.min_interval().num_minutes(), 5);
+        assert_eq!(queue.min_interval().num_seconds(), 300);
+    }
+
+    #[test]
+    fn test_enqueue_pop_cycle() {
+        let queue = BenchmarkQueue::new(ChronoDuration::seconds(0));
+
+        // Cycle 1
+        queue
+            .enqueue(WorkerId::new("w1"), "r1".to_string())
+            .unwrap();
+        let popped = queue.pop().unwrap();
+        assert_eq!(popped.request_id, "r1");
+        assert!(queue.is_empty());
+
+        // Cycle 2
+        queue
+            .enqueue(WorkerId::new("w2"), "r2".to_string())
+            .unwrap();
+        let popped = queue.pop().unwrap();
+        assert_eq!(popped.request_id, "r2");
+        assert!(queue.is_empty());
+
+        // Cycle 3
+        queue
+            .enqueue(WorkerId::new("w3"), "r3".to_string())
+            .unwrap();
+        let popped = queue.pop().unwrap();
+        assert_eq!(popped.request_id, "r3");
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn test_different_workers_different_rate_limits() {
+        let queue = BenchmarkQueue::new(ChronoDuration::seconds(60));
+
+        let w1 = WorkerId::new("w1");
+        let w2 = WorkerId::new("w2");
+
+        // Both first requests succeed
+        assert!(queue.enqueue(w1.clone(), "r1".to_string()).is_ok());
+        assert!(queue.enqueue(w2.clone(), "r2".to_string()).is_ok());
+
+        // Both second requests fail (rate limited)
+        assert!(queue.enqueue(w1.clone(), "r3".to_string()).is_err());
+        assert!(queue.enqueue(w2.clone(), "r4".to_string()).is_err());
+
+        // Queue should have 2 requests
+        assert_eq!(queue.len(), 2);
+    }
+
+    #[test]
+    fn test_very_long_interval() {
+        let queue = BenchmarkQueue::new(ChronoDuration::hours(24));
+        let worker_id = WorkerId::new("long-interval");
+
+        // First request succeeds
+        assert!(queue.enqueue(worker_id.clone(), "r1".to_string()).is_ok());
+
+        // Second request fails with ~24 hour retry
+        let result = queue.enqueue(worker_id.clone(), "r2".to_string());
+        let info = result.unwrap_err();
+
+        // retry_after should be close to 24 hours (allow some seconds tolerance)
+        let retry_seconds = info.retry_after.num_seconds();
+        assert!(
+            retry_seconds > 86000,
+            "Expected retry_after > 86000 seconds, got {}",
+            retry_seconds
+        );
+        assert!(
+            retry_seconds <= 86400,
+            "Expected retry_after <= 86400 seconds, got {}",
+            retry_seconds
+        );
+    }
+
+    #[test]
+    fn test_concurrent_access_simulation() {
+        // This tests thread safety indirectly by accessing queue from main thread
+        let queue = BenchmarkQueue::new(ChronoDuration::seconds(0));
+
+        // Interleave enqueue and len checks
+        for i in 0..100 {
+            queue
+                .enqueue(WorkerId::new(format!("w{}", i)), format!("r{}", i))
+                .unwrap();
+            assert_eq!(queue.len(), i + 1);
+        }
+
+        // Pop and verify
+        for i in 0..100 {
+            let item = queue.pop().unwrap();
+            assert_eq!(item.request_id, format!("r{}", i));
+        }
+
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn test_request_id_preserved() {
+        let queue = BenchmarkQueue::new(ChronoDuration::seconds(0));
+        let unique_id = "unique-request-id-12345-abcde";
+
+        queue
+            .enqueue(WorkerId::new("w1"), unique_id.to_string())
+            .unwrap();
+
+        let popped = queue.pop().unwrap();
+        assert_eq!(popped.request_id, unique_id);
+    }
 }

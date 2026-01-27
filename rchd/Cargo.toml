@@ -50,6 +50,10 @@ hyper = { workspace = true }
 # HTTP client for webhook dispatch
 ureq = { workspace = true }
 
+# HMAC signing for webhooks
+hmac = "0.12"
+sha2 = "0.10"
+
 # Rich terminal output (optional)
 rich_rust = { workspace = true, optional = true }
 

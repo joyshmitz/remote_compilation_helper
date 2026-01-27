@@ -573,9 +573,11 @@ mod tests {
         init_test_logging();
         info!("TEST START: test_artifact_manifest_serialization");
 
-        let mut manifest = ArtifactManifest::default();
-        manifest.created_at = 1706380800;
-        manifest.worker_id = Some("worker-1".to_string());
+        let mut manifest = ArtifactManifest {
+            created_at: 1706380800,
+            worker_id: Some("worker-1".to_string()),
+            ..ArtifactManifest::default()
+        };
         manifest.files.insert(
             "test.bin".to_string(),
             FileHash {
@@ -883,9 +885,11 @@ mod tests {
         init_test_logging();
         info!("TEST START: test_artifact_manifest_clone");
 
-        let mut manifest = ArtifactManifest::default();
-        manifest.created_at = 12345;
-        manifest.worker_id = Some("worker".to_string());
+        let mut manifest = ArtifactManifest {
+            created_at: 12345,
+            worker_id: Some("worker".to_string()),
+            ..ArtifactManifest::default()
+        };
         manifest.files.insert(
             "f.txt".to_string(),
             FileHash {

@@ -1017,7 +1017,10 @@ mod tests {
     #[test]
     fn test_transfer_counters_copy() {
         let _guard = test_guard!();
-        let tc1 = TransferCounters { up: 100.0, down: 200.0 };
+        let tc1 = TransferCounters {
+            up: 100.0,
+            down: 200.0,
+        };
         let tc2 = tc1; // Copy
         assert_eq!(tc2.up, 100.0);
         assert_eq!(tc2.down, 200.0);

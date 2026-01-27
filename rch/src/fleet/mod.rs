@@ -633,3 +633,161 @@ pub async fn history(ctx: &OutputContext, limit: usize, worker: Option<String>) 
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::context::{ColorChoice, OutputConfig, OutputContext, OutputFormat, OutputMode};
+    use crate::ui::writer::SharedOutputBuffer;
+
+    fn json_ctx() -> (OutputContext, SharedOutputBuffer) {
+        let stdout = SharedOutputBuffer::new();
+        let stderr = SharedOutputBuffer::new();
+
+        let ctx = OutputContext::with_writers(
+            OutputConfig {
+                force_mode: Some(OutputMode::Json),
+                color: ColorChoice::Never,
+                format: OutputFormat::Json,
+                ..OutputConfig::default()
+            },
+            stdout.as_writer(false),
+            stderr.as_writer(false),
+        );
+
+        (ctx, stdout)
+    }
+
+    fn plain_ctx() -> OutputContext {
+        let stdout = SharedOutputBuffer::new();
+        let stderr = SharedOutputBuffer::new();
+
+        OutputContext::with_writers(
+            OutputConfig {
+                force_mode: Some(OutputMode::Plain),
+                color: ColorChoice::Never,
+                ..OutputConfig::default()
+            },
+            stdout.as_writer(false),
+            stderr.as_writer(false),
+        )
+    }
+
+    fn parse_json_output(stdout: &SharedOutputBuffer) -> serde_json::Value {
+        let raw = stdout.to_string_lossy();
+        let trimmed = raw.trim();
+        assert!(!trimmed.is_empty(), "expected JSON output, got empty");
+        serde_json::from_str(trimmed).expect("output should be valid JSON")
+    }
+
+    fn assert_is_api_response(value: &serde_json::Value) {
+        assert!(
+            value.get("success").is_some(),
+            "expected ApiResponse-like JSON with 'success' field"
+        );
+        assert!(
+            value.get("command").is_some(),
+            "expected ApiResponse-like JSON with 'command' field"
+        );
+    }
+
+    #[tokio::test]
+    async fn deploy_dry_run_emits_json_response() {
+        let (ctx, stdout) = json_ctx();
+        deploy(
+            &ctx, None, 2, None, 0, false, false, true, false, 0, true, false, None, None,
+        )
+        .await
+        .unwrap();
+
+        let value = parse_json_output(&stdout);
+        assert_is_api_response(&value);
+    }
+
+    #[tokio::test]
+    async fn rollback_dry_run_emits_json_response() {
+        let (ctx, stdout) = json_ctx();
+        rollback(&ctx, None, None, 2, false, true).await.unwrap();
+
+        let value = parse_json_output(&stdout);
+        assert_is_api_response(&value);
+    }
+
+    #[tokio::test]
+    async fn status_emits_json_response() {
+        let (ctx, stdout) = json_ctx();
+        status(&ctx, Some("definitely-missing-worker".to_string()), false)
+            .await
+            .unwrap();
+
+        let value = parse_json_output(&stdout);
+        assert_is_api_response(&value);
+    }
+
+    #[tokio::test]
+    async fn verify_emits_json_response() {
+        let (ctx, stdout) = json_ctx();
+        verify(&ctx, Some("definitely-missing-worker".to_string()))
+            .await
+            .unwrap();
+
+        let value = parse_json_output(&stdout);
+        assert_is_api_response(&value);
+    }
+
+    #[tokio::test]
+    async fn drain_requires_worker_or_all_in_json_mode() {
+        let (ctx, stdout) = json_ctx();
+        drain(&ctx, None, false, 10).await.unwrap();
+
+        let value = parse_json_output(&stdout);
+        assert_is_api_response(&value);
+        assert!(
+            !value
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            "expected validation error"
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_all_ok_even_when_no_workers_configured() {
+        let (ctx, stdout) = json_ctx();
+        drain(&ctx, None, true, 10).await.unwrap();
+
+        let value = parse_json_output(&stdout);
+        assert_is_api_response(&value);
+    }
+
+    #[tokio::test]
+    async fn history_emits_json_response() {
+        let (ctx, stdout) = json_ctx();
+        history(&ctx, 5, None).await.unwrap();
+
+        let value = parse_json_output(&stdout);
+        assert_is_api_response(&value);
+    }
+
+    #[tokio::test]
+    async fn non_json_modes_do_not_panic() {
+        let ctx = plain_ctx();
+
+        deploy(
+            &ctx, None, 2, None, 0, false, false, true, false, 0, true, false, None, None,
+        )
+        .await
+        .unwrap();
+
+        rollback(&ctx, None, None, 2, false, true).await.unwrap();
+        status(&ctx, Some("definitely-missing-worker".to_string()), false)
+            .await
+            .unwrap();
+        verify(&ctx, Some("definitely-missing-worker".to_string()))
+            .await
+            .unwrap();
+        drain(&ctx, None, false, 10).await.unwrap();
+        drain(&ctx, None, true, 10).await.unwrap();
+        history(&ctx, 5, None).await.unwrap();
+    }
+}

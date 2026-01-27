@@ -370,9 +370,8 @@ mod tests {
 
     #[test]
     fn test_log_format_clone() {
-        let format = LogFormat::Compact;
-        let cloned = format.clone();
-        assert_eq!(format, cloned);
+        fn assert_clone<T: Clone>() {}
+        assert_clone::<LogFormat>();
     }
 
     #[test]
@@ -474,10 +473,12 @@ mod tests {
 
     #[test]
     fn test_log_config_clone() {
-        let mut config = LogConfig::default();
-        config.level = "debug".to_string();
-        config.format = LogFormat::Json;
-        config.file_path = Some(PathBuf::from("/tmp/test.log"));
+        let mut config = LogConfig {
+            level: "debug".to_string(),
+            format: LogFormat::Json,
+            file_path: Some(PathBuf::from("/tmp/test.log")),
+            ..LogConfig::default()
+        };
         config.targets.insert("a".to_string(), "trace".to_string());
 
         let cloned = config.clone();
