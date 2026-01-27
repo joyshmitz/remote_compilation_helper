@@ -455,8 +455,11 @@ fn test_release_worker() {
         .unwrap();
 
     // Send release-worker request (include empty body line for timing data)
-    let response =
-        send_socket_request(&socket_path, "POST /release-worker?worker=worker1&slots=2\n").unwrap();
+    let response = send_socket_request(
+        &socket_path,
+        "POST /release-worker?worker=worker1&slots=2\n",
+    )
+    .unwrap();
 
     // Verify response
     assert!(
