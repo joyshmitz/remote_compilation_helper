@@ -173,23 +173,30 @@ impl OutputContext {
     fn is_known_subcommand(arg: &str) -> bool {
         matches!(
             arg,
-            "status"
-                | "workers"
+            // Main subcommands
+            "init"
+                | "setup" // alias for init
                 | "daemon"
+                | "workers"
+                | "status"
+                | "queue"
+                | "cancel"
                 | "config"
+                | "diagnose"
                 | "hook"
-                | "install"
+                | "agents"
+                | "completions"
                 | "doctor"
+                | "self-test"
+                | "update"
+                | "fleet"
+                | "speedscore"
+                | "dashboard"
+                | "web"
+                | "schema"
+                // Clap-provided
                 | "version"
                 | "help"
-                | "completions"
-                | "benchmark"
-                | "release"
-                | "drain"
-                | "undrain"
-                | "enable"
-                | "disable"
-                | "speedscores"
         )
     }
 
