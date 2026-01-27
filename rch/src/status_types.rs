@@ -394,4 +394,418 @@ mod tests {
         assert_eq!(status.daemon.pid, 1234);
         assert_eq!(status.stats.total_builds, 10);
     }
+
+    // ==================== Additional Coverage Tests ====================
+
+    #[test]
+    fn test_format_duration_zero() {
+        let _guard = test_guard!();
+        assert_eq!(format_duration(0), "0s");
+    }
+
+    #[test]
+    fn test_format_duration_exactly_one_minute() {
+        let _guard = test_guard!();
+        assert_eq!(format_duration(60), "1m 0s");
+    }
+
+    #[test]
+    fn test_format_duration_exactly_one_hour() {
+        let _guard = test_guard!();
+        assert_eq!(format_duration(3600), "1h 0m");
+    }
+
+    #[test]
+    fn test_format_duration_multiple_hours() {
+        let _guard = test_guard!();
+        assert_eq!(format_duration(7200), "2h 0m");
+        assert_eq!(format_duration(7320), "2h 2m"); // 2h 2m
+        assert_eq!(format_duration(86400), "24h 0m"); // 24 hours
+    }
+
+    #[test]
+    fn test_format_bytes_zero() {
+        let _guard = test_guard!();
+        assert_eq!(format_bytes(0), "0 B");
+    }
+
+    #[test]
+    fn test_format_bytes_exact_boundaries() {
+        let _guard = test_guard!();
+        assert_eq!(format_bytes(1024), "1.0 KB");
+        assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0 GB");
+    }
+
+    #[test]
+    fn test_format_bytes_just_under_kb() {
+        let _guard = test_guard!();
+        assert_eq!(format_bytes(1023), "1023 B");
+    }
+
+    #[test]
+    fn test_extract_json_body_unix_newlines() {
+        let _guard = test_guard!();
+        let response = "HTTP/1.0 200 OK\nContent-Type: application/json\n\n{\"test\": 2}";
+        assert_eq!(extract_json_body(response), Some("{\"test\": 2}"));
+    }
+
+    #[test]
+    fn test_extract_json_body_no_headers() {
+        let _guard = test_guard!();
+        let response = "{\"direct\": \"json\"}";
+        assert_eq!(extract_json_body(response), Some("{\"direct\": \"json\"}"));
+    }
+
+    #[test]
+    fn test_extract_json_body_empty() {
+        let _guard = test_guard!();
+        assert_eq!(extract_json_body(""), Some(""));
+    }
+
+    #[test]
+    fn test_speed_score_rating_excellent() {
+        let _guard = test_guard!();
+        let score = SpeedScoreViewFromApi {
+            total: 95.0,
+            cpu_score: 95.0,
+            memory_score: 95.0,
+            disk_score: 95.0,
+            network_score: 95.0,
+            compilation_score: 95.0,
+            measured_at: "2026-01-16T12:00:00Z".to_string(),
+            version: 1,
+        };
+        assert_eq!(score.rating(), "Excellent");
+    }
+
+    #[test]
+    fn test_speed_score_rating_very_good() {
+        let _guard = test_guard!();
+        let score = SpeedScoreViewFromApi {
+            total: 80.0,
+            cpu_score: 80.0,
+            memory_score: 80.0,
+            disk_score: 80.0,
+            network_score: 80.0,
+            compilation_score: 80.0,
+            measured_at: "2026-01-16T12:00:00Z".to_string(),
+            version: 1,
+        };
+        assert_eq!(score.rating(), "Very Good");
+    }
+
+    #[test]
+    fn test_speed_score_rating_good() {
+        let _guard = test_guard!();
+        let score = SpeedScoreViewFromApi {
+            total: 65.0,
+            cpu_score: 65.0,
+            memory_score: 65.0,
+            disk_score: 65.0,
+            network_score: 65.0,
+            compilation_score: 65.0,
+            measured_at: "2026-01-16T12:00:00Z".to_string(),
+            version: 1,
+        };
+        assert_eq!(score.rating(), "Good");
+    }
+
+    #[test]
+    fn test_speed_score_rating_average() {
+        let _guard = test_guard!();
+        let score = SpeedScoreViewFromApi {
+            total: 50.0,
+            cpu_score: 50.0,
+            memory_score: 50.0,
+            disk_score: 50.0,
+            network_score: 50.0,
+            compilation_score: 50.0,
+            measured_at: "2026-01-16T12:00:00Z".to_string(),
+            version: 1,
+        };
+        assert_eq!(score.rating(), "Average");
+    }
+
+    #[test]
+    fn test_speed_score_rating_below_average() {
+        let _guard = test_guard!();
+        let score = SpeedScoreViewFromApi {
+            total: 35.0,
+            cpu_score: 35.0,
+            memory_score: 35.0,
+            disk_score: 35.0,
+            network_score: 35.0,
+            compilation_score: 35.0,
+            measured_at: "2026-01-16T12:00:00Z".to_string(),
+            version: 1,
+        };
+        assert_eq!(score.rating(), "Below Average");
+    }
+
+    #[test]
+    fn test_speed_score_rating_poor() {
+        let _guard = test_guard!();
+        let score = SpeedScoreViewFromApi {
+            total: 20.0,
+            cpu_score: 20.0,
+            memory_score: 20.0,
+            disk_score: 20.0,
+            network_score: 20.0,
+            compilation_score: 20.0,
+            measured_at: "2026-01-16T12:00:00Z".to_string(),
+            version: 1,
+        };
+        assert_eq!(score.rating(), "Poor");
+    }
+
+    #[test]
+    fn test_speed_score_rating_boundaries() {
+        let _guard = test_guard!();
+        // Exactly at boundary values
+        let mut score = SpeedScoreViewFromApi {
+            total: 90.0,
+            cpu_score: 90.0,
+            memory_score: 90.0,
+            disk_score: 90.0,
+            network_score: 90.0,
+            compilation_score: 90.0,
+            measured_at: "2026-01-16T12:00:00Z".to_string(),
+            version: 1,
+        };
+        assert_eq!(score.rating(), "Excellent");
+
+        score.total = 89.99;
+        assert_eq!(score.rating(), "Very Good");
+
+        score.total = 75.0;
+        assert_eq!(score.rating(), "Very Good");
+
+        score.total = 74.99;
+        assert_eq!(score.rating(), "Good");
+
+        score.total = 60.0;
+        assert_eq!(score.rating(), "Good");
+
+        score.total = 59.99;
+        assert_eq!(score.rating(), "Average");
+
+        score.total = 45.0;
+        assert_eq!(score.rating(), "Average");
+
+        score.total = 44.99;
+        assert_eq!(score.rating(), "Below Average");
+
+        score.total = 30.0;
+        assert_eq!(score.rating(), "Below Average");
+
+        score.total = 29.99;
+        assert_eq!(score.rating(), "Poor");
+    }
+
+    #[test]
+    fn test_deserialize_worker_status() {
+        let _guard = test_guard!();
+        let json = serde_json::json!({
+            "id": "worker-1",
+            "host": "192.168.1.100",
+            "user": "ubuntu",
+            "status": "Healthy",
+            "circuit_state": "Closed",
+            "used_slots": 4,
+            "total_slots": 16,
+            "speed_score": 85.5,
+            "last_error": null
+        });
+
+        let worker: WorkerStatusFromApi = serde_json::from_value(json).unwrap();
+        assert_eq!(worker.id, "worker-1");
+        assert_eq!(worker.total_slots, 16);
+        assert_eq!(worker.speed_score, 85.5);
+        assert!(worker.last_error.is_none());
+    }
+
+    #[test]
+    fn test_deserialize_worker_status_with_error() {
+        let _guard = test_guard!();
+        let json = serde_json::json!({
+            "id": "worker-2",
+            "host": "192.168.1.101",
+            "user": "ubuntu",
+            "status": "Unreachable",
+            "circuit_state": "Open",
+            "used_slots": 0,
+            "total_slots": 8,
+            "speed_score": 0.0,
+            "last_error": "Connection refused",
+            "consecutive_failures": 5,
+            "recovery_in_secs": 300
+        });
+
+        let worker: WorkerStatusFromApi = serde_json::from_value(json).unwrap();
+        assert_eq!(worker.last_error, Some("Connection refused".to_string()));
+        assert_eq!(worker.consecutive_failures, 5);
+        assert_eq!(worker.recovery_in_secs, Some(300));
+    }
+
+    #[test]
+    fn test_deserialize_active_build() {
+        let _guard = test_guard!();
+        let json = serde_json::json!({
+            "id": 12345,
+            "project_id": "rch",
+            "worker_id": "worker-1",
+            "command": "cargo build --release",
+            "started_at": "2026-01-16T12:00:00Z"
+        });
+
+        let build: ActiveBuildFromApi = serde_json::from_value(json).unwrap();
+        assert_eq!(build.id, 12345);
+        assert_eq!(build.project_id, "rch");
+        assert_eq!(build.command, "cargo build --release");
+    }
+
+    #[test]
+    fn test_deserialize_queued_build() {
+        let _guard = test_guard!();
+        let json = serde_json::json!({
+            "id": 12346,
+            "project_id": "rch",
+            "command": "cargo test",
+            "queued_at": "2026-01-16T12:01:00Z",
+            "position": 3,
+            "slots_needed": 4,
+            "estimated_start": "2026-01-16T12:05:00Z",
+            "wait_time": "4m"
+        });
+
+        let build: QueuedBuildFromApi = serde_json::from_value(json).unwrap();
+        assert_eq!(build.position, 3);
+        assert_eq!(build.slots_needed, 4);
+        assert_eq!(build.estimated_start, Some("2026-01-16T12:05:00Z".to_string()));
+    }
+
+    #[test]
+    fn test_deserialize_build_record() {
+        let _guard = test_guard!();
+        let json = serde_json::json!({
+            "id": 100,
+            "started_at": "2026-01-16T12:00:00Z",
+            "completed_at": "2026-01-16T12:01:30Z",
+            "project_id": "rch",
+            "worker_id": "worker-1",
+            "command": "cargo build",
+            "exit_code": 0,
+            "duration_ms": 90000,
+            "location": "remote",
+            "bytes_transferred": 1024000
+        });
+
+        let build: BuildRecordFromApi = serde_json::from_value(json).unwrap();
+        assert_eq!(build.exit_code, 0);
+        assert_eq!(build.duration_ms, 90000);
+        assert_eq!(build.bytes_transferred, Some(1024000));
+    }
+
+    #[test]
+    fn test_deserialize_issue() {
+        let _guard = test_guard!();
+        let json = serde_json::json!({
+            "severity": "warning",
+            "summary": "Worker worker-1 has high latency",
+            "remediation": "Check network connection"
+        });
+
+        let issue: IssueFromApi = serde_json::from_value(json).unwrap();
+        assert_eq!(issue.severity, "warning");
+        assert_eq!(issue.remediation, Some("Check network connection".to_string()));
+    }
+
+    #[test]
+    fn test_deserialize_alert_info() {
+        let _guard = test_guard!();
+        let json = serde_json::json!({
+            "id": "alert-123",
+            "kind": "worker_degraded",
+            "severity": "warning",
+            "message": "Worker performance degraded",
+            "worker_id": "worker-1",
+            "created_at": "2026-01-16T12:00:00Z"
+        });
+
+        let alert: AlertInfoFromApi = serde_json::from_value(json).unwrap();
+        assert_eq!(alert.kind, "worker_degraded");
+        assert_eq!(alert.worker_id, Some("worker-1".to_string()));
+    }
+
+    #[test]
+    fn test_deserialize_build_stats() {
+        let _guard = test_guard!();
+        let json = serde_json::json!({
+            "total_builds": 100,
+            "success_count": 95,
+            "failure_count": 5,
+            "remote_count": 80,
+            "local_count": 20,
+            "avg_duration_ms": 45000
+        });
+
+        let stats: BuildStatsFromApi = serde_json::from_value(json).unwrap();
+        assert_eq!(stats.total_builds, 100);
+        assert_eq!(stats.success_count, 95);
+        assert_eq!(stats.avg_duration_ms, 45000);
+    }
+
+    #[test]
+    fn test_deserialize_test_run_stats() {
+        let _guard = test_guard!();
+        let json = serde_json::json!({
+            "total_runs": 50,
+            "passed_runs": 45,
+            "failed_runs": 3,
+            "build_error_runs": 2,
+            "avg_duration_ms": 30000,
+            "runs_by_kind": {
+                "unit": 30,
+                "integration": 20
+            }
+        });
+
+        let stats: TestRunStatsFromApi = serde_json::from_value(json).unwrap();
+        assert_eq!(stats.total_runs, 50);
+        assert_eq!(stats.passed_runs, 45);
+        assert_eq!(stats.runs_by_kind.get("unit"), Some(&30));
+    }
+
+    #[test]
+    fn test_deserialize_self_test_status() {
+        let _guard = test_guard!();
+        let json = serde_json::json!({
+            "enabled": true,
+            "schedule": "0 */6 * * *",
+            "interval": "6h",
+            "last_run": null,
+            "next_run": "2026-01-16T18:00:00Z"
+        });
+
+        let status: SelfTestStatusResponse = serde_json::from_value(json).unwrap();
+        assert!(status.enabled);
+        assert_eq!(status.schedule, Some("0 */6 * * *".to_string()));
+        assert!(status.last_run.is_none());
+    }
+
+    #[test]
+    fn test_deserialize_pagination_info() {
+        let _guard = test_guard!();
+        let json = serde_json::json!({
+            "total": 100,
+            "offset": 20,
+            "limit": 10,
+            "has_more": true
+        });
+
+        let pagination: PaginationInfoFromApi = serde_json::from_value(json).unwrap();
+        assert_eq!(pagination.total, 100);
+        assert!(pagination.has_more);
+    }
 }

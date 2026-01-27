@@ -248,4 +248,281 @@ mod tests {
             );
         }
     }
+
+    // ========================
+    // OutputWriter tests
+    // ========================
+
+    #[test]
+    fn test_output_writer_write_without_newline() {
+        log_test_start("test_output_writer_write_without_newline");
+        let buffer = SharedOutputBuffer::new();
+        let writer = buffer.as_writer(false);
+        writer.write("hello");
+        writer.write(" world");
+        assert_eq!(buffer.to_string_lossy(), "hello world");
+    }
+
+    #[test]
+    fn test_output_writer_write_bytes() {
+        log_test_start("test_output_writer_write_bytes");
+        let buffer = SharedOutputBuffer::new();
+        let writer = buffer.as_writer(false);
+        writer.write_bytes(b"raw bytes");
+        assert_eq!(buffer.to_string_lossy(), "raw bytes");
+    }
+
+    #[test]
+    fn test_output_writer_write_bytes_binary() {
+        log_test_start("test_output_writer_write_bytes_binary");
+        let buffer = SharedOutputBuffer::new();
+        let writer = buffer.as_writer(false);
+        let binary = vec![0x00, 0x01, 0x02, 0xFF];
+        writer.write_bytes(&binary);
+        let output = buffer.inner.lock().unwrap();
+        assert_eq!(output.as_slice(), &[0x00, 0x01, 0x02, 0xFF]);
+    }
+
+    #[test]
+    fn test_output_writer_flush() {
+        log_test_start("test_output_writer_flush");
+        let buffer = SharedOutputBuffer::new();
+        let writer = buffer.as_writer(false);
+        writer.write("data");
+        writer.flush();
+        assert_eq!(buffer.to_string_lossy(), "data");
+    }
+
+    #[test]
+    fn test_output_writer_is_tty_false() {
+        log_test_start("test_output_writer_is_tty_false");
+        let buffer = SharedOutputBuffer::new();
+        let writer = buffer.as_writer(false);
+        assert!(!writer.is_tty());
+    }
+
+    #[test]
+    fn test_output_writer_is_tty_true() {
+        log_test_start("test_output_writer_is_tty_true");
+        let buffer = SharedOutputBuffer::new();
+        let writer = buffer.as_writer(true);
+        assert!(writer.is_tty());
+    }
+
+    #[test]
+    fn test_output_writer_debug() {
+        log_test_start("test_output_writer_debug");
+        let buffer = SharedOutputBuffer::new();
+        let writer = buffer.as_writer(true);
+        let debug = format!("{:?}", writer);
+        assert!(debug.contains("OutputWriter"));
+        assert!(debug.contains("is_tty"));
+        assert!(debug.contains("true"));
+    }
+
+    #[test]
+    fn test_output_writer_clone() {
+        log_test_start("test_output_writer_clone");
+        let buffer = SharedOutputBuffer::new();
+        let writer1 = buffer.as_writer(false);
+        let writer2 = writer1.clone();
+
+        writer1.write("from writer1 ");
+        writer2.write("from writer2");
+
+        assert_eq!(buffer.to_string_lossy(), "from writer1 from writer2");
+    }
+
+    #[test]
+    fn test_output_writer_multiple_lines() {
+        log_test_start("test_output_writer_multiple_lines");
+        let buffer = SharedOutputBuffer::new();
+        let writer = buffer.as_writer(false);
+        writer.write_line("line 1");
+        writer.write_line("line 2");
+        writer.write_line("line 3");
+        assert_eq!(buffer.to_string_lossy(), "line 1\nline 2\nline 3\n");
+    }
+
+    #[test]
+    fn test_output_writer_mixed_operations() {
+        log_test_start("test_output_writer_mixed_operations");
+        let buffer = SharedOutputBuffer::new();
+        let writer = buffer.as_writer(false);
+        writer.write("prefix: ");
+        writer.write_line("with newline");
+        writer.write_bytes(b"raw");
+        assert_eq!(buffer.to_string_lossy(), "prefix: with newline\nraw");
+    }
+
+    // ========================
+    // OutputBuffer tests
+    // ========================
+
+    #[test]
+    fn test_output_buffer_to_bytes() {
+        log_test_start("test_output_buffer_to_bytes");
+        let mut buffer = OutputBuffer::new();
+        write!(buffer, "test").unwrap();
+        let bytes = buffer.to_bytes();
+        assert_eq!(bytes, b"test");
+    }
+
+    #[test]
+    fn test_output_buffer_len() {
+        log_test_start("test_output_buffer_len");
+        let mut buffer = OutputBuffer::new();
+        assert_eq!(buffer.len(), 0);
+        write!(buffer, "12345").unwrap();
+        assert_eq!(buffer.len(), 5);
+    }
+
+    #[test]
+    fn test_output_buffer_is_empty() {
+        log_test_start("test_output_buffer_is_empty");
+        let buffer = OutputBuffer::new();
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn test_output_buffer_default() {
+        log_test_start("test_output_buffer_default");
+        let buffer: OutputBuffer = Default::default();
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn test_output_buffer_debug() {
+        log_test_start("test_output_buffer_debug");
+        let buffer = OutputBuffer::new();
+        let debug = format!("{:?}", buffer);
+        assert!(debug.contains("OutputBuffer"));
+    }
+
+    #[test]
+    fn test_output_buffer_clone() {
+        log_test_start("test_output_buffer_clone");
+        let mut buffer = OutputBuffer::new();
+        write!(buffer, "original").unwrap();
+
+        let cloned = buffer.clone();
+        // Both share the same data (Arc)
+        assert_eq!(cloned.to_string_lossy(), "original");
+    }
+
+    #[test]
+    fn test_output_buffer_write_trait_flush() {
+        log_test_start("test_output_buffer_write_trait_flush");
+        let mut buffer = OutputBuffer::new();
+        buffer.flush().unwrap();
+        assert!(buffer.is_empty());
+    }
+
+    // ========================
+    // SharedOutputBuffer tests
+    // ========================
+
+    #[test]
+    fn test_shared_output_buffer_new() {
+        log_test_start("test_shared_output_buffer_new");
+        let buffer = SharedOutputBuffer::new();
+        assert_eq!(buffer.to_string_lossy(), "");
+    }
+
+    #[test]
+    fn test_shared_output_buffer_default() {
+        log_test_start("test_shared_output_buffer_default");
+        let buffer: SharedOutputBuffer = Default::default();
+        assert_eq!(buffer.to_string_lossy(), "");
+    }
+
+    #[test]
+    fn test_shared_output_buffer_clone() {
+        log_test_start("test_shared_output_buffer_clone");
+        let buffer = SharedOutputBuffer::new();
+        let writer = buffer.as_writer(false);
+        writer.write("test");
+
+        let cloned = buffer.clone();
+        assert_eq!(cloned.to_string_lossy(), "test");
+    }
+
+    #[test]
+    fn test_shared_output_buffer_debug() {
+        log_test_start("test_shared_output_buffer_debug");
+        let buffer = SharedOutputBuffer::new();
+        let debug = format!("{:?}", buffer);
+        assert!(debug.contains("SharedOutputBuffer"));
+    }
+
+    #[test]
+    fn test_shared_output_buffer_as_writer_tty_setting() {
+        log_test_start("test_shared_output_buffer_as_writer_tty_setting");
+        let buffer = SharedOutputBuffer::new();
+        let writer_tty = buffer.as_writer(true);
+        let writer_no_tty = buffer.as_writer(false);
+
+        assert!(writer_tty.is_tty());
+        assert!(!writer_no_tty.is_tty());
+    }
+
+    #[test]
+    fn test_shared_output_buffer_concurrent_writes() {
+        log_test_start("test_shared_output_buffer_concurrent_writes");
+        let buffer = SharedOutputBuffer::new();
+        let writer = buffer.as_writer(false);
+
+        let handles: Vec<_> = (0..5)
+            .map(|i| {
+                let w = writer.clone();
+                thread::spawn(move || {
+                    w.write(&format!("{}", i));
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // All digits should be present (order may vary)
+        let output = buffer.to_string_lossy();
+        assert_eq!(output.len(), 5);
+        for i in 0..5 {
+            assert!(output.contains(&i.to_string()));
+        }
+    }
+
+    // ========================
+    // Edge case tests
+    // ========================
+
+    #[test]
+    fn test_output_writer_empty_string() {
+        log_test_start("test_output_writer_empty_string");
+        let buffer = SharedOutputBuffer::new();
+        let writer = buffer.as_writer(false);
+        writer.write("");
+        writer.write_line("");
+        assert_eq!(buffer.to_string_lossy(), "\n");
+    }
+
+    #[test]
+    fn test_output_writer_unicode() {
+        log_test_start("test_output_writer_unicode");
+        let buffer = SharedOutputBuffer::new();
+        let writer = buffer.as_writer(false);
+        writer.write_line("Hello, 世界! 🌍");
+        assert!(buffer.to_string_lossy().contains("世界"));
+        assert!(buffer.to_string_lossy().contains("🌍"));
+    }
+
+    #[test]
+    fn test_output_buffer_binary_data() {
+        log_test_start("test_output_buffer_binary_data");
+        let mut buffer = OutputBuffer::new();
+        let data = vec![0x00, 0xFF, 0x80, 0x7F];
+        buffer.write_all(&data).unwrap();
+        assert_eq!(buffer.to_bytes(), data);
+    }
 }

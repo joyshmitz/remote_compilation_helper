@@ -183,7 +183,20 @@ impl Default for HarnessConfig {
             "release"
         };
 
-        let bin_dir = cargo_target.join(profile);
+        let default_bin_dir = cargo_target.join(profile);
+        let bin_dir = if std::env::var("LLVM_PROFILE_FILE")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+        {
+            let llvm_cov_dir = cargo_target.join("llvm-cov-target").join(profile);
+            if llvm_cov_dir.is_dir() {
+                llvm_cov_dir
+            } else {
+                default_bin_dir.clone()
+            }
+        } else {
+            default_bin_dir.clone()
+        };
 
         let mut env_vars = HashMap::new();
         if std::env::var("CI")

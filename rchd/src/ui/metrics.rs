@@ -911,4 +911,178 @@ mod tests {
         assert!(dashboard.avg_history.is_empty());
         assert_eq!(dashboard.queue_peak, 0);
     }
+
+    // ==================== counter_value tests ====================
+
+    #[test]
+    fn test_counter_value_no_match() {
+        let _guard = test_guard!();
+        // counter_value looks for metrics that may not exist
+        let result = counter_value(&["nonexistent_label_1", "nonexistent_label_2"]);
+        // If no metrics exist, returns 0.0
+        assert!(result >= 0.0);
+    }
+
+    // ==================== should_render tests ====================
+
+    #[test]
+    fn test_should_render_plain_context() {
+        let _guard = test_guard!();
+        let ctx = OutputContext::plain();
+        let dashboard = MetricsDashboard::with_context(ctx, Duration::from_secs(60));
+        // Plain context doesn't support rich output
+        assert!(!dashboard.should_render());
+    }
+
+    // ==================== Additional edge case tests ====================
+
+    #[test]
+    fn test_format_duration_ms_boundary() {
+        let _guard = test_guard!();
+        // Exactly at 1000ms boundary
+        assert_eq!(format_duration_ms(1000.0), "1.0s");
+        assert_eq!(format_duration_ms(999.9), "1000ms");
+    }
+
+    #[test]
+    fn test_format_interval_non_multiple() {
+        let _guard = test_guard!();
+        // Not a multiple of 60, should fall back to seconds
+        assert_eq!(format_interval(Duration::from_secs(90)), "90s");
+        assert_eq!(format_interval(Duration::from_secs(125)), "125s");
+    }
+
+    #[test]
+    fn test_format_bytes_boundary_cases() {
+        let _guard = test_guard!();
+        // Just under KB
+        assert_eq!(format_bytes(1023), "1023 B");
+        // Exactly KB
+        assert_eq!(format_bytes(1024), "1.0 KB");
+        // Just under MB
+        assert_eq!(format_bytes(1024 * 1024 - 1), "1024.0 KB");
+        // Exactly MB
+        assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
+    }
+
+    #[test]
+    fn test_percentile_ms_single_value() {
+        let _guard = test_guard!();
+        let values = vec![100];
+        // Single value should return that value for any percentile
+        assert_eq!(percentile_ms(&values, 0.0), Some(100.0));
+        assert_eq!(percentile_ms(&values, 0.5), Some(100.0));
+        assert_eq!(percentile_ms(&values, 1.0), Some(100.0));
+    }
+
+    #[test]
+    fn test_sparkline_decreasing() {
+        let _guard = test_guard!();
+        let mut values = VecDeque::new();
+        values.push_back(100.0);
+        values.push_back(50.0);
+        values.push_back(0.0);
+        let ctx = OutputContext::plain();
+        let result = sparkline(&values, ctx);
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_trend_arrow_exactly_at_threshold() {
+        let _guard = test_guard!();
+        let ctx = OutputContext::plain();
+        // 5% change is exactly at threshold, which uses < not <=, so 5% shows arrow_up
+        assert_eq!(
+            trend_arrow(Some(100.0), Some(105.0), ctx),
+            Icons::arrow_up(ctx)
+        );
+        // Just under 5% should show neutral arrow
+        assert_eq!(
+            trend_arrow(Some(100.0), Some(104.0), ctx),
+            Icons::arrow_right(ctx)
+        );
+    }
+
+    #[test]
+    fn test_metrics_dashboard_avg_history_capacity() {
+        let _guard = test_guard!();
+        let mut dashboard = MetricsDashboard::new(Duration::from_secs(60));
+        // Fill to capacity
+        for i in 0..SPARKLINE_SAMPLES {
+            dashboard.avg_history.push_back(i as f64);
+        }
+        assert_eq!(dashboard.avg_history.len(), SPARKLINE_SAMPLES);
+    }
+
+    #[test]
+    fn test_transfer_counters_copy() {
+        let _guard = test_guard!();
+        let tc1 = TransferCounters { up: 100.0, down: 200.0 };
+        let tc2 = tc1; // Copy
+        assert_eq!(tc2.up, 100.0);
+        assert_eq!(tc2.down, 200.0);
+    }
+
+    #[test]
+    fn test_metrics_snapshot_fields() {
+        let _guard = test_guard!();
+        let snapshot = MetricsSnapshot {
+            total_jobs: 100,
+            success_jobs: 95,
+            failed_jobs: 5,
+            cache_hits: Some(80),
+            cache_misses: Some(20),
+            avg_ms: Some(150.0),
+            p50_ms: Some(100.0),
+            p95_ms: Some(300.0),
+            p99_ms: Some(500.0),
+            utilization_pct: Some(75.0),
+            used_slots: 6,
+            total_slots: 8,
+            transfer_up: 1024,
+            transfer_down: 2048,
+            queue_peak: 3,
+            trend_arrow: "->".to_string(),
+            sparkline: "▁▂▃".to_string(),
+        };
+        assert_eq!(snapshot.total_jobs, 100);
+        assert_eq!(snapshot.success_jobs, 95);
+        assert_eq!(snapshot.cache_hits, Some(80));
+        assert_eq!(snapshot.utilization_pct, Some(75.0));
+    }
+
+    #[tokio::test]
+    async fn test_utilization_empty_pool() {
+        let _guard = test_guard!();
+        let pool = WorkerPool::new();
+        let (util, used, total) = utilization(&pool).await;
+        assert!(util.is_none());
+        assert_eq!(used, 0);
+        assert_eq!(total, 0);
+    }
+
+    #[tokio::test]
+    async fn test_utilization_with_workers() {
+        let _guard = test_guard!();
+        let pool = WorkerPool::new();
+
+        // Add a worker with 8 slots
+        let config = rch_common::WorkerConfig {
+            id: rch_common::WorkerId::new("test-worker"),
+            host: "localhost".to_string(),
+            user: "test".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 8,
+            priority: 100,
+            tags: vec![],
+        };
+        pool.add_worker(config).await;
+
+        let (util, used, total) = utilization(&pool).await;
+        assert!(util.is_some());
+        assert_eq!(total, 8);
+        // All slots should be available (none used)
+        assert_eq!(used, 0);
+        assert_eq!(util.unwrap(), 0.0);
+    }
 }

@@ -730,4 +730,577 @@ enabled = true
         assert_eq!(result.updated, 1); // worker1
         assert_eq!(pool.len(), 2);
     }
+
+    #[test]
+    fn test_reload_result_default() {
+        let _guard = test_guard!();
+        let result = ReloadResult::default();
+        assert_eq!(result.added, 0);
+        assert_eq!(result.updated, 0);
+        assert_eq!(result.removed, 0);
+        assert!(result.warnings.is_empty());
+        assert!(!result.has_changes());
+    }
+
+    #[test]
+    fn test_reload_result_has_changes_added_only() {
+        let _guard = test_guard!();
+        let mut result = ReloadResult::new();
+        result.added = 1;
+        assert!(result.has_changes());
+    }
+
+    #[test]
+    fn test_reload_result_has_changes_updated_only() {
+        let _guard = test_guard!();
+        let mut result = ReloadResult::new();
+        result.updated = 1;
+        assert!(result.has_changes());
+    }
+
+    #[test]
+    fn test_reload_result_has_changes_removed_only() {
+        let _guard = test_guard!();
+        let mut result = ReloadResult::new();
+        result.removed = 1;
+        assert!(result.has_changes());
+    }
+
+    #[test]
+    fn test_reload_config_default() {
+        let _guard = test_guard!();
+        let config = ReloadConfig::default();
+        assert!(config.workers_config_path.is_none());
+        assert_eq!(config.debounce_ms, 500);
+        assert!(config.validate_before_apply);
+    }
+
+    #[test]
+    fn test_config_diff_is_empty_true() {
+        let _guard = test_guard!();
+        let diff = ConfigDiff {
+            to_add: vec![],
+            to_update: vec![],
+            to_remove: vec![],
+        };
+        assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn test_config_diff_not_empty_with_add() {
+        let _guard = test_guard!();
+        let diff = ConfigDiff {
+            to_add: vec![WorkerConfig {
+                id: WorkerId::new("worker1"),
+                host: "host".to_string(),
+                user: "user".to_string(),
+                identity_file: "~/.ssh/id_rsa".to_string(),
+                total_slots: 8,
+                priority: 100,
+                tags: vec![],
+            }],
+            to_update: vec![],
+            to_remove: vec![],
+        };
+        assert!(!diff.is_empty());
+    }
+
+    #[test]
+    fn test_config_diff_not_empty_with_update() {
+        let _guard = test_guard!();
+        let diff = ConfigDiff {
+            to_add: vec![],
+            to_update: vec![WorkerConfig {
+                id: WorkerId::new("worker1"),
+                host: "host".to_string(),
+                user: "user".to_string(),
+                identity_file: "~/.ssh/id_rsa".to_string(),
+                total_slots: 8,
+                priority: 100,
+                tags: vec![],
+            }],
+            to_remove: vec![],
+        };
+        assert!(!diff.is_empty());
+    }
+
+    #[test]
+    fn test_config_diff_not_empty_with_remove() {
+        let _guard = test_guard!();
+        let diff = ConfigDiff {
+            to_add: vec![],
+            to_update: vec![],
+            to_remove: vec![WorkerId::new("worker1")],
+        };
+        assert!(!diff.is_empty());
+    }
+
+    #[test]
+    fn test_validate_workers_config_no_enabled_workers() {
+        let _guard = test_guard!();
+        init_test_logging();
+
+        let config = WorkersConfig {
+            workers: vec![config::WorkerEntry {
+                id: "worker1".to_string(),
+                host: "host1".to_string(),
+                user: "ubuntu".to_string(),
+                identity_file: "~/.ssh/id_rsa".to_string(),
+                total_slots: 8,
+                priority: 100,
+                tags: vec![],
+                enabled: false,
+            }],
+        };
+
+        let warnings = validate_workers_config(&config).unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("No workers are enabled"));
+    }
+
+    #[test]
+    fn test_validate_workers_config_valid_no_warnings() {
+        let _guard = test_guard!();
+        init_test_logging();
+
+        let config = WorkersConfig {
+            workers: vec![config::WorkerEntry {
+                id: "worker1".to_string(),
+                host: "host1".to_string(),
+                user: "ubuntu".to_string(),
+                identity_file: "~/.ssh/id_rsa".to_string(),
+                total_slots: 8,
+                priority: 100,
+                tags: vec![],
+                enabled: true,
+            }],
+        };
+
+        let warnings = validate_workers_config(&config).unwrap();
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn test_validate_workers_config_empty() {
+        let _guard = test_guard!();
+        init_test_logging();
+
+        let config = WorkersConfig { workers: vec![] };
+
+        // Empty config should be valid (no duplicates, no "no workers enabled" warning because workers is empty)
+        let warnings = validate_workers_config(&config).unwrap();
+        assert!(warnings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_compute_worker_diff_host_change() {
+        init_test_logging();
+
+        let pool = WorkerPool::new();
+        let initial = WorkerConfig {
+            id: WorkerId::new("worker1"),
+            host: "192.168.1.100".to_string(),
+            user: "ubuntu".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 8,
+            priority: 100,
+            tags: vec![],
+        };
+        pool.add_worker(initial).await;
+
+        let updated = WorkerConfig {
+            id: WorkerId::new("worker1"),
+            host: "192.168.1.200".to_string(), // Changed host
+            user: "ubuntu".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 8,
+            priority: 100,
+            tags: vec![],
+        };
+
+        let diff = compute_worker_diff(&pool, &[updated]).await.unwrap();
+        assert!(diff.to_add.is_empty());
+        assert_eq!(diff.to_update.len(), 1);
+        assert!(diff.to_remove.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_compute_worker_diff_user_change() {
+        init_test_logging();
+
+        let pool = WorkerPool::new();
+        let initial = WorkerConfig {
+            id: WorkerId::new("worker1"),
+            host: "192.168.1.100".to_string(),
+            user: "ubuntu".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 8,
+            priority: 100,
+            tags: vec![],
+        };
+        pool.add_worker(initial).await;
+
+        let updated = WorkerConfig {
+            id: WorkerId::new("worker1"),
+            host: "192.168.1.100".to_string(),
+            user: "admin".to_string(), // Changed user
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 8,
+            priority: 100,
+            tags: vec![],
+        };
+
+        let diff = compute_worker_diff(&pool, &[updated]).await.unwrap();
+        assert_eq!(diff.to_update.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_compute_worker_diff_identity_file_change() {
+        init_test_logging();
+
+        let pool = WorkerPool::new();
+        let initial = WorkerConfig {
+            id: WorkerId::new("worker1"),
+            host: "192.168.1.100".to_string(),
+            user: "ubuntu".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 8,
+            priority: 100,
+            tags: vec![],
+        };
+        pool.add_worker(initial).await;
+
+        let updated = WorkerConfig {
+            id: WorkerId::new("worker1"),
+            host: "192.168.1.100".to_string(),
+            user: "ubuntu".to_string(),
+            identity_file: "~/.ssh/id_ed25519".to_string(), // Changed identity file
+            total_slots: 8,
+            priority: 100,
+            tags: vec![],
+        };
+
+        let diff = compute_worker_diff(&pool, &[updated]).await.unwrap();
+        assert_eq!(diff.to_update.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_compute_worker_diff_priority_change() {
+        init_test_logging();
+
+        let pool = WorkerPool::new();
+        let initial = WorkerConfig {
+            id: WorkerId::new("worker1"),
+            host: "192.168.1.100".to_string(),
+            user: "ubuntu".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 8,
+            priority: 100,
+            tags: vec![],
+        };
+        pool.add_worker(initial).await;
+
+        let updated = WorkerConfig {
+            id: WorkerId::new("worker1"),
+            host: "192.168.1.100".to_string(),
+            user: "ubuntu".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 8,
+            priority: 50, // Changed priority
+            tags: vec![],
+        };
+
+        let diff = compute_worker_diff(&pool, &[updated]).await.unwrap();
+        assert_eq!(diff.to_update.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_compute_worker_diff_tags_change() {
+        init_test_logging();
+
+        let pool = WorkerPool::new();
+        let initial = WorkerConfig {
+            id: WorkerId::new("worker1"),
+            host: "192.168.1.100".to_string(),
+            user: "ubuntu".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 8,
+            priority: 100,
+            tags: vec![],
+        };
+        pool.add_worker(initial).await;
+
+        let updated = WorkerConfig {
+            id: WorkerId::new("worker1"),
+            host: "192.168.1.100".to_string(),
+            user: "ubuntu".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 8,
+            priority: 100,
+            tags: vec!["gpu".to_string()], // Changed tags
+        };
+
+        let diff = compute_worker_diff(&pool, &[updated]).await.unwrap();
+        assert_eq!(diff.to_update.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_compute_worker_diff_no_change() {
+        init_test_logging();
+
+        let pool = WorkerPool::new();
+        let config = WorkerConfig {
+            id: WorkerId::new("worker1"),
+            host: "192.168.1.100".to_string(),
+            user: "ubuntu".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 8,
+            priority: 100,
+            tags: vec![],
+        };
+        pool.add_worker(config.clone()).await;
+
+        let diff = compute_worker_diff(&pool, &[config]).await.unwrap();
+        assert!(diff.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_apply_worker_diff_update() {
+        init_test_logging();
+
+        let pool = WorkerPool::new();
+        let initial = WorkerConfig {
+            id: WorkerId::new("worker1"),
+            host: "192.168.1.100".to_string(),
+            user: "ubuntu".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 8,
+            priority: 100,
+            tags: vec![],
+        };
+        pool.add_worker(initial).await;
+
+        let diff = ConfigDiff {
+            to_add: vec![],
+            to_update: vec![WorkerConfig {
+                id: WorkerId::new("worker1"),
+                host: "192.168.1.100".to_string(),
+                user: "ubuntu".to_string(),
+                identity_file: "~/.ssh/id_rsa".to_string(),
+                total_slots: 16, // Updated slots
+                priority: 100,
+                tags: vec![],
+            }],
+            to_remove: vec![],
+        };
+
+        let result = apply_worker_diff(&pool, &diff).await.unwrap();
+        assert_eq!(result.added, 0);
+        assert_eq!(result.updated, 1);
+        assert_eq!(result.removed, 0);
+    }
+
+    #[tokio::test]
+    async fn test_apply_worker_diff_remove_idle() {
+        init_test_logging();
+
+        let pool = WorkerPool::new();
+        let config = WorkerConfig {
+            id: WorkerId::new("worker1"),
+            host: "192.168.1.100".to_string(),
+            user: "ubuntu".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 8,
+            priority: 100,
+            tags: vec![],
+        };
+        pool.add_worker(config).await;
+
+        let diff = ConfigDiff {
+            to_add: vec![],
+            to_update: vec![],
+            to_remove: vec![WorkerId::new("worker1")],
+        };
+
+        let result = apply_worker_diff(&pool, &diff).await.unwrap();
+        assert_eq!(result.added, 0);
+        assert_eq!(result.updated, 0);
+        assert_eq!(result.removed, 1);
+        assert!(result.warnings.is_empty()); // No active jobs, so no warning
+        assert_eq!(pool.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_apply_worker_diff_remove_nonexistent() {
+        init_test_logging();
+
+        let pool = WorkerPool::new();
+
+        let diff = ConfigDiff {
+            to_add: vec![],
+            to_update: vec![],
+            to_remove: vec![WorkerId::new("nonexistent")],
+        };
+
+        let result = apply_worker_diff(&pool, &diff).await.unwrap();
+        // Worker doesn't exist, so nothing removed
+        assert_eq!(result.removed, 0);
+    }
+
+    #[tokio::test]
+    async fn test_reload_workers_validation_disabled() {
+        init_test_logging();
+
+        let temp_dir = TempDir::new().unwrap();
+        let workers_path = temp_dir.path().join("workers.toml");
+
+        // Config with a warning condition (0 slots)
+        let config_content = r#"
+[[workers]]
+id = "worker1"
+host = "192.168.1.100"
+user = "ubuntu"
+total_slots = 0
+enabled = true
+"#;
+        std::fs::write(&workers_path, config_content).unwrap();
+
+        let pool = WorkerPool::new();
+
+        // Reload with validation disabled
+        let result = reload_workers(&pool, Some(&workers_path), false)
+            .await
+            .unwrap();
+        // Should succeed without warnings since validation is disabled
+        assert!(result.warnings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_config_watcher_new() {
+        init_test_logging();
+
+        let pool = WorkerPool::new();
+        let config = ReloadConfig::default();
+
+        let (watcher, tx) = ConfigWatcher::new(config, pool).unwrap();
+        assert!(watcher._watcher.is_none()); // Watcher not started yet
+        drop(tx); // Clean up
+    }
+
+    #[test]
+    fn test_reload_message_debug() {
+        let _guard = test_guard!();
+        let msg = ReloadMessage::ManualReload;
+        assert!(format!("{:?}", msg).contains("ManualReload"));
+
+        let msg = ReloadMessage::Shutdown;
+        assert!(format!("{:?}", msg).contains("Shutdown"));
+
+        let msg = ReloadMessage::ConfigChanged(PathBuf::from("/test/path"));
+        assert!(format!("{:?}", msg).contains("ConfigChanged"));
+    }
+
+    #[tokio::test]
+    async fn test_compute_worker_diff_complex() {
+        init_test_logging();
+
+        let pool = WorkerPool::new();
+
+        // Add 3 workers
+        for i in 1..=3 {
+            let config = WorkerConfig {
+                id: WorkerId::new(format!("worker{}", i)),
+                host: format!("192.168.1.{}", 100 + i),
+                user: "ubuntu".to_string(),
+                identity_file: "~/.ssh/id_rsa".to_string(),
+                total_slots: 8,
+                priority: 100,
+                tags: vec![],
+            };
+            pool.add_worker(config).await;
+        }
+
+        // New config: remove worker1, update worker2, keep worker3, add worker4
+        let new_workers = vec![
+            WorkerConfig {
+                id: WorkerId::new("worker2"),
+                host: "192.168.1.102".to_string(),
+                user: "ubuntu".to_string(),
+                identity_file: "~/.ssh/id_rsa".to_string(),
+                total_slots: 16, // Updated
+                priority: 100,
+                tags: vec![],
+            },
+            WorkerConfig {
+                id: WorkerId::new("worker3"),
+                host: "192.168.1.103".to_string(),
+                user: "ubuntu".to_string(),
+                identity_file: "~/.ssh/id_rsa".to_string(),
+                total_slots: 8,
+                priority: 100,
+                tags: vec![],
+            },
+            WorkerConfig {
+                id: WorkerId::new("worker4"),
+                host: "192.168.1.104".to_string(),
+                user: "ubuntu".to_string(),
+                identity_file: "~/.ssh/id_rsa".to_string(),
+                total_slots: 4,
+                priority: 50,
+                tags: vec!["gpu".to_string()],
+            },
+        ];
+
+        let diff = compute_worker_diff(&pool, &new_workers).await.unwrap();
+        assert_eq!(diff.to_add.len(), 1); // worker4
+        assert_eq!(diff.to_update.len(), 1); // worker2
+        assert_eq!(diff.to_remove.len(), 1); // worker1
+    }
+
+    #[tokio::test]
+    async fn test_reload_workers_invalid_config() {
+        init_test_logging();
+
+        let temp_dir = TempDir::new().unwrap();
+        let workers_path = temp_dir.path().join("workers.toml");
+
+        // Invalid TOML
+        std::fs::write(&workers_path, "invalid toml [[[").unwrap();
+
+        let pool = WorkerPool::new();
+
+        let result = reload_workers(&pool, Some(&workers_path), true).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_reload_workers_duplicate_ids() {
+        init_test_logging();
+
+        let temp_dir = TempDir::new().unwrap();
+        let workers_path = temp_dir.path().join("workers.toml");
+
+        // Config with duplicate IDs
+        let config_content = r#"
+[[workers]]
+id = "worker1"
+host = "host1"
+user = "ubuntu"
+total_slots = 8
+enabled = true
+
+[[workers]]
+id = "worker1"
+host = "host2"
+user = "ubuntu"
+total_slots = 4
+enabled = true
+"#;
+        std::fs::write(&workers_path, config_content).unwrap();
+
+        let pool = WorkerPool::new();
+
+        let result = reload_workers(&pool, Some(&workers_path), true).await;
+        assert!(result.is_err());
+    }
 }

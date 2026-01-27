@@ -1173,7 +1173,10 @@ fn resolve_output_format(format: Option<&str>, json_flag: bool) -> OutputFormat 
     OutputFormat::Json
 }
 
-#[tokio::main]
+/// Use current-thread runtime for CLI commands to minimize startup overhead.
+/// Multi-threaded runtime spawns one thread per CPU core (64 cores = 128MB stack allocations).
+/// Current-thread runtime uses a single thread, drastically reducing startup time.
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     // Handle dynamic shell completions (exits if handling a completion request)
     CompleteEnv::with_factory(Cli::command).complete();

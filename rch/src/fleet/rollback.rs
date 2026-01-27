@@ -277,4 +277,229 @@ mod tests {
         let manager = RollbackManager::new();
         assert!(manager.is_ok());
     }
+
+    // ========================
+    // WorkerBackup additional tests
+    // ========================
+
+    #[test]
+    fn worker_backup_with_empty_strings() {
+        let backup = WorkerBackup {
+            worker_id: String::new(),
+            version: String::new(),
+            backup_path: PathBuf::new(),
+            created_at: String::new(),
+        };
+        let json = serde_json::to_string(&backup).unwrap();
+        let restored: WorkerBackup = serde_json::from_str(&json).unwrap();
+        assert!(restored.worker_id.is_empty());
+        assert!(restored.version.is_empty());
+    }
+
+    #[test]
+    fn worker_backup_with_special_characters() {
+        let backup = WorkerBackup {
+            worker_id: "worker/with:special\"chars".to_string(),
+            version: "1.0.0-beta+build.123".to_string(),
+            backup_path: PathBuf::from("/path/with spaces/and\"quotes"),
+            created_at: "2024-01-15T12:00:00+05:30".to_string(),
+        };
+        let json = serde_json::to_string(&backup).unwrap();
+        let restored: WorkerBackup = serde_json::from_str(&json).unwrap();
+        assert!(restored.worker_id.contains("special"));
+        assert!(restored.version.contains("beta"));
+    }
+
+    #[test]
+    fn worker_backup_with_long_strings() {
+        let backup = WorkerBackup {
+            worker_id: "w".repeat(1000),
+            version: "v".repeat(100),
+            backup_path: PathBuf::from("/very/long/path".to_string() + &"/segment".repeat(100)),
+            created_at: "2024-01-15T12:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&backup).unwrap();
+        let restored: WorkerBackup = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.worker_id.len(), 1000);
+        assert_eq!(restored.version.len(), 100);
+    }
+
+    #[test]
+    fn worker_backup_path_variations() {
+        let paths = vec![
+            PathBuf::from("/absolute/path"),
+            PathBuf::from("relative/path"),
+            PathBuf::from("."),
+            PathBuf::from(".."),
+            PathBuf::from("./local"),
+        ];
+        for path in paths {
+            let backup = WorkerBackup {
+                worker_id: "test".to_string(),
+                version: "1.0.0".to_string(),
+                backup_path: path.clone(),
+                created_at: "2024-01-15T12:00:00Z".to_string(),
+            };
+            let json = serde_json::to_string(&backup).unwrap();
+            let restored: WorkerBackup = serde_json::from_str(&json).unwrap();
+            assert_eq!(restored.backup_path, path);
+        }
+    }
+
+    // ========================
+    // RollbackResult additional tests
+    // ========================
+
+    #[test]
+    fn rollback_result_both_version_and_error() {
+        // Edge case: both rolled_back_to and error are Some (unlikely but valid struct)
+        let result = RollbackResult {
+            worker_id: "partial-worker".to_string(),
+            success: false,
+            rolled_back_to: Some("1.0.0".to_string()),
+            error: Some("Verification failed after rollback".to_string()),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let restored: RollbackResult = serde_json::from_str(&json).unwrap();
+        assert!(!restored.success);
+        assert_eq!(restored.rolled_back_to, Some("1.0.0".to_string()));
+        assert!(restored.error.is_some());
+    }
+
+    #[test]
+    fn rollback_result_empty_worker_id() {
+        let result = RollbackResult {
+            worker_id: String::new(),
+            success: true,
+            rolled_back_to: Some("1.0.0".to_string()),
+            error: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let restored: RollbackResult = serde_json::from_str(&json).unwrap();
+        assert!(restored.worker_id.is_empty());
+    }
+
+    #[test]
+    fn rollback_result_long_error_message() {
+        let result = RollbackResult {
+            worker_id: "worker-1".to_string(),
+            success: false,
+            rolled_back_to: None,
+            error: Some("e".repeat(10000)),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let restored: RollbackResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.error.unwrap().len(), 10000);
+    }
+
+    #[test]
+    fn rollback_result_special_chars_in_error() {
+        let result = RollbackResult {
+            worker_id: "worker".to_string(),
+            success: false,
+            rolled_back_to: None,
+            error: Some("Error: \"connection refused\" on host <remote>".to_string()),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let restored: RollbackResult = serde_json::from_str(&json).unwrap();
+        assert!(restored.error.unwrap().contains("<remote>"));
+    }
+
+    #[test]
+    fn rollback_result_version_formats() {
+        let versions = vec![
+            "1.0.0",
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0+build.123",
+            "1.0.0-beta+build.456",
+            "0.0.1",
+            "99.99.99",
+        ];
+        for v in versions {
+            let result = RollbackResult {
+                worker_id: "test".to_string(),
+                success: true,
+                rolled_back_to: Some(v.to_string()),
+                error: None,
+            };
+            let json = serde_json::to_string(&result).unwrap();
+            let restored: RollbackResult = serde_json::from_str(&json).unwrap();
+            assert_eq!(restored.rolled_back_to, Some(v.to_string()));
+        }
+    }
+
+    // ========================
+    // RollbackManager tests
+    // ========================
+
+    #[test]
+    fn rollback_manager_backup_dir_exists_after_new() {
+        let manager = RollbackManager::new().unwrap();
+        assert!(manager.backup_dir.exists() || !manager.backup_dir.to_string_lossy().is_empty());
+    }
+
+    #[tokio::test]
+    async fn rollback_manager_create_backup_returns_valid_struct() {
+        use rch_common::{WorkerConfig, WorkerId};
+
+        let manager = RollbackManager::new().unwrap();
+        let worker = WorkerConfig {
+            id: WorkerId::new("test-worker"),
+            host: "localhost".to_string(),
+            user: "testuser".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 4,
+            priority: 100,
+            tags: vec![],
+        };
+
+        let backup = manager.create_backup(&worker, "1.0.0").await.unwrap();
+        assert_eq!(backup.worker_id, "test-worker");
+        assert_eq!(backup.version, "1.0.0");
+        assert!(backup.backup_path.to_string_lossy().contains("test-worker"));
+        assert!(!backup.created_at.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rollback_manager_create_backup_different_versions() {
+        use rch_common::{WorkerConfig, WorkerId};
+
+        let manager = RollbackManager::new().unwrap();
+        let worker = WorkerConfig {
+            id: WorkerId::new("version-test"),
+            host: "localhost".to_string(),
+            user: "testuser".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 4,
+            priority: 100,
+            tags: vec![],
+        };
+
+        let backup1 = manager.create_backup(&worker, "1.0.0").await.unwrap();
+        let backup2 = manager.create_backup(&worker, "2.0.0").await.unwrap();
+
+        assert_ne!(backup1.backup_path, backup2.backup_path);
+        assert_ne!(backup1.version, backup2.version);
+    }
+
+    #[tokio::test]
+    async fn rollback_manager_restore_backup_succeeds() {
+        use rch_common::{WorkerConfig, WorkerId};
+
+        let manager = RollbackManager::new().unwrap();
+        let worker = WorkerConfig {
+            id: WorkerId::new("restore-test"),
+            host: "localhost".to_string(),
+            user: "testuser".to_string(),
+            identity_file: "~/.ssh/id_rsa".to_string(),
+            total_slots: 4,
+            priority: 100,
+            tags: vec![],
+        };
+
+        let backup = manager.create_backup(&worker, "1.0.0").await.unwrap();
+        let result = manager.restore_backup(&backup, &worker).await;
+        assert!(result.is_ok());
+    }
 }

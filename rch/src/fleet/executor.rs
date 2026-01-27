@@ -8,12 +8,12 @@ use crate::fleet::plan::{DeploymentPlan, DeploymentStatus, DeploymentStrategy};
 use crate::ui::context::OutputContext;
 use crate::ui::theme::StatusIndicator;
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// Result of a fleet deployment operation.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status")]
 pub enum FleetResult {
     /// Deployment completed (possibly with some failures).
@@ -395,5 +395,142 @@ mod tests {
     fn fleet_executor_new_with_high_parallelism() {
         let executor = FleetExecutor::new(100, None).unwrap();
         assert_eq!(executor.parallelism, 100);
+    }
+
+    // ========================
+    // FleetResult additional tests
+    // ========================
+
+    #[test]
+    fn fleet_result_success_large_counts() {
+        let result = FleetResult::Success {
+            deployed: 1000,
+            skipped: 500,
+            failed: 10,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"deployed\":1000"));
+        assert!(json.contains("\"skipped\":500"));
+        assert!(json.contains("\"failed\":10"));
+    }
+
+    #[test]
+    fn fleet_result_canary_failed_empty_reason() {
+        let result = FleetResult::CanaryFailed {
+            reason: String::new(),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"status\":\"CanaryFailed\""));
+        assert!(json.contains("\"reason\":\"\""));
+    }
+
+    #[test]
+    fn fleet_result_canary_failed_long_reason() {
+        let result = FleetResult::CanaryFailed {
+            reason: "x".repeat(1000),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"status\":\"CanaryFailed\""));
+        assert!(json.len() > 1000);
+    }
+
+    #[test]
+    fn fleet_result_aborted_special_chars_in_reason() {
+        let result = FleetResult::Aborted {
+            reason: "User cancelled: \"interrupted\" <signal>".to_string(),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: FleetResult = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            FleetResult::Aborted { reason } => {
+                assert!(reason.contains("interrupted"));
+                assert!(reason.contains("<signal>"));
+            }
+            _ => panic!("Expected Aborted variant"),
+        }
+    }
+
+    #[test]
+    fn fleet_result_deserialize_success() {
+        let json = r#"{"status":"Success","deployed":3,"skipped":1,"failed":0}"#;
+        let result: FleetResult = serde_json::from_str(json).unwrap();
+        match result {
+            FleetResult::Success {
+                deployed,
+                skipped,
+                failed,
+            } => {
+                assert_eq!(deployed, 3);
+                assert_eq!(skipped, 1);
+                assert_eq!(failed, 0);
+            }
+            _ => panic!("Expected Success variant"),
+        }
+    }
+
+    #[test]
+    fn fleet_result_deserialize_canary_failed() {
+        let json = r#"{"status":"CanaryFailed","reason":"worker timeout"}"#;
+        let result: FleetResult = serde_json::from_str(json).unwrap();
+        match result {
+            FleetResult::CanaryFailed { reason } => {
+                assert_eq!(reason, "worker timeout");
+            }
+            _ => panic!("Expected CanaryFailed variant"),
+        }
+    }
+
+    #[test]
+    fn fleet_result_deserialize_aborted() {
+        let json = r#"{"status":"Aborted","reason":"ctrl+c"}"#;
+        let result: FleetResult = serde_json::from_str(json).unwrap();
+        match result {
+            FleetResult::Aborted { reason } => {
+                assert_eq!(reason, "ctrl+c");
+            }
+            _ => panic!("Expected Aborted variant"),
+        }
+    }
+
+    #[test]
+    fn fleet_result_roundtrip_all_variants() {
+        let variants = vec![
+            FleetResult::Success {
+                deployed: 10,
+                skipped: 2,
+                failed: 1,
+            },
+            FleetResult::CanaryFailed {
+                reason: "test failure".to_string(),
+            },
+            FleetResult::Aborted {
+                reason: "test abort".to_string(),
+            },
+        ];
+
+        for original in variants {
+            let json = serde_json::to_string(&original).unwrap();
+            let restored: FleetResult = serde_json::from_str(&json).unwrap();
+            let json_again = serde_json::to_string(&restored).unwrap();
+            assert_eq!(json, json_again);
+        }
+    }
+
+    // ========================
+    // FleetExecutor edge cases
+    // ========================
+
+    #[test]
+    fn fleet_executor_parallelism_zero() {
+        // Zero parallelism should still construct (validation happens at execute time)
+        let executor = FleetExecutor::new(0, None);
+        assert!(executor.is_ok());
+        assert_eq!(executor.unwrap().parallelism, 0);
+    }
+
+    #[test]
+    fn fleet_executor_very_large_parallelism() {
+        let executor = FleetExecutor::new(usize::MAX, None).unwrap();
+        assert_eq!(executor.parallelism, usize::MAX);
     }
 }
