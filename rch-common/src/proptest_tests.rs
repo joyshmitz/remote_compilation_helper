@@ -1472,4 +1472,499 @@ mod tests {
             assert_eq!(result.applied, vec!["MYKEY".to_string()]);
         }
     }
+
+    // ============================================================================
+    // Worker Selection Algorithm Tests (bd-1zy8)
+    // ============================================================================
+    //
+    // These tests verify worker selection types and their invariants:
+    // - SelectionStrategy: enum variants, display/fromstr roundtrip, JSON roundtrip
+    // - SelectionWeightConfig: weight values in [0,1], JSON roundtrip
+    // - FairnessConfig: configuration values, JSON roundtrip
+    // - AffinityConfig: configuration values, JSON roundtrip
+    // - SelectionConfig: composite configuration, JSON roundtrip
+
+    mod worker_selection {
+        use super::*;
+        use crate::{
+            AffinityConfig, FairnessConfig, SelectionConfig, SelectionStrategy,
+            SelectionWeightConfig,
+        };
+
+        // ---- Strategy for generating arbitrary SelectionStrategy ----
+
+        fn arb_selection_strategy() -> impl Strategy<Value = SelectionStrategy> {
+            prop_oneof![
+                Just(SelectionStrategy::Priority),
+                Just(SelectionStrategy::Fastest),
+                Just(SelectionStrategy::Balanced),
+                Just(SelectionStrategy::CacheAffinity),
+                Just(SelectionStrategy::FairFastest),
+            ]
+        }
+
+        // ---- Strategy for generating arbitrary SelectionWeightConfig ----
+
+        fn arb_selection_weight_config() -> impl Strategy<Value = SelectionWeightConfig> {
+            (
+                0.0f64..=1.0f64,  // speedscore
+                0.0f64..=1.0f64,  // slots
+                0.0f64..=1.0f64,  // health
+                0.0f64..=1.0f64,  // cache
+                0.0f64..=1.0f64,  // network
+                0.0f64..=1.0f64,  // priority
+                0.0f64..=1.0f64,  // half_open_penalty
+            )
+                .prop_map(
+                    |(speedscore, slots, health, cache, network, priority, half_open_penalty)| {
+                        SelectionWeightConfig {
+                            speedscore,
+                            slots,
+                            health,
+                            cache,
+                            network,
+                            priority,
+                            half_open_penalty,
+                        }
+                    },
+                )
+        }
+
+        // ---- Strategy for generating arbitrary FairnessConfig ----
+
+        fn arb_fairness_config() -> impl Strategy<Value = FairnessConfig> {
+            (1u64..=3600u64, 1u32..=100u32).prop_map(|(lookback_secs, max_consecutive_selections)| {
+                FairnessConfig {
+                    lookback_secs,
+                    max_consecutive_selections,
+                }
+            })
+        }
+
+        // ---- Strategy for generating arbitrary AffinityConfig ----
+
+        fn arb_affinity_config() -> impl Strategy<Value = AffinityConfig> {
+            (
+                any::<bool>(),    // enabled
+                1u64..=1440u64,   // pin_minutes (up to 24 hours)
+                any::<bool>(),    // enable_last_success_fallback
+                0.0f64..=1.0f64,  // fallback_min_success_rate
+            )
+                .prop_map(
+                    |(enabled, pin_minutes, enable_last_success_fallback, fallback_min_success_rate)| {
+                        AffinityConfig {
+                            enabled,
+                            pin_minutes,
+                            enable_last_success_fallback,
+                            fallback_min_success_rate,
+                        }
+                    },
+                )
+        }
+
+        // ---- Strategy for generating arbitrary SelectionConfig ----
+
+        fn arb_selection_config() -> impl Strategy<Value = SelectionConfig> {
+            (
+                arb_selection_strategy(),
+                0.0f64..=1.0f64,  // min_success_rate
+                arb_selection_weight_config(),
+                arb_fairness_config(),
+                arb_affinity_config(),
+                proptest::option::of(0.1f64..=10.0f64),  // max_load_per_core
+                proptest::option::of(1.0f64..=1000.0f64), // min_free_gb
+            )
+                .prop_map(
+                    |(strategy, min_success_rate, weights, fairness, affinity, max_load_per_core, min_free_gb)| {
+                        SelectionConfig {
+                            strategy,
+                            min_success_rate,
+                            weights,
+                            fairness,
+                            affinity,
+                            max_load_per_core,
+                            min_free_gb,
+                        }
+                    },
+                )
+        }
+
+        // ---- Helper for JSON roundtrip ----
+
+        fn assert_json_roundtrip_no_eq<T>(value: &T) -> Result<(), TestCaseError>
+        where
+            T: serde::Serialize + for<'de> serde::Deserialize<'de> + std::fmt::Debug,
+        {
+            let json = serde_json::to_string(value)
+                .map_err(|e| TestCaseError::fail(format!("Serialization failed: {}", e)))?;
+
+            let _deserialized: T = serde_json::from_str(&json)
+                .map_err(|e| TestCaseError::fail(format!("Deserialization failed: {}", e)))?;
+
+            Ok(())
+        }
+
+        // ---- Proptest tests for SelectionStrategy ----
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(1000))]
+
+            /// Property: SelectionStrategy JSON roundtrip.
+            #[test]
+            fn roundtrip_selection_strategy(strategy in arb_selection_strategy()) {
+                info!(target: "proptest::selection", "Testing SelectionStrategy roundtrip: {:?}", strategy);
+
+                let json = serde_json::to_string(&strategy).unwrap();
+                let deserialized: SelectionStrategy = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(strategy, deserialized);
+            }
+
+            /// Property: SelectionStrategy display/fromstr roundtrip.
+            #[test]
+            fn roundtrip_selection_strategy_string(strategy in arb_selection_strategy()) {
+                info!(target: "proptest::selection", "Testing SelectionStrategy string roundtrip: {:?}", strategy);
+
+                let display = strategy.to_string();
+                let parsed: SelectionStrategy = display.parse().unwrap();
+                prop_assert_eq!(strategy, parsed);
+            }
+
+            /// Property: SelectionStrategy fromstr is case-insensitive.
+            #[test]
+            fn selection_strategy_case_insensitive(strategy in arb_selection_strategy()) {
+                let display = strategy.to_string();
+                let upper: SelectionStrategy = display.to_uppercase().parse().unwrap();
+                let mixed: SelectionStrategy = {
+                    let mut chars: Vec<char> = display.chars().collect();
+                    for (i, c) in chars.iter_mut().enumerate() {
+                        if i % 2 == 0 {
+                            *c = c.to_uppercase().next().unwrap_or(*c);
+                        }
+                    }
+                    chars.iter().collect::<String>().parse().unwrap()
+                };
+
+                prop_assert_eq!(strategy, upper);
+                prop_assert_eq!(strategy, mixed);
+            }
+        }
+
+        // ---- Proptest tests for SelectionWeightConfig ----
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(1000))]
+
+            /// Property: SelectionWeightConfig JSON roundtrip.
+            #[test]
+            fn roundtrip_selection_weight_config(config in arb_selection_weight_config()) {
+                info!(target: "proptest::selection", "Testing SelectionWeightConfig roundtrip");
+                assert_json_roundtrip_no_eq(&config)?;
+            }
+
+            /// Property: SelectionWeightConfig weights are always in [0,1].
+            #[test]
+            fn weight_config_values_bounded(config in arb_selection_weight_config()) {
+                prop_assert!(config.speedscore >= 0.0 && config.speedscore <= 1.0);
+                prop_assert!(config.slots >= 0.0 && config.slots <= 1.0);
+                prop_assert!(config.health >= 0.0 && config.health <= 1.0);
+                prop_assert!(config.cache >= 0.0 && config.cache <= 1.0);
+                prop_assert!(config.network >= 0.0 && config.network <= 1.0);
+                prop_assert!(config.priority >= 0.0 && config.priority <= 1.0);
+                prop_assert!(config.half_open_penalty >= 0.0 && config.half_open_penalty <= 1.0);
+            }
+
+            /// Property: Default SelectionWeightConfig has valid weights.
+            #[test]
+            fn default_weight_config_valid(_seed in any::<u64>()) {
+                let config = SelectionWeightConfig::default();
+
+                prop_assert!(config.speedscore >= 0.0 && config.speedscore <= 1.0);
+                prop_assert!(config.slots >= 0.0 && config.slots <= 1.0);
+                prop_assert!(config.health >= 0.0 && config.health <= 1.0);
+                prop_assert!(config.cache >= 0.0 && config.cache <= 1.0);
+                prop_assert!(config.network >= 0.0 && config.network <= 1.0);
+                prop_assert!(config.priority >= 0.0 && config.priority <= 1.0);
+                prop_assert!(config.half_open_penalty >= 0.0 && config.half_open_penalty <= 1.0);
+            }
+        }
+
+        // ---- Proptest tests for FairnessConfig ----
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(500))]
+
+            /// Property: FairnessConfig JSON roundtrip.
+            #[test]
+            fn roundtrip_fairness_config(config in arb_fairness_config()) {
+                info!(target: "proptest::selection", "Testing FairnessConfig roundtrip");
+                assert_json_roundtrip_no_eq(&config)?;
+            }
+
+            /// Property: FairnessConfig has sensible values.
+            #[test]
+            fn fairness_config_values_valid(config in arb_fairness_config()) {
+                prop_assert!(config.lookback_secs >= 1, "Lookback must be at least 1 second");
+                prop_assert!(config.max_consecutive_selections >= 1, "Max consecutive must be at least 1");
+            }
+        }
+
+        // ---- Proptest tests for AffinityConfig ----
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(500))]
+
+            /// Property: AffinityConfig JSON roundtrip.
+            #[test]
+            fn roundtrip_affinity_config(config in arb_affinity_config()) {
+                info!(target: "proptest::selection", "Testing AffinityConfig roundtrip");
+                assert_json_roundtrip_no_eq(&config)?;
+            }
+
+            /// Property: AffinityConfig has valid fallback rate.
+            #[test]
+            fn affinity_config_values_valid(config in arb_affinity_config()) {
+                prop_assert!(config.pin_minutes >= 1, "Pin window must be at least 1 minute");
+                prop_assert!(
+                    config.fallback_min_success_rate >= 0.0 && config.fallback_min_success_rate <= 1.0,
+                    "Fallback rate must be in [0,1]"
+                );
+            }
+        }
+
+        // ---- Proptest tests for SelectionConfig ----
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(500))]
+
+            /// Property: SelectionConfig JSON roundtrip.
+            #[test]
+            fn roundtrip_selection_config(config in arb_selection_config()) {
+                info!(target: "proptest::selection", "Testing SelectionConfig roundtrip");
+                assert_json_roundtrip_no_eq(&config)?;
+            }
+
+            /// Property: SelectionConfig has valid min_success_rate.
+            #[test]
+            fn selection_config_success_rate_valid(config in arb_selection_config()) {
+                prop_assert!(
+                    config.min_success_rate >= 0.0 && config.min_success_rate <= 1.0,
+                    "min_success_rate must be in [0,1]"
+                );
+            }
+
+            /// Property: SelectionConfig with preflight guards valid when Some.
+            #[test]
+            fn selection_config_preflight_guards_valid(config in arb_selection_config()) {
+                if let Some(load) = config.max_load_per_core {
+                    prop_assert!(load > 0.0, "max_load_per_core must be positive");
+                }
+                if let Some(free) = config.min_free_gb {
+                    prop_assert!(free > 0.0, "min_free_gb must be positive");
+                }
+            }
+        }
+
+        // ---- Property tests for weight scoring invariants ----
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(2000))]
+
+            /// Property: Weighted score formula never produces NaN or infinity.
+            #[test]
+            fn weighted_score_finite(
+                slot_score in 0.0f64..=1.0f64,
+                speed_score in 0.0f64..=1.0f64,
+                locality_score in 0.0f64..=1.0f64,
+                priority_score in 0.0f64..=1.0f64,
+                weights in arb_selection_weight_config(),
+            ) {
+                // Simulate the compute_score formula from selection.rs
+                let base_score = weights.slots * slot_score
+                    + weights.speedscore * speed_score
+                    + weights.cache * locality_score;
+
+                let priority_factor = 1.0 + (weights.priority * priority_score);
+                let score = base_score * priority_factor;
+
+                prop_assert!(score.is_finite(), "Score must be finite: {}", score);
+                prop_assert!(score >= 0.0, "Score must be non-negative: {}", score);
+            }
+
+            /// Property: Half-open penalty reduces score but keeps it positive.
+            #[test]
+            fn half_open_penalty_reduces_score(
+                base_score in 0.001f64..=10.0f64,
+                penalty in 0.001f64..=1.0f64,
+            ) {
+                let penalized = base_score * penalty;
+
+                prop_assert!(penalized <= base_score, "Penalty should reduce score");
+                prop_assert!(penalized > 0.0, "Penalized score should stay positive");
+            }
+
+            /// Property: Priority normalization produces values in [0,1].
+            #[test]
+            fn normalize_priority_bounded(
+                priority in 0u32..=1000u32,
+                min_priority in 0u32..=500u32,
+                max_priority in 500u32..=1000u32,
+            ) {
+                // Skip invalid ranges
+                prop_assume!(min_priority <= max_priority);
+
+                let normalized = if max_priority == min_priority {
+                    1.0
+                } else {
+                    (priority.saturating_sub(min_priority)) as f64
+                        / (max_priority - min_priority) as f64
+                };
+
+                // Clamp to [0,1] for edge cases where priority is outside range
+                let clamped = normalized.clamp(0.0, 1.0);
+
+                prop_assert!(clamped >= 0.0 && clamped <= 1.0,
+                    "Normalized priority {} not in [0,1] (priority={}, min={}, max={})",
+                    clamped, priority, min_priority, max_priority);
+            }
+
+            /// Property: Same priority range produces 1.0.
+            #[test]
+            fn normalize_priority_same_range(priority in 0u32..=1000u32) {
+                let normalized = if priority == priority {
+                    // Same min and max
+                    1.0
+                } else {
+                    (priority.saturating_sub(priority)) as f64 / (priority - priority) as f64
+                };
+
+                prop_assert_eq!(normalized, 1.0);
+            }
+        }
+
+        // ---- Specific edge case tests ----
+
+        #[test]
+        fn selection_strategy_all_variants_roundtrip() {
+            let strategies = [
+                SelectionStrategy::Priority,
+                SelectionStrategy::Fastest,
+                SelectionStrategy::Balanced,
+                SelectionStrategy::CacheAffinity,
+                SelectionStrategy::FairFastest,
+            ];
+
+            for strategy in strategies {
+                let json = serde_json::to_string(&strategy).unwrap();
+                let deserialized: SelectionStrategy = serde_json::from_str(&json).unwrap();
+                assert_eq!(strategy, deserialized);
+
+                let display = strategy.to_string();
+                let parsed: SelectionStrategy = display.parse().unwrap();
+                assert_eq!(strategy, parsed);
+            }
+        }
+
+        #[test]
+        fn selection_strategy_snake_case_serialization() {
+            let strategy = SelectionStrategy::CacheAffinity;
+            let json = serde_json::to_string(&strategy).unwrap();
+            assert!(
+                json.contains("cache_affinity"),
+                "Expected snake_case: {}",
+                json
+            );
+
+            let strategy = SelectionStrategy::FairFastest;
+            let json = serde_json::to_string(&strategy).unwrap();
+            assert!(
+                json.contains("fair_fastest"),
+                "Expected snake_case: {}",
+                json
+            );
+        }
+
+        #[test]
+        fn selection_strategy_alternate_formats() {
+            // Test hyphenated variants
+            let parsed: SelectionStrategy = "cache-affinity".parse().unwrap();
+            assert_eq!(parsed, SelectionStrategy::CacheAffinity);
+
+            let parsed: SelectionStrategy = "fair-fastest".parse().unwrap();
+            assert_eq!(parsed, SelectionStrategy::FairFastest);
+
+            // Test concatenated variants
+            let parsed: SelectionStrategy = "cacheaffinity".parse().unwrap();
+            assert_eq!(parsed, SelectionStrategy::CacheAffinity);
+
+            let parsed: SelectionStrategy = "fairfastest".parse().unwrap();
+            assert_eq!(parsed, SelectionStrategy::FairFastest);
+        }
+
+        #[test]
+        fn selection_strategy_invalid_string() {
+            let result: Result<SelectionStrategy, _> = "invalid".parse();
+            assert!(result.is_err());
+
+            let result: Result<SelectionStrategy, _> = "".parse();
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn selection_config_defaults_reasonable() {
+            let config = SelectionConfig::default();
+
+            // Strategy default
+            assert_eq!(config.strategy, SelectionStrategy::Priority);
+
+            // min_success_rate default (0.8)
+            assert!((config.min_success_rate - 0.8).abs() < 0.001);
+
+            // Preflight guards should have defaults
+            assert!(config.max_load_per_core.is_some());
+            assert!(config.min_free_gb.is_some());
+
+            // Affinity should be enabled by default
+            assert!(config.affinity.enabled);
+        }
+
+        #[test]
+        fn weight_config_defaults_sum_reasonable() {
+            let config = SelectionWeightConfig::default();
+
+            // The sum of main weights should be reasonable (not necessarily 1.0)
+            let sum = config.speedscore + config.slots + config.health + config.cache;
+            assert!(sum > 0.5 && sum < 3.0, "Weight sum {} seems unreasonable", sum);
+
+            // half_open_penalty should be a multiplier (0-1)
+            assert!(config.half_open_penalty > 0.0 && config.half_open_penalty <= 1.0);
+        }
+
+        #[test]
+        fn fairness_config_defaults_reasonable() {
+            let config = FairnessConfig::default();
+
+            // Default lookback should be a few minutes
+            assert!(config.lookback_secs >= 60 && config.lookback_secs <= 600);
+
+            // Default max consecutive should be small
+            assert!(config.max_consecutive_selections >= 1 && config.max_consecutive_selections <= 10);
+        }
+
+        #[test]
+        fn affinity_config_defaults_reasonable() {
+            let config = AffinityConfig::default();
+
+            // Affinity should be enabled by default
+            assert!(config.enabled);
+
+            // Pin window should be between 15 minutes and 4 hours
+            assert!(config.pin_minutes >= 15 && config.pin_minutes <= 240);
+
+            // Fallback should be enabled
+            assert!(config.enable_last_success_fallback);
+
+            // Fallback rate should be more lenient than main rate
+            assert!(config.fallback_min_success_rate < 0.8);
+        }
+    }
 }

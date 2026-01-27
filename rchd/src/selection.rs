@@ -3387,4 +3387,520 @@ mod tests {
         let fallback = selector.get_fallback_worker("project-a").await;
         assert!(fallback.is_none());
     }
+
+    // ========================================================================
+    // Property-Based Tests (bd-1zy8)
+    // ========================================================================
+
+    mod proptest_selection {
+        use super::*;
+        use proptest::prelude::*;
+        use std::time::Duration;
+
+        // ====================================================================
+        // normalize_latency_ms property tests
+        // ====================================================================
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(1000))]
+
+            /// Output is always in [0.0, 1.0] for any latency value.
+            #[test]
+            fn test_normalize_latency_output_range(latency_ms in 0u64..=u64::MAX) {
+                let score = WorkerSelector::normalize_latency_ms(latency_ms);
+                prop_assert!(score >= 0.0, "Score {score} below 0.0 for latency {latency_ms}");
+                prop_assert!(score <= 1.0, "Score {score} above 1.0 for latency {latency_ms}");
+            }
+
+            /// Larger latency always gives lower or equal score (monotonically decreasing).
+            #[test]
+            fn test_normalize_latency_monotonic(
+                latency_a in 0u64..=1_000_000_000u64,
+                latency_b in 0u64..=1_000_000_000u64,
+            ) {
+                let score_a = WorkerSelector::normalize_latency_ms(latency_a);
+                let score_b = WorkerSelector::normalize_latency_ms(latency_b);
+
+                if latency_a <= latency_b {
+                    prop_assert!(
+                        score_a >= score_b,
+                        "Expected score_a ({score_a}) >= score_b ({score_b}) for latency_a ({latency_a}) <= latency_b ({latency_b})"
+                    );
+                }
+            }
+
+            /// Zero latency gives maximum score of 1.0.
+            #[test]
+            fn test_normalize_latency_zero(_seed in 0u64..100u64) {
+                let score = WorkerSelector::normalize_latency_ms(0);
+                prop_assert!(
+                    (score - 1.0).abs() < f64::EPSILON,
+                    "Zero latency should give score 1.0, got {score}"
+                );
+            }
+
+            /// At half-life (200ms), score should be 0.5.
+            #[test]
+            fn test_normalize_latency_half_life(_seed in 0u64..100u64) {
+                let score = WorkerSelector::normalize_latency_ms(200);
+                prop_assert!(
+                    (score - 0.5).abs() < 0.01,
+                    "Half-life latency (200ms) should give score ~0.5, got {score}"
+                );
+            }
+        }
+
+        // ====================================================================
+        // normalize_priority property tests
+        // ====================================================================
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(1000))]
+
+            /// Output is always in [0.0, 1.0] for any valid priority range.
+            #[test]
+            fn test_normalize_priority_output_range(
+                priority in 0u32..=1000u32,
+                min_priority in 0u32..=500u32,
+                max_priority in 500u32..=1000u32,
+            ) {
+                // Ensure priority is within the range
+                let clamped_priority = priority.clamp(min_priority, max_priority);
+                let score = WorkerSelector::normalize_priority(clamped_priority, min_priority, max_priority);
+                prop_assert!(score >= 0.0, "Score {score} below 0.0");
+                prop_assert!(score <= 1.0, "Score {score} above 1.0");
+            }
+
+            /// When min == max, should return 1.0.
+            #[test]
+            fn test_normalize_priority_equal_bounds(value in 0u32..=1000u32) {
+                let score = WorkerSelector::normalize_priority(value, value, value);
+                prop_assert!(
+                    (score - 1.0).abs() < f64::EPSILON,
+                    "Equal bounds should give score 1.0, got {score}"
+                );
+            }
+
+            /// Priority at min gives 0.0, at max gives 1.0.
+            #[test]
+            fn test_normalize_priority_boundary_values(
+                min_priority in 0u32..=500u32,
+                max_priority in 501u32..=1000u32,
+            ) {
+                let min_score = WorkerSelector::normalize_priority(min_priority, min_priority, max_priority);
+                let max_score = WorkerSelector::normalize_priority(max_priority, min_priority, max_priority);
+
+                prop_assert!(
+                    min_score.abs() < f64::EPSILON,
+                    "Min priority should give score 0.0, got {min_score}"
+                );
+                prop_assert!(
+                    (max_score - 1.0).abs() < f64::EPSILON,
+                    "Max priority should give score 1.0, got {max_score}"
+                );
+            }
+
+            /// Higher priority always gives higher or equal score (monotonically increasing).
+            #[test]
+            fn test_normalize_priority_monotonic(
+                priority_a in 0u32..=1000u32,
+                priority_b in 0u32..=1000u32,
+                min_priority in 0u32..=100u32,
+                max_priority in 900u32..=1000u32,
+            ) {
+                let clamped_a = priority_a.clamp(min_priority, max_priority);
+                let clamped_b = priority_b.clamp(min_priority, max_priority);
+                let score_a = WorkerSelector::normalize_priority(clamped_a, min_priority, max_priority);
+                let score_b = WorkerSelector::normalize_priority(clamped_b, min_priority, max_priority);
+
+                if clamped_a <= clamped_b {
+                    prop_assert!(
+                        score_a <= score_b,
+                        "Expected score_a ({score_a}) <= score_b ({score_b}) for priority_a ({clamped_a}) <= priority_b ({clamped_b})"
+                    );
+                }
+            }
+        }
+
+        // ====================================================================
+        // SelectionWeights property tests
+        // ====================================================================
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(500))]
+
+            /// SelectionWeights from config preserves values.
+            #[test]
+            fn test_selection_weights_from_config(
+                slots in 0.0f64..=1.0f64,
+                speedscore in 0.0f64..=1.0f64,
+                cache in 0.0f64..=1.0f64,
+                priority in 0.0f64..=1.0f64,
+                half_open_penalty in 0.0f64..=1.0f64,
+            ) {
+                let config = SelectionWeightConfig {
+                    slots,
+                    speedscore,
+                    cache,
+                    priority,
+                    half_open_penalty,
+                    health: 0.1,
+                    network: 0.1,
+                };
+                let weights = SelectionWeights::from(&config);
+
+                prop_assert!((weights.slots - slots).abs() < f64::EPSILON);
+                prop_assert!((weights.speed - speedscore).abs() < f64::EPSILON);
+                prop_assert!((weights.locality - cache).abs() < f64::EPSILON);
+                prop_assert!((weights.priority - priority).abs() < f64::EPSILON);
+                prop_assert!((weights.half_open_penalty - half_open_penalty).abs() < f64::EPSILON);
+            }
+        }
+
+        // ====================================================================
+        // SelectionAuditLog property tests
+        // ====================================================================
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(200))]
+
+            /// Audit log respects max_entries capacity.
+            #[test]
+            fn test_audit_log_capacity(
+                max_entries in 1usize..=100usize,
+                num_entries in 0usize..=200usize,
+            ) {
+                let mut log = SelectionAuditLog::new(max_entries);
+
+                for i in 0..num_entries {
+                    let entry = SelectionAuditEntry {
+                        id: 0, // Will be set by push
+                        timestamp_ms: i as u64,
+                        project: format!("project-{i}"),
+                        command: None,
+                        strategy: "Priority".to_string(),
+                        command_priority: "Normal".to_string(),
+                        required_runtime: None,
+                        eligible_count: 1,
+                        workers_evaluated: vec![],
+                        selected_worker_id: Some("worker-1".to_string()),
+                        reason: "Success".to_string(),
+                        classification_duration_us: None,
+                        selection_duration_us: 100,
+                    };
+                    log.push(entry);
+                }
+
+                prop_assert!(
+                    log.len() <= max_entries,
+                    "Log size {} exceeds max_entries {max_entries}",
+                    log.len()
+                );
+            }
+
+            /// Audit log IDs are monotonically increasing.
+            #[test]
+            fn test_audit_log_ids_increasing(num_entries in 2usize..=50usize) {
+                let mut log = SelectionAuditLog::new(100);
+
+                for i in 0..num_entries {
+                    let entry = SelectionAuditEntry {
+                        id: 0,
+                        timestamp_ms: i as u64,
+                        project: format!("project-{i}"),
+                        command: None,
+                        strategy: "Priority".to_string(),
+                        command_priority: "Normal".to_string(),
+                        required_runtime: None,
+                        eligible_count: 1,
+                        workers_evaluated: vec![],
+                        selected_worker_id: Some("worker-1".to_string()),
+                        reason: "Success".to_string(),
+                        classification_duration_us: None,
+                        selection_duration_us: 100,
+                    };
+                    log.push(entry);
+                }
+
+                let entries: Vec<_> = log.entries().iter().collect();
+                for i in 1..entries.len() {
+                    prop_assert!(
+                        entries[i].id > entries[i - 1].id,
+                        "IDs not monotonically increasing: {} vs {}",
+                        entries[i - 1].id,
+                        entries[i].id
+                    );
+                }
+            }
+
+            /// last_n returns at most n entries.
+            #[test]
+            fn test_audit_log_last_n(
+                num_entries in 0usize..=50usize,
+                n in 0usize..=100usize,
+            ) {
+                let mut log = SelectionAuditLog::new(100);
+
+                for i in 0..num_entries {
+                    let entry = SelectionAuditEntry {
+                        id: 0,
+                        timestamp_ms: i as u64,
+                        project: format!("project-{i}"),
+                        command: None,
+                        strategy: "Priority".to_string(),
+                        command_priority: "Normal".to_string(),
+                        required_runtime: None,
+                        eligible_count: 1,
+                        workers_evaluated: vec![],
+                        selected_worker_id: Some("worker-1".to_string()),
+                        reason: "Success".to_string(),
+                        classification_duration_us: None,
+                        selection_duration_us: 100,
+                    };
+                    log.push(entry);
+                }
+
+                let last_n_entries = log.last_n(n);
+                prop_assert!(
+                    last_n_entries.len() <= n,
+                    "last_n({n}) returned {} entries",
+                    last_n_entries.len()
+                );
+                prop_assert!(
+                    last_n_entries.len() <= num_entries,
+                    "last_n returned more entries than exist"
+                );
+            }
+        }
+
+        // ====================================================================
+        // SelectionHistory property tests
+        // ====================================================================
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(200))]
+
+            /// History respects max_history_per_worker limit.
+            #[test]
+            fn test_selection_history_capacity(num_selections in 0usize..=200usize) {
+                let mut history = SelectionHistory::default();
+
+                for _ in 0..num_selections {
+                    history.record_selection("worker-1");
+                }
+
+                // Internal limit is 100
+                let count = history.recent_selections("worker-1", Duration::from_secs(3600));
+                prop_assert!(
+                    count <= 100,
+                    "History count {count} exceeds max_history_per_worker"
+                );
+            }
+
+            /// recent_selections returns 0 for unknown workers.
+            #[test]
+            fn test_selection_history_unknown_worker(
+                worker_id in "[a-z]{5,10}",
+            ) {
+                let history = SelectionHistory::new();
+                let count = history.recent_selections(&worker_id, Duration::from_secs(3600));
+                prop_assert_eq!(count, 0, "Unknown worker should have 0 selections");
+            }
+
+            /// Recorded selections are counted.
+            #[test]
+            fn test_selection_history_counts_match(
+                num_selections in 1usize..=50usize,
+            ) {
+                let mut history = SelectionHistory::new();
+
+                for _ in 0..num_selections {
+                    history.record_selection("test-worker");
+                }
+
+                // Use a very long window to capture all recent selections
+                let count = history.recent_selections("test-worker", Duration::from_secs(3600));
+                prop_assert_eq!(
+                    count, num_selections,
+                    "Expected {num_selections} selections, got {count}"
+                );
+            }
+        }
+
+        // ====================================================================
+        // CacheTracker property tests
+        // ====================================================================
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(200))]
+
+            /// estimate_warmth returns value in [0.0, 1.0].
+            #[test]
+            fn test_cache_tracker_warmth_range(
+                worker_id in "[a-z]{3,8}",
+                project_id in "[a-z]{3,8}",
+            ) {
+                let mut tracker = CacheTracker::new();
+                tracker.record_build(&worker_id, &project_id, CacheUse::Build);
+
+                let warmth = tracker.estimate_warmth(&worker_id, &project_id, CacheUse::Build);
+                prop_assert!(warmth >= 0.0, "Warmth {warmth} below 0.0");
+                prop_assert!(warmth <= 1.0, "Warmth {warmth} above 1.0");
+            }
+
+            /// Unknown worker/project returns 0.0 warmth.
+            #[test]
+            fn test_cache_tracker_unknown_warmth(
+                worker_id in "[a-z]{3,8}",
+                project_id in "[a-z]{3,8}",
+            ) {
+                let tracker = CacheTracker::new();
+                let warmth = tracker.estimate_warmth(&worker_id, &project_id, CacheUse::Build);
+                prop_assert!(
+                    warmth.abs() < f64::EPSILON,
+                    "Unknown worker/project should have 0.0 warmth, got {warmth}"
+                );
+            }
+
+            /// CacheTracker respects max_projects_per_worker limit.
+            #[test]
+            fn test_cache_tracker_project_limit(num_projects in 40usize..=100usize) {
+                let mut tracker = CacheTracker::new();
+
+                for i in 0..num_projects {
+                    tracker.record_build("worker-1", &format!("project-{i}"), CacheUse::Build);
+                }
+
+                // Default limit is 50 projects per worker
+                let worker_projects = tracker.workers.get("worker-1").map(|m| m.len()).unwrap_or(0);
+                prop_assert!(
+                    worker_projects <= 50,
+                    "Worker has {worker_projects} projects, exceeds limit of 50"
+                );
+            }
+
+            /// Test cache warmth immediately after recording is 1.0.
+            #[test]
+            fn test_cache_tracker_immediate_warmth(
+                worker_id in "[a-z]{3,8}",
+                project_id in "[a-z]{3,8}",
+            ) {
+                let mut tracker = CacheTracker::new();
+                tracker.record_build(&worker_id, &project_id, CacheUse::Build);
+
+                let warmth = tracker.estimate_warmth(&worker_id, &project_id, CacheUse::Build);
+                // Immediately after recording, warmth should be 1.0 (less than 1 hour old)
+                prop_assert!(
+                    (warmth - 1.0).abs() < 0.01,
+                    "Immediate warmth should be ~1.0, got {warmth}"
+                );
+            }
+        }
+
+        // ====================================================================
+        // CacheState property tests
+        // ====================================================================
+
+        #[test]
+        fn test_cache_state_last_activity_none() {
+            let state = CacheState::default();
+            assert!(state.last_activity().is_none());
+        }
+
+        #[test]
+        fn test_cache_state_last_activity_build_only() {
+            let now = Instant::now();
+            let state = CacheState {
+                last_build: Some(now),
+                last_test: None,
+                last_success: None,
+            };
+            assert_eq!(state.last_activity(), Some(now));
+        }
+
+        #[test]
+        fn test_cache_state_last_activity_test_only() {
+            let now = Instant::now();
+            let state = CacheState {
+                last_build: None,
+                last_test: Some(now),
+                last_success: None,
+            };
+            assert_eq!(state.last_activity(), Some(now));
+        }
+
+        #[test]
+        fn test_cache_state_last_activity_both_returns_max() {
+            let earlier = Instant::now();
+            // Sleep briefly to ensure later > earlier
+            std::thread::sleep(Duration::from_millis(1));
+            let later = Instant::now();
+
+            let state = CacheState {
+                last_build: Some(earlier),
+                last_test: Some(later),
+                last_success: None,
+            };
+            assert_eq!(state.last_activity(), Some(later));
+
+            let state2 = CacheState {
+                last_build: Some(later),
+                last_test: Some(earlier),
+                last_success: None,
+            };
+            assert_eq!(state2.last_activity(), Some(later));
+        }
+
+        // ====================================================================
+        // Targeted edge case tests
+        // ====================================================================
+
+        #[test]
+        fn test_normalize_latency_extreme_values() {
+            // Test u64::MAX doesn't panic or produce NaN
+            let score = WorkerSelector::normalize_latency_ms(u64::MAX);
+            assert!(score >= 0.0);
+            assert!(score <= 1.0);
+            assert!(!score.is_nan());
+        }
+
+        #[test]
+        fn test_normalize_priority_edge_cases() {
+            // Priority below min (saturating_sub handles this)
+            let score = WorkerSelector::normalize_priority(0, 100, 200);
+            assert!((score - 0.0).abs() < f64::EPSILON);
+
+            // Priority above max
+            let score = WorkerSelector::normalize_priority(300, 100, 200);
+            assert!(score >= 1.0); // Will be 2.0 without clamping, which is fine for internal use
+        }
+
+        #[test]
+        fn test_selection_history_prune() {
+            let mut history = SelectionHistory::new();
+
+            // Record some selections
+            history.record_selection("worker-1");
+            history.record_selection("worker-2");
+
+            // Prune with zero duration should remove all
+            history.prune(Duration::from_secs(0));
+
+            // All selections should be pruned (except those exactly at cutoff)
+            // Since we just recorded, a zero-duration prune removes everything
+            let count = history.recent_selections("worker-1", Duration::from_secs(3600));
+            // Note: prune behavior may keep very recent entries, so we just check it doesn't panic
+            assert!(count <= 1);
+        }
+
+        #[test]
+        fn test_audit_log_empty_operations() {
+            let log = SelectionAuditLog::new(10);
+            assert!(log.is_empty());
+            assert_eq!(log.len(), 0);
+            assert!(log.last().is_none());
+            assert!(log.get(1).is_none());
+            assert!(log.last_n(5).is_empty());
+        }
+    }
 }

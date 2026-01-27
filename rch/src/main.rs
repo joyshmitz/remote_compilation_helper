@@ -3723,4 +3723,283 @@ mod tests {
         assert!(names.contains(&"config"));
         assert!(names.contains(&"hook"));
     }
+
+    // -------------------------------------------------------------------------
+    // Queue Subcommand Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn cli_parses_queue_default() {
+        let cli = Cli::try_parse_from(["rch", "queue"]).unwrap();
+        match cli.command {
+            Some(Commands::Queue { watch }) => {
+                assert!(!watch);
+            }
+            _ => panic!("Expected queue command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_queue_watch() {
+        let cli = Cli::try_parse_from(["rch", "queue", "--watch"]).unwrap();
+        match cli.command {
+            Some(Commands::Queue { watch }) => {
+                assert!(watch);
+            }
+            _ => panic!("Expected queue command with watch"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_queue_watch_short() {
+        let cli = Cli::try_parse_from(["rch", "queue", "-w"]).unwrap();
+        match cli.command {
+            Some(Commands::Queue { watch }) => {
+                assert!(watch);
+            }
+            _ => panic!("Expected queue command with -w"),
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Cancel Subcommand Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn cli_parses_cancel_by_id() {
+        let cli = Cli::try_parse_from(["rch", "cancel", "42"]).unwrap();
+        match cli.command {
+            Some(Commands::Cancel {
+                build_id,
+                all,
+                force,
+                yes,
+            }) => {
+                assert_eq!(build_id, Some(42));
+                assert!(!all);
+                assert!(!force);
+                assert!(!yes);
+            }
+            _ => panic!("Expected cancel command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_cancel_all() {
+        let cli = Cli::try_parse_from(["rch", "cancel", "--all"]).unwrap();
+        match cli.command {
+            Some(Commands::Cancel {
+                build_id,
+                all,
+                force,
+                yes,
+            }) => {
+                assert!(build_id.is_none());
+                assert!(all);
+                assert!(!force);
+                assert!(!yes);
+            }
+            _ => panic!("Expected cancel --all command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_cancel_all_yes() {
+        let cli = Cli::try_parse_from(["rch", "cancel", "--all", "--yes"]).unwrap();
+        match cli.command {
+            Some(Commands::Cancel {
+                build_id,
+                all,
+                force,
+                yes,
+            }) => {
+                assert!(build_id.is_none());
+                assert!(all);
+                assert!(!force);
+                assert!(yes);
+            }
+            _ => panic!("Expected cancel --all --yes command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_cancel_force() {
+        let cli = Cli::try_parse_from(["rch", "cancel", "42", "--force"]).unwrap();
+        match cli.command {
+            Some(Commands::Cancel {
+                build_id,
+                all,
+                force,
+                yes,
+            }) => {
+                assert_eq!(build_id, Some(42));
+                assert!(!all);
+                assert!(force);
+                assert!(!yes);
+            }
+            _ => panic!("Expected cancel with --force"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_cancel_force_short() {
+        let cli = Cli::try_parse_from(["rch", "cancel", "42", "-f"]).unwrap();
+        match cli.command {
+            Some(Commands::Cancel {
+                build_id,
+                all,
+                force,
+                yes,
+            }) => {
+                assert_eq!(build_id, Some(42));
+                assert!(force);
+            }
+            _ => panic!("Expected cancel with -f"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_cancel_yes_short() {
+        let cli = Cli::try_parse_from(["rch", "cancel", "--all", "-y"]).unwrap();
+        match cli.command {
+            Some(Commands::Cancel { yes, .. }) => {
+                assert!(yes);
+            }
+            _ => panic!("Expected cancel with -y"),
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // SelfTest Subcommand Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn cli_parses_self_test_default() {
+        let cli = Cli::try_parse_from(["rch", "self-test"]).unwrap();
+        match cli.command {
+            Some(Commands::SelfTest {
+                action,
+                worker,
+                all,
+                project,
+                timeout,
+                debug,
+                scheduled,
+            }) => {
+                assert!(action.is_none());
+                assert!(worker.is_none());
+                assert!(!all);
+                assert!(project.is_none());
+                assert_eq!(timeout, 300);
+                assert!(!debug);
+                assert!(!scheduled);
+            }
+            _ => panic!("Expected self-test command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_self_test_worker() {
+        let cli = Cli::try_parse_from(["rch", "self-test", "--worker", "css"]).unwrap();
+        match cli.command {
+            Some(Commands::SelfTest {
+                worker, all, ..
+            }) => {
+                assert_eq!(worker.as_deref(), Some("css"));
+                assert!(!all);
+            }
+            _ => panic!("Expected self-test --worker command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_self_test_all() {
+        let cli = Cli::try_parse_from(["rch", "self-test", "--all"]).unwrap();
+        match cli.command {
+            Some(Commands::SelfTest { all, .. }) => {
+                assert!(all);
+            }
+            _ => panic!("Expected self-test --all command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_self_test_timeout() {
+        let cli = Cli::try_parse_from(["rch", "self-test", "--timeout", "600"]).unwrap();
+        match cli.command {
+            Some(Commands::SelfTest { timeout, .. }) => {
+                assert_eq!(timeout, 600);
+            }
+            _ => panic!("Expected self-test --timeout command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_self_test_debug() {
+        let cli = Cli::try_parse_from(["rch", "self-test", "--debug"]).unwrap();
+        match cli.command {
+            Some(Commands::SelfTest { debug, .. }) => {
+                assert!(debug);
+            }
+            _ => panic!("Expected self-test --debug command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_self_test_scheduled() {
+        let cli = Cli::try_parse_from(["rch", "self-test", "--scheduled"]).unwrap();
+        match cli.command {
+            Some(Commands::SelfTest { scheduled, .. }) => {
+                assert!(scheduled);
+            }
+            _ => panic!("Expected self-test --scheduled command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_self_test_status() {
+        let cli = Cli::try_parse_from(["rch", "self-test", "status"]).unwrap();
+        match cli.command {
+            Some(Commands::SelfTest { action, .. }) => {
+                assert!(matches!(action, Some(SelfTestAction::Status)));
+            }
+            _ => panic!("Expected self-test status command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_self_test_history() {
+        let cli = Cli::try_parse_from(["rch", "self-test", "history"]).unwrap();
+        match cli.command {
+            Some(Commands::SelfTest { action, .. }) => {
+                assert!(matches!(action, Some(SelfTestAction::History { limit: 10 })));
+            }
+            _ => panic!("Expected self-test history command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_self_test_history_limit() {
+        let cli = Cli::try_parse_from(["rch", "self-test", "history", "--limit", "20"]).unwrap();
+        match cli.command {
+            Some(Commands::SelfTest { action, .. }) => {
+                assert!(matches!(action, Some(SelfTestAction::History { limit: 20 })));
+            }
+            _ => panic!("Expected self-test history --limit command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_self_test_project() {
+        let cli = Cli::try_parse_from(["rch", "self-test", "--project", "/tmp/test"]).unwrap();
+        match cli.command {
+            Some(Commands::SelfTest { project, .. }) => {
+                assert_eq!(
+                    project.as_ref().map(|p| p.display().to_string()),
+                    Some("/tmp/test".to_string())
+                );
+            }
+            _ => panic!("Expected self-test --project command"),
+        }
+    }
 }
