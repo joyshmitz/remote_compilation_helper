@@ -1301,6 +1301,11 @@ pub struct CompilationConfig {
     /// Skip interception if estimated local time < this (ms).
     #[serde(default = "default_min_local_time")]
     pub min_local_time_ms: u64,
+    /// Minimum expected speedup ratio (local_time / remote_time) to offload.
+    /// If predicted speedup < threshold, run locally. Default: 1.2 (20% faster).
+    /// Set to 1.0 to always offload when other criteria are met.
+    #[serde(default = "default_speedup_threshold")]
+    pub remote_speedup_threshold: f64,
     /// Default slot estimate for build commands (cargo build, gcc, etc.).
     #[serde(default = "default_build_slots")]
     pub build_slots: u32,
@@ -1327,6 +1332,7 @@ impl Default for CompilationConfig {
         Self {
             confidence_threshold: 0.85,
             min_local_time_ms: 2000,
+            remote_speedup_threshold: default_speedup_threshold(),
             build_slots: default_build_slots(),
             test_slots: default_test_slots(),
             check_slots: default_check_slots(),
@@ -1827,6 +1833,13 @@ fn default_confidence() -> f64 {
 
 fn default_min_local_time() -> u64 {
     2000
+}
+
+/// Default speedup threshold: 1.2 (require 20% speedup to offload).
+/// This is conservative to avoid offloading builds that would be only
+/// marginally faster remotely when accounting for transfer overhead.
+fn default_speedup_threshold() -> f64 {
+    1.2
 }
 
 fn default_compression() -> u32 {
@@ -3251,6 +3264,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_compilation_config_speedup_threshold_default() {
+        let config = CompilationConfig::default();
+        // Default speedup threshold: 1.2 (20% faster required)
+        assert!((config.remote_speedup_threshold - 1.2).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_compilation_config_speedup_threshold_custom() {
+        let config = CompilationConfig {
+            remote_speedup_threshold: 1.5, // Require 50% faster
+            ..Default::default()
+        };
+        assert!((config.remote_speedup_threshold - 1.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_compilation_config_speedup_threshold_no_minimum() {
+        // Setting to 1.0 means "always offload when other criteria met"
+        let config = CompilationConfig {
+            remote_speedup_threshold: 1.0,
+            ..Default::default()
+        };
+        assert!((config.remote_speedup_threshold - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_compilation_config_min_local_time_ms_default() {
+        let config = CompilationConfig::default();
+        // Default min_local_time_ms: 2000ms
+        assert_eq!(config.min_local_time_ms, 2000);
+    }
+
+    #[test]
+    fn test_compilation_config_serde_roundtrip_speedup_threshold() {
+        let config = CompilationConfig {
+            remote_speedup_threshold: 2.5,
+            min_local_time_ms: 5000,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: CompilationConfig = serde_json::from_str(&json).unwrap();
+        assert!((parsed.remote_speedup_threshold - 2.5).abs() < 0.001);
+        assert_eq!(parsed.min_local_time_ms, 5000);
+    }
+
     // ========================================================================
     // validate_remote_base Tests
     // ========================================================================
@@ -3630,5 +3689,103 @@ mod tests {
         assert!(parsed.adaptive_compression);
         assert_eq!(parsed.min_compression_level, 2);
         assert_eq!(parsed.max_compression_level, 8);
+    }
+
+    // -------------------------------------------------------------------------
+    // Preflight Health Guard Tests (bd-3eaa)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_load_per_core_calculation() {
+        let mut caps = WorkerCapabilities::new();
+        // No metrics -> None
+        assert!(caps.load_per_core().is_none());
+
+        // Only load, no cpus -> None
+        caps.load_avg_1 = Some(4.0);
+        assert!(caps.load_per_core().is_none());
+
+        // Both available
+        caps.num_cpus = Some(4);
+        assert_eq!(caps.load_per_core(), Some(1.0)); // 4.0 / 4 = 1.0
+
+        // High load
+        caps.load_avg_1 = Some(16.0);
+        assert_eq!(caps.load_per_core(), Some(4.0)); // 16.0 / 4 = 4.0
+    }
+
+    #[test]
+    fn test_is_high_load() {
+        let mut caps = WorkerCapabilities::new();
+        caps.load_avg_1 = Some(8.0);
+        caps.num_cpus = Some(4);
+        // load_per_core = 2.0
+
+        // Below threshold
+        assert_eq!(caps.is_high_load(3.0), Some(false));
+        // At threshold
+        assert_eq!(caps.is_high_load(2.0), Some(false)); // equal is OK
+        // Above threshold
+        assert_eq!(caps.is_high_load(1.5), Some(true));
+
+        // No metrics -> None (fail-open)
+        caps.load_avg_1 = None;
+        assert!(caps.is_high_load(1.0).is_none());
+    }
+
+    #[test]
+    fn test_is_low_disk() {
+        let mut caps = WorkerCapabilities::new();
+        caps.disk_free_gb = Some(15.0);
+
+        // Above threshold
+        assert_eq!(caps.is_low_disk(10.0), Some(false));
+        // At threshold
+        assert_eq!(caps.is_low_disk(15.0), Some(false)); // equal is OK
+        // Below threshold
+        assert_eq!(caps.is_low_disk(20.0), Some(true));
+
+        // No metrics -> None (fail-open)
+        caps.disk_free_gb = None;
+        assert!(caps.is_low_disk(10.0).is_none());
+    }
+
+    #[test]
+    fn test_selection_config_preflight_defaults() {
+        let config = SelectionConfig::default();
+        // Default thresholds
+        assert_eq!(config.max_load_per_core, Some(2.0));
+        assert_eq!(config.min_free_gb, Some(10.0));
+    }
+
+    #[test]
+    fn test_selection_config_preflight_serde() {
+        let config = SelectionConfig {
+            max_load_per_core: Some(3.5),
+            min_free_gb: Some(25.0),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: SelectionConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.max_load_per_core, Some(3.5));
+        assert_eq!(parsed.min_free_gb, Some(25.0));
+    }
+
+    #[test]
+    fn test_worker_capabilities_health_metrics_serde() {
+        let caps = WorkerCapabilities {
+            num_cpus: Some(8),
+            load_avg_1: Some(1.5),
+            load_avg_5: Some(2.0),
+            load_avg_15: Some(1.8),
+            disk_free_gb: Some(50.5),
+            disk_total_gb: Some(100.0),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&caps).unwrap();
+        let parsed: WorkerCapabilities = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.num_cpus, Some(8));
+        assert_eq!(parsed.load_avg_1, Some(1.5));
+        assert_eq!(parsed.disk_free_gb, Some(50.5));
     }
 }

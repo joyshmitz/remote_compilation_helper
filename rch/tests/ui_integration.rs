@@ -8,6 +8,7 @@
 
 mod support;
 
+use rch_common::testing::{TestLogger, TestPhase};
 use rch_common::ui::{ErrorPanel, ErrorSeverity, Icons, OutputContext, RchTheme};
 use std::time::Instant;
 
@@ -335,8 +336,17 @@ mod performance_tests {
 
     #[test]
     fn test_error_panel_creation_performance() {
+        let logger = TestLogger::for_test("test_error_panel_creation_performance");
+        let iterations = 1000;
+        let threshold_ms = 100;
+
+        logger.log(
+            TestPhase::Setup,
+            format!("Benchmarking {} ErrorPanel creations", iterations),
+        );
+
         let start = Instant::now();
-        for _ in 0..1000 {
+        for _ in 0..iterations {
             let _ = ErrorPanel::error("RCH-E001", "Test Error")
                 .message("Test message")
                 .context("Key1", "Value1")
@@ -346,12 +356,25 @@ mod performance_tests {
         }
         let duration = start.elapsed();
 
+        logger.log_with_data(
+            TestPhase::Verify,
+            "Performance result",
+            serde_json::json!({
+                "iterations": iterations,
+                "duration_ms": duration.as_millis() as u64,
+                "threshold_ms": threshold_ms,
+                "ops_per_sec": (iterations as f64 / duration.as_secs_f64()) as u64
+            }),
+        );
+
         // 1000 panel creations should take < 100ms
         assert!(
-            duration.as_millis() < 100,
-            "ErrorPanel creation too slow: {:?} for 1000 iterations",
-            duration
+            duration.as_millis() < threshold_ms,
+            "ErrorPanel creation too slow: {:?} for {} iterations",
+            duration,
+            iterations
         );
+        logger.pass();
     }
 
     #[test]

@@ -779,6 +779,51 @@ fn has_exact_flag(command: &str) -> bool {
     command.split_whitespace().any(|t| t == "--exact")
 }
 
+/// Timing estimate for offload gating decisions.
+///
+/// Used to determine whether a build is worth offloading based on
+/// predicted local execution time and expected speedup.
+#[derive(Debug, Clone)]
+struct TimingEstimate {
+    /// Predicted local build time in milliseconds.
+    pub predicted_local_ms: u64,
+    /// Predicted speedup ratio (local_time / remote_time), if available.
+    /// None indicates insufficient data to estimate speedup.
+    pub predicted_speedup: Option<f64>,
+}
+
+/// Estimate timing for a build to support offload gating.
+///
+/// This function attempts to estimate how long a build would take locally
+/// and what speedup we might achieve by offloading. The estimation uses
+/// this fallback order:
+/// 1. Historical timing data for this project/kind (TODO: implement history)
+/// 2. Worker speed scores (TODO: implement)
+/// 3. Conservative defaults (allow offload)
+///
+/// When no historical data is available, returns None to trigger fail-open
+/// behavior (allow offload attempt).
+#[allow(unused_variables)] // project, kind used when history is implemented
+fn estimate_timing_for_build(
+    project: &str,
+    kind: Option<CompilationKind>,
+    config: &rch_common::RchConfig,
+) -> Option<TimingEstimate> {
+    // TODO: Implement timing history store (bd-2m7j phase 2)
+    // For now, return None to fail-open (allow offload)
+    //
+    // Future implementation will:
+    // 1. Check local timing history for this project+kind
+    // 2. If found, return median local time and predicted speedup
+    // 3. If not found, optionally use worker speed scores
+    // 4. Fall back to None (conservative default)
+    //
+    // The timing history will be stored in XDG_DATA_HOME/rch/timing_history.json
+    // and updated after each build completes.
+
+    None
+}
+
 fn estimate_cores_for_command(
     kind: Option<CompilationKind>,
     command: &str,
@@ -991,8 +1036,58 @@ async fn process_hook(input: HookInput) -> HookOutput {
         }
     }
 
-    // Query daemon for a worker
+    // Extract project for timing estimation and daemon query
     let project = extract_project_name();
+
+    // Check timing thresholds (min_local_time_ms and remote_speedup_threshold)
+    // This gating prevents offloading tiny builds where overhead dominates.
+    if !config.general.force_remote {
+        if let Some(timing_estimate) =
+            estimate_timing_for_build(&project, classification.kind, &config)
+        {
+            // Gate on min_local_time_ms: skip remote if build is too small
+            if timing_estimate.predicted_local_ms < config.compilation.min_local_time_ms {
+                debug!(
+                    "Predicted local time {}ms < threshold {}ms, allowing local execution",
+                    timing_estimate.predicted_local_ms, config.compilation.min_local_time_ms
+                );
+                reporter.verbose(&format!(
+                    "[RCH] local (predicted {}ms < min {}ms)",
+                    timing_estimate.predicted_local_ms, config.compilation.min_local_time_ms
+                ));
+                reporter.summary("[RCH] local (build too small for offload)");
+                return HookOutput::allow();
+            }
+
+            // Gate on remote_speedup_threshold: skip remote if speedup isn't worth it
+            if let Some(predicted_speedup) = timing_estimate.predicted_speedup
+                && predicted_speedup < config.compilation.remote_speedup_threshold
+            {
+                debug!(
+                    "Predicted speedup {:.2}x < threshold {:.2}x, allowing local execution",
+                    predicted_speedup, config.compilation.remote_speedup_threshold
+                );
+                reporter.verbose(&format!(
+                    "[RCH] local (predicted speedup {:.1}x < {:.1}x threshold)",
+                    predicted_speedup, config.compilation.remote_speedup_threshold
+                ));
+                reporter.summary("[RCH] local (remote speedup insufficient)");
+                return HookOutput::allow();
+            }
+
+            debug!(
+                "Timing check passed: predicted_local={}ms, predicted_speedup={:?}",
+                timing_estimate.predicted_local_ms, timing_estimate.predicted_speedup
+            );
+        } else {
+            // No timing history available - fail-open (allow offload)
+            debug!(
+                "No timing history for {}/{:?}, allowing offload attempt",
+                project, classification.kind
+            );
+        }
+    }
+
     let estimated_cores =
         estimate_cores_for_command(classification.kind, command, &config.compilation);
     reporter.verbose("[RCH] selecting worker...");
@@ -2251,6 +2346,48 @@ mod tests {
         // Currently allows because remote execution not implemented
         let output = process_hook(input).await;
         assert!(output.is_allow());
+    }
+
+    // ========================================================================
+    // TimingEstimate and Timing Gating Tests
+    // ========================================================================
+
+    #[test]
+    fn test_timing_estimate_struct() {
+        let estimate = TimingEstimate {
+            predicted_local_ms: 5000,
+            predicted_speedup: Some(2.5),
+        };
+        assert_eq!(estimate.predicted_local_ms, 5000);
+        assert_eq!(estimate.predicted_speedup, Some(2.5));
+    }
+
+    #[test]
+    fn test_timing_estimate_no_speedup() {
+        let estimate = TimingEstimate {
+            predicted_local_ms: 3000,
+            predicted_speedup: None,
+        };
+        assert_eq!(estimate.predicted_local_ms, 3000);
+        assert!(estimate.predicted_speedup.is_none());
+    }
+
+    #[test]
+    fn test_estimate_timing_returns_none_without_history() {
+        // Currently returns None (fail-open) since no timing history exists
+        let config = rch_common::RchConfig::default();
+        let estimate =
+            estimate_timing_for_build("test-project", Some(CompilationKind::CargoBuild), &config);
+        assert!(estimate.is_none());
+    }
+
+    #[test]
+    fn test_timing_gating_thresholds_default() {
+        let config = rch_common::CompilationConfig::default();
+        // Default min_local_time_ms: 2000ms
+        assert_eq!(config.min_local_time_ms, 2000);
+        // Default speedup threshold: 1.2x
+        assert!((config.remote_speedup_threshold - 1.2).abs() < 0.001);
     }
 
     #[test]

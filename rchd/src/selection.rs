@@ -1118,10 +1118,42 @@ impl WorkerSelector {
                 continue;
             }
 
+            // Filter by load-per-core threshold (bd-3eaa)
+            let capabilities = worker.capabilities().await;
+            let mut passes_preflight = true;
+            if let Some(max_load) = self.config.max_load_per_core
+                && let Some(true) = capabilities.is_high_load(max_load)
+            {
+                let load_per_core = capabilities.load_per_core().unwrap_or(0.0);
+                debug!(
+                    "Worker {} excluded: high load ({:.2} > {:.2} per core)",
+                    worker_id, load_per_core, max_load
+                );
+                passes_preflight = false;
+            }
+
+            // Filter by disk space threshold (bd-3eaa)
+            if let Some(min_disk) = self.config.min_free_gb
+                && let Some(true) = capabilities.is_low_disk(min_disk)
+            {
+                let free_gb = capabilities.disk_free_gb.unwrap_or(0.0);
+                debug!(
+                    "Worker {} excluded: low disk ({:.1} GB < {:.1} GB)",
+                    worker_id, free_gb, min_disk
+                );
+                passes_preflight = false;
+            }
+
+            // Track workers for fail-open fallback even if they fail preflight
             if has_preferred && preferred_set.contains(worker_id.as_str()) {
                 preferred_without_health.push((worker.clone(), circuit_state));
             }
             eligible_without_health.push((worker.clone(), circuit_state));
+
+            // Skip workers failing preflight checks (but keep for fail-open)
+            if !passes_preflight {
+                continue;
+            }
 
             let success_rate = self.health_score(&worker).await;
             if success_rate < self.config.min_success_rate {
@@ -2675,9 +2707,7 @@ mod tests {
         worker
             .set_capabilities(rch_common::WorkerCapabilities {
                 rustc_version: Some("1.75.0".to_string()),
-                bun_version: None,
-                node_version: None,
-                npm_version: None,
+                ..Default::default()
             })
             .await;
 

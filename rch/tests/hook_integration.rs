@@ -15,6 +15,7 @@
 //! 4. Timing is not degraded (hook classification still <5ms)
 //! 5. stderr can have rich output but ONLY if not captured by agent
 
+use rch_common::testing::{TestLogger, TestPhase};
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -89,13 +90,16 @@ macro_rules! require_binary {
 
 #[test]
 fn test_hook_stdout_is_valid_json_or_empty() {
+    let logger = TestLogger::for_test("test_hook_stdout_is_valid_json_or_empty");
     require_binary!();
 
     // Passthrough command (Tier-0) - should produce empty stdout (allow)
     let input = r#"{"tool_name":"Bash","tool_input":{"command":"echo hello"}}"#;
+    logger.log(TestPhase::Execute, "Running hook with passthrough command");
     let (exit, stdout, _stderr, _dur) = run_hook(input);
 
     // Allow responses produce empty stdout or {}
+    logger.log(TestPhase::Verify, "Checking stdout JSON validity");
     if !stdout.is_empty() {
         // If there's content, it must be valid JSON
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
@@ -107,10 +111,12 @@ fn test_hook_stdout_is_valid_json_or_empty() {
     }
 
     assert_eq!(exit, 0, "Passthrough command should exit 0");
+    logger.pass();
 }
 
 #[test]
 fn test_hook_stdout_no_ansi_codes() {
+    let logger = TestLogger::for_test("test_hook_stdout_no_ansi_codes");
     require_binary!();
 
     // Test various commands that should all produce clean stdout
@@ -120,6 +126,14 @@ fn test_hook_stdout_no_ansi_codes() {
         r#"{"tool_name":"Bash","tool_input":{"command":"pwd"}}"#,
         r#"{"tool_name":"Read","tool_input":{"command":"/some/file"}}"#,
     ];
+
+    logger.log(
+        TestPhase::Execute,
+        format!(
+            "Testing {} command variants for ANSI codes",
+            test_cases.len()
+        ),
+    );
 
     for input in test_cases {
         let (_exit, stdout, _stderr, _dur) = run_hook(input);
@@ -131,6 +145,9 @@ fn test_hook_stdout_no_ansi_codes() {
             stdout
         );
     }
+
+    logger.log(TestPhase::Verify, "All commands produced clean stdout");
+    logger.pass();
 }
 
 // =============================================================================
@@ -200,12 +217,18 @@ fn test_hook_malformed_json_failopen() {
 
 #[test]
 fn test_hook_classification_timing() {
+    let logger = TestLogger::for_test("test_hook_classification_timing");
     require_binary!();
 
     let iterations = 20;
     let mut total_ms = 0u128;
 
     let input = r#"{"tool_name":"Bash","tool_input":{"command":"echo test"}}"#;
+
+    logger.log(
+        TestPhase::Execute,
+        format!("Running {} hook iterations for timing", iterations),
+    );
 
     for _ in 0..iterations {
         let (_exit, _stdout, _stderr, dur) = run_hook(input);
@@ -214,6 +237,16 @@ fn test_hook_classification_timing() {
 
     let avg_ms = total_ms / iterations as u128;
 
+    logger.log_with_data(
+        TestPhase::Verify,
+        "Checking timing threshold",
+        serde_json::json!({
+            "avg_ms": avg_ms,
+            "threshold_ms": MAX_HOOK_TIME_MS,
+            "iterations": iterations
+        }),
+    );
+
     assert!(
         avg_ms <= MAX_HOOK_TIME_MS as u128,
         "Average hook time {}ms exceeds threshold {}ms",
@@ -221,10 +254,7 @@ fn test_hook_classification_timing() {
         MAX_HOOK_TIME_MS
     );
 
-    eprintln!(
-        "Hook timing: avg {}ms over {} iterations (threshold: {}ms)",
-        avg_ms, iterations, MAX_HOOK_TIME_MS
-    );
+    logger.pass();
 }
 
 // =============================================================================
@@ -354,32 +384,38 @@ fn test_hook_output_deterministic() {
 /// Summary test that runs all critical checks and produces a report.
 #[test]
 fn test_hook_non_interference_summary() {
+    let logger = TestLogger::for_test("test_hook_non_interference_summary");
     require_binary!();
 
-    eprintln!("\n=== Hook Non-Interference Test Summary ===\n");
+    logger.log(TestPhase::Setup, "Starting hook non-interference summary");
 
     // Test 1: Valid JSON
     let input = r#"{"tool_name":"Bash","tool_input":{"command":"echo hello"}}"#;
+    logger.log(TestPhase::Execute, "Running passthrough command");
     let (exit, stdout, _stderr, dur) = run_hook(input);
-    eprintln!(
-        "Passthrough command: exit={}, stdout_len={}, time={}ms",
-        exit,
-        stdout.len(),
-        dur.as_millis()
+
+    logger.log_with_data(
+        TestPhase::Verify,
+        "Passthrough command result",
+        serde_json::json!({
+            "exit_code": exit,
+            "stdout_len": stdout.len(),
+            "duration_ms": dur.as_millis() as u64
+        }),
     );
 
     // Test 2: No ANSI codes
     let has_ansi = stdout.contains(ANSI_ESC);
-    eprintln!("ANSI codes in stdout: {}", has_ansi);
     assert!(!has_ansi, "stdout must not contain ANSI codes");
+    logger.log(TestPhase::Verify, "No ANSI codes in stdout");
 
     // Test 3: Valid JSON structure
     if !stdout.is_empty() {
         let valid_json = serde_json::from_str::<serde_json::Value>(&stdout).is_ok();
-        eprintln!("stdout is valid JSON: {}", valid_json);
         assert!(valid_json, "stdout must be valid JSON");
+        logger.log(TestPhase::Verify, "stdout is valid JSON");
     } else {
-        eprintln!("stdout is empty (allow response)");
+        logger.log(TestPhase::Verify, "stdout is empty (allow response)");
     }
 
     // Test 4: Timing
@@ -390,11 +426,21 @@ fn test_hook_non_interference_summary() {
         total_time += d;
     }
     let avg_time = total_time / iterations;
-    eprintln!("Average hook time: {}ms", avg_time.as_millis());
+
+    logger.log_with_data(
+        TestPhase::Verify,
+        "Timing validation",
+        serde_json::json!({
+            "avg_ms": avg_time.as_millis() as u64,
+            "threshold_ms": MAX_HOOK_TIME_MS,
+            "iterations": iterations
+        }),
+    );
+
     assert!(
         avg_time.as_millis() <= MAX_HOOK_TIME_MS as u128,
         "Hook timing exceeds threshold"
     );
 
-    eprintln!("\n=== All Hook Non-Interference Tests PASSED ===\n");
+    logger.pass();
 }
