@@ -98,7 +98,7 @@ impl CacheState {
 }
 
 /// Tracks last successful build per project for affinity fallback.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct LastSuccessEntry {
     /// Worker ID that last succeeded for this project.
     pub worker_id: String,
@@ -233,6 +233,69 @@ impl CacheTracker {
         } else {
             0.2 * (-((hours - 24.0) / 24.0)).exp() // Exponential decay from 0.2
         }
+    }
+
+    // ========================================================================
+    // Affinity Pinning Methods
+    // ========================================================================
+
+    /// Record a successful build completion for affinity tracking.
+    ///
+    /// Only called when exit_code == 0. Updates both per-worker cache state
+    /// and the global last-success-by-project map.
+    pub fn record_success(&mut self, worker_id: &str, project_id: &str) {
+        let now = Instant::now();
+
+        // Update per-worker cache state
+        if let Some(cache) = self.workers.get_mut(worker_id)
+            && let Some(state) = cache.get_mut(project_id)
+        {
+            state.last_success = Some(now);
+        }
+
+        // Update global last-success-by-project
+        self.last_success_by_project.insert(
+            project_id.to_string(),
+            LastSuccessEntry {
+                worker_id: worker_id.to_string(),
+                timestamp: now,
+            },
+        );
+    }
+
+    /// Check if a project is pinned to a specific worker within the pin window.
+    ///
+    /// Returns Some(worker_id) if:
+    /// - The project has a recent successful build on a worker
+    /// - The success occurred within `pin_window`
+    pub fn get_pinned_worker(&self, project_id: &str, pin_window: Duration) -> Option<&str> {
+        self.last_success_by_project
+            .get(project_id)
+            .filter(|entry| entry.timestamp.elapsed() < pin_window)
+            .map(|entry| entry.worker_id.as_str())
+    }
+
+    /// Get the last successful worker for a project (for fallback).
+    ///
+    /// Unlike `get_pinned_worker`, this doesn't check the pin window.
+    /// Used when all workers fail selection criteria.
+    pub fn get_last_success_worker(&self, project_id: &str) -> Option<&LastSuccessEntry> {
+        self.last_success_by_project.get(project_id)
+    }
+
+    /// Check if a worker has had a recent successful build for a project.
+    pub fn has_recent_success(
+        &self,
+        worker_id: &str,
+        project_id: &str,
+        max_age: Duration,
+    ) -> bool {
+        self.workers
+            .get(worker_id)
+            .and_then(|c| c.get(project_id))
+            .and_then(|state| state.last_success)
+            .map(|instant| instant.elapsed() < max_age)
+            .unwrap_or(false)
     }
 }
 
@@ -658,6 +721,45 @@ impl WorkerSelector {
             CacheUse::Build
         };
         cache.record_build(worker_id, project_id, cache_use);
+    }
+
+    /// Record a successful build for affinity pinning.
+    ///
+    /// Call this when a build completes with exit_code == 0.
+    /// Updates both cache warmth and last-success tracking for fallback.
+    pub async fn record_success(&self, worker_id: &str, project_id: &str) {
+        let mut cache = self.cache_tracker.write().await;
+        cache.record_success(worker_id, project_id);
+    }
+
+    /// Check if a project has an affinity-pinned worker.
+    ///
+    /// Returns Some(worker_id) if the project should preferentially use
+    /// a specific worker based on recent successful builds.
+    pub async fn get_pinned_worker(&self, project_id: &str) -> Option<String> {
+        if !self.config.affinity.enabled {
+            return None;
+        }
+
+        let pin_window = Duration::from_secs(self.config.affinity.pin_minutes * 60);
+        let cache = self.cache_tracker.read().await;
+        cache
+            .get_pinned_worker(project_id, pin_window)
+            .map(String::from)
+    }
+
+    /// Get the last successful worker for fallback.
+    ///
+    /// Used when all workers fail normal selection criteria.
+    pub async fn get_fallback_worker(&self, project_id: &str) -> Option<String> {
+        if !self.config.affinity.enable_last_success_fallback {
+            return None;
+        }
+
+        let cache = self.cache_tracker.read().await;
+        cache
+            .get_last_success_worker(project_id)
+            .map(|entry| entry.worker_id.clone())
     }
 
     /// Build score breakdowns for all workers in a selection decision (bd-37hc).
