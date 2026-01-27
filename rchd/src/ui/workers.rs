@@ -591,4 +591,687 @@ mod tests {
                 .any(|line| line.contains("HEALTHY -> DOWN"))
         );
     }
+
+    // WorkerSnapshot tests
+    #[test]
+    fn test_worker_snapshot_new() {
+        let snapshot = WorkerSnapshot::new(
+            "worker-1",
+            WorkerStatus::Healthy,
+            3,
+            8,
+            95.5,
+            vec!["gpu".to_string(), "fast".to_string()],
+        );
+        assert_eq!(snapshot.id, "worker-1");
+        assert_eq!(snapshot.status, WorkerStatus::Healthy);
+        assert_eq!(snapshot.used_slots, 3);
+        assert_eq!(snapshot.total_slots, 8);
+        assert!((snapshot.speed_score - 95.5).abs() < f64::EPSILON);
+        assert_eq!(snapshot.tags, vec!["gpu", "fast"]);
+    }
+
+    #[test]
+    fn test_worker_snapshot_empty_tags() {
+        let snapshot = WorkerSnapshot::new("w1", WorkerStatus::Degraded, 0, 4, 50.0, vec![]);
+        assert!(snapshot.tags.is_empty());
+    }
+
+    #[test]
+    fn test_worker_snapshot_clone() {
+        let original = WorkerSnapshot::new(
+            "w1",
+            WorkerStatus::Healthy,
+            1,
+            2,
+            80.0,
+            vec!["tag1".to_string()],
+        );
+        let cloned = original.clone();
+        assert_eq!(original.id, cloned.id);
+        assert_eq!(original.status, cloned.status);
+    }
+
+    // status_label tests
+    #[test]
+    fn test_status_label_healthy() {
+        assert_eq!(status_label(WorkerStatus::Healthy), "HEALTHY");
+    }
+
+    #[test]
+    fn test_status_label_degraded() {
+        assert_eq!(status_label(WorkerStatus::Degraded), "DEGRADED");
+    }
+
+    #[test]
+    fn test_status_label_unreachable() {
+        assert_eq!(status_label(WorkerStatus::Unreachable), "DOWN");
+    }
+
+    #[test]
+    fn test_status_label_draining() {
+        assert_eq!(status_label(WorkerStatus::Draining), "DRAINING");
+    }
+
+    #[test]
+    fn test_status_label_disabled() {
+        assert_eq!(status_label(WorkerStatus::Disabled), "DISABLED");
+    }
+
+    // is_online tests
+    #[test]
+    fn test_is_online_healthy() {
+        assert!(is_online(WorkerStatus::Healthy));
+    }
+
+    #[test]
+    fn test_is_online_degraded() {
+        assert!(is_online(WorkerStatus::Degraded));
+    }
+
+    #[test]
+    fn test_is_online_draining() {
+        assert!(is_online(WorkerStatus::Draining));
+    }
+
+    #[test]
+    fn test_is_online_unreachable() {
+        assert!(!is_online(WorkerStatus::Unreachable));
+    }
+
+    #[test]
+    fn test_is_online_disabled() {
+        assert!(!is_online(WorkerStatus::Disabled));
+    }
+
+    // connection_event tests
+    #[test]
+    fn test_connection_event_new_healthy() {
+        assert_eq!(
+            connection_event(None, WorkerStatus::Healthy),
+            Some("connected")
+        );
+    }
+
+    #[test]
+    fn test_connection_event_new_degraded() {
+        assert_eq!(
+            connection_event(None, WorkerStatus::Degraded),
+            Some("connected")
+        );
+    }
+
+    #[test]
+    fn test_connection_event_reconnected_from_unreachable_to_healthy() {
+        assert_eq!(
+            connection_event(Some(WorkerStatus::Unreachable), WorkerStatus::Healthy),
+            Some("reconnected")
+        );
+    }
+
+    #[test]
+    fn test_connection_event_reconnected_from_unreachable_to_degraded() {
+        assert_eq!(
+            connection_event(Some(WorkerStatus::Unreachable), WorkerStatus::Degraded),
+            Some("reconnected")
+        );
+    }
+
+    #[test]
+    fn test_connection_event_disconnected_from_healthy() {
+        assert_eq!(
+            connection_event(Some(WorkerStatus::Healthy), WorkerStatus::Unreachable),
+            Some("disconnected")
+        );
+    }
+
+    #[test]
+    fn test_connection_event_disconnected_from_degraded() {
+        assert_eq!(
+            connection_event(Some(WorkerStatus::Degraded), WorkerStatus::Unreachable),
+            Some("disconnected")
+        );
+    }
+
+    #[test]
+    fn test_connection_event_no_event_healthy_to_degraded() {
+        assert_eq!(
+            connection_event(Some(WorkerStatus::Healthy), WorkerStatus::Degraded),
+            None
+        );
+    }
+
+    #[test]
+    fn test_connection_event_no_event_new_unreachable() {
+        assert_eq!(connection_event(None, WorkerStatus::Unreachable), None);
+    }
+
+    #[test]
+    fn test_connection_event_no_event_draining_to_disabled() {
+        assert_eq!(
+            connection_event(Some(WorkerStatus::Draining), WorkerStatus::Disabled),
+            None
+        );
+    }
+
+    // truncate tests
+    #[test]
+    fn test_truncate_short_string() {
+        let result = truncate("hello", 10);
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_truncate_exact_length() {
+        let result = truncate("hello", 5);
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_truncate_long_string() {
+        let result = truncate("hello world", 8);
+        assert_eq!(result, "hello...");
+    }
+
+    #[test]
+    fn test_truncate_very_short_max() {
+        let result = truncate("hello", 3);
+        assert_eq!(result, "...");
+    }
+
+    #[test]
+    fn test_truncate_empty_string() {
+        let result = truncate("", 10);
+        assert_eq!(result, "");
+    }
+
+    // rule_line tests
+    #[test]
+    fn test_rule_line_basic() {
+        let result = rule_line("Test", 40);
+        assert!(result.contains("Test"));
+        assert!(result.contains("-"));
+    }
+
+    #[test]
+    fn test_rule_line_minimum_width() {
+        let result = rule_line("Title", 10);
+        // Function uses max(width, 20) for calculation
+        // With width=20 and "Title" (5 chars), padding = (20-5-2)/2 = 6
+        // Result: "------" + " " + "Title" + " " + "------" = 19 chars
+        assert!(result.contains("Title"));
+        assert!(result.contains("-"));
+        // Verify dashes are present on both sides
+        assert!(result.starts_with('-'));
+        assert!(result.ends_with('-'));
+    }
+
+    #[test]
+    fn test_rule_line_contains_dashes() {
+        let result = rule_line("Workers", 72);
+        assert!(result.starts_with('-') || result.contains("- "));
+    }
+
+    // WorkerStatusPanel builder tests
+    #[test]
+    fn test_panel_with_context() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        assert!(!panel.verbose);
+    }
+
+    #[test]
+    fn test_panel_with_refresh_interval() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain)
+            .with_refresh_interval(Duration::from_secs(60));
+        assert_eq!(panel.refresh_interval, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_panel_with_refresh_interval_minimum() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain)
+            .with_refresh_interval(Duration::from_millis(100));
+        // Should enforce minimum of 1 second
+        assert_eq!(panel.refresh_interval, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn test_panel_with_verbose() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain).with_verbose(true);
+        assert!(panel.verbose);
+    }
+
+    #[test]
+    fn test_panel_with_debug_routing() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain).with_debug_routing(true);
+        assert!(panel.debug_routing);
+    }
+
+    #[test]
+    fn test_panel_set_verbose() {
+        let mut panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        assert!(!panel.verbose);
+        panel.set_verbose(true);
+        assert!(panel.verbose);
+    }
+
+    #[test]
+    fn test_panel_set_debug_routing() {
+        let mut panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        panel.set_debug_routing(true);
+        assert!(panel.debug_routing);
+    }
+
+    // render_summary tests
+    #[test]
+    fn test_render_summary_empty_snapshot() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        let summary = panel.render_summary(&[], 5);
+        assert!(summary.contains("[WORKERS] 0/0 online"));
+        assert!(summary.contains("queue: 5 jobs"));
+    }
+
+    #[test]
+    fn test_render_summary_single_job() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        let summary = panel.render_summary(&[], 1);
+        assert!(summary.contains("queue: 1 job"));
+    }
+
+    #[test]
+    fn test_render_summary_with_mixed_workers() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        let snapshot = vec![
+            WorkerSnapshot::new("w1", WorkerStatus::Healthy, 2, 4, 80.0, vec![]),
+            WorkerSnapshot::new("w2", WorkerStatus::Unreachable, 0, 4, 0.0, vec![]),
+            WorkerSnapshot::new("w3", WorkerStatus::Draining, 1, 4, 60.0, vec![]),
+        ];
+        let summary = panel.render_summary(&snapshot, 0);
+        assert!(summary.contains("[WORKERS] 2/3 online")); // Healthy + Draining
+    }
+
+    // render_table_plain tests
+    #[test]
+    fn test_render_table_plain_empty() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        let lines = panel.render_table_plain(&[]);
+        assert!(lines.iter().any(|l| l.contains("No workers configured")));
+    }
+
+    #[test]
+    fn test_render_table_plain_with_workers() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        let snapshot = vec![WorkerSnapshot::new(
+            "worker-1",
+            WorkerStatus::Healthy,
+            2,
+            8,
+            95.0,
+            vec!["gpu".to_string()],
+        )];
+        let lines = panel.render_table_plain(&snapshot);
+        assert!(lines.iter().any(|l| l.contains("ID")));
+        assert!(lines.iter().any(|l| l.contains("Status")));
+        assert!(lines.iter().any(|l| l.contains("worker-1")));
+        assert!(lines.iter().any(|l| l.contains("HEALTHY")));
+    }
+
+    #[test]
+    fn test_render_table_plain_with_empty_tags() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        let snapshot = vec![WorkerSnapshot::new(
+            "w1",
+            WorkerStatus::Healthy,
+            0,
+            4,
+            50.0,
+            vec![],
+        )];
+        let lines = panel.render_table_plain(&snapshot);
+        // Empty tags should show "-"
+        assert!(lines.iter().any(|l| l.contains("-")));
+    }
+
+    #[test]
+    fn test_render_table_plain_verbose() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain).with_verbose(true);
+        let snapshot = vec![WorkerSnapshot::new(
+            "w1",
+            WorkerStatus::Healthy,
+            0,
+            4,
+            50.0,
+            vec![],
+        )];
+        let lines = panel.render_table_plain(&snapshot);
+        // Verbose mode adds a rule line with title
+        assert!(lines.iter().any(|l| l.contains("Workers")));
+    }
+
+    // detect_changes tests
+    #[test]
+    fn test_detect_changes_new_worker() {
+        let mut panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        let snapshot = vec![WorkerSnapshot::new(
+            "w1",
+            WorkerStatus::Healthy,
+            0,
+            4,
+            50.0,
+            vec![],
+        )];
+        let changes = panel.detect_changes(&snapshot);
+        assert_eq!(changes.len(), 1);
+        assert!(changes[0].previous.is_none());
+        assert_eq!(changes[0].current, WorkerStatus::Healthy);
+    }
+
+    #[test]
+    fn test_detect_changes_no_change() {
+        let mut panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        let snapshot = vec![WorkerSnapshot::new(
+            "w1",
+            WorkerStatus::Healthy,
+            0,
+            4,
+            50.0,
+            vec![],
+        )];
+        // First update records the status
+        let _ = panel.detect_changes(&snapshot);
+        // Second update with same status should have no changes
+        let changes = panel.detect_changes(&snapshot);
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn test_detect_changes_status_transition() {
+        let mut panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        let initial = vec![WorkerSnapshot::new(
+            "w1",
+            WorkerStatus::Healthy,
+            0,
+            4,
+            50.0,
+            vec![],
+        )];
+        let _ = panel.detect_changes(&initial);
+
+        let updated = vec![WorkerSnapshot::new(
+            "w1",
+            WorkerStatus::Degraded,
+            0,
+            4,
+            50.0,
+            vec![],
+        )];
+        let changes = panel.detect_changes(&updated);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].previous, Some(WorkerStatus::Healthy));
+        assert_eq!(changes[0].current, WorkerStatus::Degraded);
+    }
+
+    // render_changes tests
+    #[test]
+    fn test_render_changes_few() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        let changes = vec![WorkerChange {
+            id: "w1".to_string(),
+            previous: Some(WorkerStatus::Healthy),
+            current: WorkerStatus::Unreachable,
+        }];
+        let lines = panel.render_changes(&changes);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("HEALTHY -> DOWN"));
+    }
+
+    #[test]
+    fn test_render_changes_bulk_threshold() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        // Create more than BULK_CHANGE_THRESHOLD changes
+        let changes: Vec<WorkerChange> = (0..5)
+            .map(|i| WorkerChange {
+                id: format!("w{}", i),
+                previous: Some(WorkerStatus::Healthy),
+                current: WorkerStatus::Unreachable,
+            })
+            .collect();
+        let lines = panel.render_changes(&changes);
+        // Should use aggregated format
+        assert!(lines.iter().any(|l| l.contains("workers:")));
+    }
+
+    // render_change_line tests
+    #[test]
+    fn test_render_change_line_with_event() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        let change = WorkerChange {
+            id: "w1".to_string(),
+            previous: Some(WorkerStatus::Healthy),
+            current: WorkerStatus::Unreachable,
+        };
+        let line = panel.render_change_line(&change);
+        assert!(line.contains("w1"));
+        assert!(line.contains("HEALTHY -> DOWN"));
+        assert!(line.contains("disconnected"));
+    }
+
+    #[test]
+    fn test_render_change_line_without_event() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        let change = WorkerChange {
+            id: "w1".to_string(),
+            previous: Some(WorkerStatus::Healthy),
+            current: WorkerStatus::Draining,
+        };
+        let line = panel.render_change_line(&change);
+        assert!(line.contains("w1"));
+        assert!(line.contains("HEALTHY -> DRAINING"));
+        assert!(!line.contains("(")); // No event in parentheses
+    }
+
+    #[test]
+    fn test_render_change_line_new_worker() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        let change = WorkerChange {
+            id: "w1".to_string(),
+            previous: None,
+            current: WorkerStatus::Healthy,
+        };
+        let line = panel.render_change_line(&change);
+        assert!(line.contains("NEW -> HEALTHY"));
+        assert!(line.contains("connected"));
+    }
+
+    // render_update tests
+    #[test]
+    fn test_render_update_machine_mode() {
+        let mut panel = WorkerStatusPanel::with_context(OutputContext::Machine);
+        let snapshot = vec![WorkerSnapshot::new(
+            "w1",
+            WorkerStatus::Healthy,
+            0,
+            4,
+            50.0,
+            vec![],
+        )];
+        let plan = panel.render_update(&snapshot, 0);
+        // Machine mode should return empty plan
+        assert!(plan.lines.is_empty());
+        assert!(!plan.render_table);
+    }
+
+    #[test]
+    fn test_render_update_initial() {
+        let mut panel = WorkerStatusPanel::with_context(OutputContext::Plain)
+            .with_refresh_interval(Duration::from_secs(1));
+        let snapshot = vec![WorkerSnapshot::new(
+            "w1",
+            WorkerStatus::Healthy,
+            0,
+            4,
+            50.0,
+            vec![],
+        )];
+        let plan = panel.render_update(&snapshot, 0);
+        // Should have change line for new worker and summary
+        assert!(!plan.lines.is_empty());
+    }
+
+    // format_status_rich tests
+    #[test]
+    fn test_format_status_rich_healthy() {
+        let result = format_status_rich(OutputContext::Plain, WorkerStatus::Healthy);
+        assert!(result.contains("Healthy"));
+    }
+
+    #[test]
+    fn test_format_status_rich_degraded() {
+        let result = format_status_rich(OutputContext::Plain, WorkerStatus::Degraded);
+        assert!(result.contains("Degraded"));
+    }
+
+    #[test]
+    fn test_format_status_rich_unreachable() {
+        let result = format_status_rich(OutputContext::Plain, WorkerStatus::Unreachable);
+        assert!(result.contains("Down"));
+    }
+
+    #[test]
+    fn test_format_status_rich_draining() {
+        let result = format_status_rich(OutputContext::Plain, WorkerStatus::Draining);
+        assert!(result.contains("Draining"));
+    }
+
+    #[test]
+    fn test_format_status_rich_disabled() {
+        let result = format_status_rich(OutputContext::Plain, WorkerStatus::Disabled);
+        assert!(result.contains("Disabled"));
+    }
+
+    // prefix_now test
+    #[test]
+    fn test_prefix_now_format() {
+        let result = prefix_now();
+        assert!(result.contains("[WORKERS]"));
+        assert!(result.starts_with('['));
+    }
+
+    // set_debug_routing_enabled tests
+    #[test]
+    fn test_set_debug_routing_enabled() {
+        // Save original state
+        let original = DEBUG_ROUTING_ENABLED.load(AtomicOrdering::Relaxed);
+
+        set_debug_routing_enabled(true);
+        assert!(DEBUG_ROUTING_ENABLED.load(AtomicOrdering::Relaxed));
+
+        set_debug_routing_enabled(false);
+        assert!(!DEBUG_ROUTING_ENABLED.load(AtomicOrdering::Relaxed));
+
+        // Restore original state
+        DEBUG_ROUTING_ENABLED.store(original, AtomicOrdering::Relaxed);
+    }
+
+    // WorkerChange struct tests
+    #[test]
+    fn test_worker_change_clone() {
+        let change = WorkerChange {
+            id: "worker-1".to_string(),
+            previous: Some(WorkerStatus::Healthy),
+            current: WorkerStatus::Unreachable,
+        };
+        let cloned = change.clone();
+        assert_eq!(change.id, cloned.id);
+        assert_eq!(change.previous, cloned.previous);
+        assert_eq!(change.current, cloned.current);
+    }
+
+    // WorkerStatusPlan struct tests
+    #[test]
+    fn test_worker_status_plan_fields() {
+        let plan = WorkerStatusPlan {
+            lines: vec!["line1".to_string(), "line2".to_string()],
+            render_table: true,
+        };
+        assert_eq!(plan.lines.len(), 2);
+        assert!(plan.render_table);
+    }
+
+    // env_flag tests
+    #[test]
+    fn test_env_flag_missing() {
+        // Non-existent env var should return false
+        let result = env_flag("RCHD_TEST_NONEXISTENT_VAR_12345");
+        assert!(!result);
+    }
+
+    // render_changes_aggregated tests
+    #[test]
+    fn test_render_changes_aggregated() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        let changes: Vec<WorkerChange> = (0..5)
+            .map(|i| WorkerChange {
+                id: format!("w{}", i),
+                previous: None,
+                current: WorkerStatus::Healthy,
+            })
+            .collect();
+        let lines = panel.render_changes_aggregated(&changes);
+        assert!(!lines.is_empty());
+        assert!(lines[0].contains("5 workers"));
+        assert!(lines[0].contains("NEW -> HEALTHY"));
+    }
+
+    #[test]
+    fn test_render_changes_aggregated_mixed() {
+        let panel = WorkerStatusPanel::with_context(OutputContext::Plain);
+        let changes = vec![
+            WorkerChange {
+                id: "w1".to_string(),
+                previous: Some(WorkerStatus::Healthy),
+                current: WorkerStatus::Unreachable,
+            },
+            WorkerChange {
+                id: "w2".to_string(),
+                previous: Some(WorkerStatus::Healthy),
+                current: WorkerStatus::Unreachable,
+            },
+            WorkerChange {
+                id: "w3".to_string(),
+                previous: None,
+                current: WorkerStatus::Healthy,
+            },
+        ];
+        let lines = panel.render_changes_aggregated(&changes);
+        // Should have multiple lines for different transition types
+        assert!(!lines.is_empty());
+    }
+
+    // log_routing_decision tests (when debug is disabled)
+    #[test]
+    fn test_log_routing_decision_disabled() {
+        // Save original state
+        let original = DEBUG_ROUTING_ENABLED.load(AtomicOrdering::Relaxed);
+        DEBUG_ROUTING_ENABLED.store(false, AtomicOrdering::Relaxed);
+
+        // Should not panic when disabled
+        log_routing_decision(
+            SelectionStrategy::Balanced,
+            "worker-1",
+            Some("closed"),
+            &[("w1".to_string(), 95.0), ("w2".to_string(), 80.0)],
+            2,
+        );
+
+        // Restore original state
+        DEBUG_ROUTING_ENABLED.store(original, AtomicOrdering::Relaxed);
+    }
+
+    // Constants tests
+    #[test]
+    fn test_constants() {
+        assert_eq!(DEFAULT_REFRESH_SECS, 30);
+        assert_eq!(BULK_CHANGE_THRESHOLD, 4);
+        assert_eq!(DEFAULT_TABLE_WIDTH, 72);
+    }
 }

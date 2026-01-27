@@ -3158,4 +3158,800 @@ mod tests {
         let result = parse_request("GET /reload");
         assert!(result.is_err());
     }
+
+    // =========================================================================
+    // format_wait_time tests
+    // =========================================================================
+
+    #[test]
+    fn test_format_wait_time_seconds_only() {
+        assert_eq!(format_wait_time(0), "0s");
+        assert_eq!(format_wait_time(1), "1s");
+        assert_eq!(format_wait_time(30), "30s");
+        assert_eq!(format_wait_time(59), "59s");
+    }
+
+    #[test]
+    fn test_format_wait_time_minutes() {
+        assert_eq!(format_wait_time(60), "1m");
+        assert_eq!(format_wait_time(61), "1m 1s");
+        assert_eq!(format_wait_time(90), "1m 30s");
+        assert_eq!(format_wait_time(120), "2m");
+        assert_eq!(format_wait_time(3599), "59m 59s");
+    }
+
+    #[test]
+    fn test_format_wait_time_hours() {
+        assert_eq!(format_wait_time(3600), "1h");
+        assert_eq!(format_wait_time(3660), "1h 1m");
+        assert_eq!(format_wait_time(7200), "2h");
+        assert_eq!(format_wait_time(7260), "2h 1m");
+        assert_eq!(format_wait_time(9000), "2h 30m");
+    }
+
+    // =========================================================================
+    // Response type serialization tests
+    // =========================================================================
+
+    #[test]
+    fn test_daemon_status_info_serialization() {
+        let info = DaemonStatusInfo {
+            pid: 1234,
+            uptime_secs: 3600,
+            version: "1.0.0".to_string(),
+            socket_path: "/tmp/test.sock".to_string(),
+            started_at: "2025-01-01T00:00:00Z".to_string(),
+            workers_total: 4,
+            workers_healthy: 3,
+            slots_total: 32,
+            slots_available: 24,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"pid\":1234"));
+        assert!(json.contains("\"uptime_secs\":3600"));
+        assert!(json.contains("\"workers_total\":4"));
+    }
+
+    #[test]
+    fn test_worker_status_info_serialization() {
+        let info = WorkerStatusInfo {
+            id: "worker1".to_string(),
+            host: "localhost".to_string(),
+            user: "user".to_string(),
+            status: "healthy".to_string(),
+            circuit_state: "closed".to_string(),
+            used_slots: 2,
+            total_slots: 8,
+            speed_score: 95.5,
+            last_error: None,
+            consecutive_failures: 0,
+            recovery_in_secs: None,
+            failure_history: vec![true, true, true],
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"id\":\"worker1\""));
+        assert!(json.contains("\"used_slots\":2"));
+        assert!(json.contains("\"speed_score\":95.5"));
+    }
+
+    #[test]
+    fn test_health_response_serialization() {
+        let response = HealthResponse {
+            status: "healthy".to_string(),
+            version: "1.0.0".to_string(),
+            uptime_seconds: 3600,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"status\":\"healthy\""));
+        assert!(json.contains("\"version\":\"1.0.0\""));
+    }
+
+    #[test]
+    fn test_ready_response_serialization_ready() {
+        let response = ReadyResponse {
+            status: "ready".to_string(),
+            workers_available: true,
+            reason: None,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"status\":\"ready\""));
+        assert!(json.contains("\"workers_available\":true"));
+        // reason should be skipped when None
+        assert!(!json.contains("reason"));
+    }
+
+    #[test]
+    fn test_ready_response_serialization_not_ready() {
+        let response = ReadyResponse {
+            status: "not_ready".to_string(),
+            workers_available: false,
+            reason: Some("no_workers_available".to_string()),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"status\":\"not_ready\""));
+        assert!(json.contains("\"reason\":\"no_workers_available\""));
+    }
+
+    #[test]
+    fn test_active_build_serialization() {
+        let build = ActiveBuild {
+            id: 42,
+            project_id: "my-project".to_string(),
+            worker_id: "worker1".to_string(),
+            command: "cargo build".to_string(),
+            started_at: "2025-01-01T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&build).unwrap();
+        assert!(json.contains("\"id\":42"));
+        assert!(json.contains("\"project_id\":\"my-project\""));
+        assert!(json.contains("\"command\":\"cargo build\""));
+    }
+
+    #[test]
+    fn test_queued_build_serialization() {
+        let build = QueuedBuild {
+            id: 1,
+            project_id: "test".to_string(),
+            command: "cargo test".to_string(),
+            queued_at: "2025-01-01T00:00:00Z".to_string(),
+            position: 1,
+            slots_needed: 4,
+            estimated_start: Some("2025-01-01T00:01:00Z".to_string()),
+            wait_time: "1m 30s".to_string(),
+        };
+        let json = serde_json::to_string(&build).unwrap();
+        assert!(json.contains("\"position\":1"));
+        assert!(json.contains("\"slots_needed\":4"));
+        assert!(json.contains("\"wait_time\":\"1m 30s\""));
+    }
+
+    #[test]
+    fn test_issue_serialization() {
+        let issue = Issue {
+            severity: "warning".to_string(),
+            summary: "Worker w1 is unreachable".to_string(),
+            remediation: Some("rch doctor".to_string()),
+        };
+        let json = serde_json::to_string(&issue).unwrap();
+        assert!(json.contains("\"severity\":\"warning\""));
+        assert!(json.contains("\"remediation\":\"rch doctor\""));
+    }
+
+    #[test]
+    fn test_cancel_build_response_serialization() {
+        let response = CancelBuildResponse {
+            status: "cancelled".to_string(),
+            build_id: 123,
+            worker_id: Some("worker1".to_string()),
+            project_id: Some("test".to_string()),
+            message: Some("Build cancelled".to_string()),
+            slots_released: 4,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"build_id\":123"));
+        assert!(json.contains("\"slots_released\":4"));
+    }
+
+    #[test]
+    fn test_cancel_all_builds_response_serialization() {
+        let response = CancelAllBuildsResponse {
+            status: "ok".to_string(),
+            cancelled_count: 2,
+            cancelled: vec![
+                CancelledBuildInfo {
+                    build_id: 1,
+                    worker_id: "w1".to_string(),
+                    project_id: "p1".to_string(),
+                    slots_released: 4,
+                },
+            ],
+            message: None,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"cancelled_count\":2"));
+    }
+
+    #[test]
+    fn test_worker_state_response_serialization() {
+        let response = WorkerStateResponse {
+            status: "ok".to_string(),
+            worker_id: "worker1".to_string(),
+            action: "drain".to_string(),
+            new_status: Some("draining".to_string()),
+            reason: None,
+            message: Some("Worker draining started".to_string()),
+            active_slots: Some(4),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"action\":\"drain\""));
+        assert!(json.contains("\"new_status\":\"draining\""));
+    }
+
+    #[test]
+    fn test_speedscore_view_serialization() {
+        let view = SpeedScoreView {
+            total: 85.5,
+            cpu_score: 90.0,
+            memory_score: 80.0,
+            disk_score: 85.0,
+            network_score: 88.0,
+            compilation_score: 82.0,
+            measured_at: "2025-01-01T00:00:00Z".to_string(),
+            version: 1,
+        };
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(json.contains("\"total\":85.5"));
+        assert!(json.contains("\"cpu_score\":90"));
+    }
+
+    #[test]
+    fn test_speedscore_response_serialization() {
+        let response = SpeedScoreResponse {
+            worker_id: "worker1".to_string(),
+            speedscore: None,
+            message: Some("No speedscore available".to_string()),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"worker_id\":\"worker1\""));
+    }
+
+    #[test]
+    fn test_pagination_info_serialization() {
+        let info = PaginationInfo {
+            total: 100,
+            offset: 10,
+            limit: 20,
+            has_more: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"total\":100"));
+        assert!(json.contains("\"has_more\":true"));
+    }
+
+    #[test]
+    fn test_benchmark_trigger_response_serialization() {
+        let response = BenchmarkTriggerResponse {
+            status: "queued".to_string(),
+            worker_id: "worker1".to_string(),
+            request_id: "abc-123".to_string(),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"status\":\"queued\""));
+        assert!(json.contains("\"request_id\":\"abc-123\""));
+    }
+
+    // =========================================================================
+    // API request parsing tests (additional endpoints)
+    // =========================================================================
+
+    #[test]
+    fn test_parse_request_health() {
+        let req = parse_request("GET /health").unwrap();
+        assert!(matches!(req, ApiRequest::Health));
+    }
+
+    #[test]
+    fn test_parse_request_ready() {
+        let req = parse_request("GET /ready").unwrap();
+        assert!(matches!(req, ApiRequest::Ready));
+    }
+
+    #[test]
+    fn test_parse_request_metrics() {
+        let req = parse_request("GET /metrics").unwrap();
+        assert!(matches!(req, ApiRequest::Metrics));
+    }
+
+    #[test]
+    fn test_parse_request_budget() {
+        let req = parse_request("GET /budget").unwrap();
+        assert!(matches!(req, ApiRequest::Budget));
+    }
+
+    #[test]
+    fn test_parse_request_shutdown() {
+        let req = parse_request("POST /shutdown").unwrap();
+        assert!(matches!(req, ApiRequest::Shutdown));
+    }
+
+    #[test]
+    fn test_parse_request_cancel_build() {
+        let req = parse_request("POST /builds/123/cancel").unwrap();
+        match req {
+            ApiRequest::CancelBuild { build_id, force } => {
+                assert_eq!(build_id, 123);
+                assert!(!force);
+            }
+            _ => panic!("expected cancel build request"),
+        }
+
+        let req = parse_request("POST /builds/456/cancel?force=true").unwrap();
+        match req {
+            ApiRequest::CancelBuild { build_id, force } => {
+                assert_eq!(build_id, 456);
+                assert!(force);
+            }
+            _ => panic!("expected cancel build request with force"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_cancel_all_builds() {
+        let req = parse_request("POST /builds/cancel-all").unwrap();
+        match req {
+            ApiRequest::CancelAllBuilds { force } => {
+                assert!(!force);
+            }
+            _ => panic!("expected cancel all builds request"),
+        }
+
+        let req = parse_request("POST /builds/cancel-all?force=true").unwrap();
+        match req {
+            ApiRequest::CancelAllBuilds { force } => {
+                assert!(force);
+            }
+            _ => panic!("expected cancel all builds with force"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_worker_drain() {
+        let req = parse_request("POST /workers/css/drain").unwrap();
+        match req {
+            ApiRequest::WorkerDrain { worker_id } => {
+                assert_eq!(worker_id.as_str(), "css");
+            }
+            _ => panic!("expected worker drain request"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_worker_enable() {
+        let req = parse_request("POST /workers/css/enable").unwrap();
+        match req {
+            ApiRequest::WorkerEnable { worker_id } => {
+                assert_eq!(worker_id.as_str(), "css");
+            }
+            _ => panic!("expected worker enable request"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_worker_disable() {
+        let req = parse_request("POST /workers/css/disable").unwrap();
+        match req {
+            ApiRequest::WorkerDisable { worker_id, reason, drain_first } => {
+                assert_eq!(worker_id.as_str(), "css");
+                assert!(reason.is_none());
+                assert!(!drain_first);
+            }
+            _ => panic!("expected worker disable request"),
+        }
+
+        let req = parse_request("POST /workers/css/disable?reason=maintenance&drain=true").unwrap();
+        match req {
+            ApiRequest::WorkerDisable { worker_id, reason, drain_first } => {
+                assert_eq!(worker_id.as_str(), "css");
+                assert_eq!(reason, Some("maintenance".to_string()));
+                assert!(drain_first);
+            }
+            _ => panic!("expected worker disable request with options"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_release_worker() {
+        let req = parse_request("POST /release-worker?worker=css&slots=4").unwrap();
+        match req {
+            ApiRequest::ReleaseWorker(req) => {
+                assert_eq!(req.worker_id.as_str(), "css");
+                assert_eq!(req.slots, 4);
+            }
+            _ => panic!("expected release worker request"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_release_worker_with_build_id() {
+        let req = parse_request("POST /release-worker?worker=css&slots=4&build_id=123").unwrap();
+        match req {
+            ApiRequest::ReleaseWorker(req) => {
+                assert_eq!(req.worker_id.as_str(), "css");
+                assert_eq!(req.slots, 4);
+                assert_eq!(req.build_id, Some(123));
+            }
+            _ => panic!("expected release worker request with build_id"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_release_worker_with_exit_code() {
+        let req = parse_request("POST /release-worker?worker=css&slots=4&exit_code=0").unwrap();
+        match req {
+            ApiRequest::ReleaseWorker(req) => {
+                assert_eq!(req.exit_code, Some(0));
+            }
+            _ => panic!("expected release worker request with exit_code"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_record_build() {
+        let req = parse_request("POST /record-build?worker=css&project=myproject&is_test=true").unwrap();
+        match req {
+            ApiRequest::RecordBuild { worker_id, project, is_test } => {
+                assert_eq!(worker_id.as_str(), "css");
+                assert_eq!(project, "myproject");
+                assert!(is_test);
+            }
+            _ => panic!("expected record build request"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_ingest_telemetry() {
+        let req = parse_request("POST /telemetry/ingest?source=poll").unwrap();
+        match req {
+            ApiRequest::IngestTelemetry(source) => {
+                assert_eq!(source, TelemetrySource::Poll);
+            }
+            _ => panic!("expected ingest telemetry request"),
+        }
+
+        let req = parse_request("POST /telemetry/ingest?source=push").unwrap();
+        match req {
+            ApiRequest::IngestTelemetry(source) => {
+                assert_eq!(source, TelemetrySource::Push);
+            }
+            _ => panic!("expected ingest telemetry request"),
+        }
+    }
+
+    #[test]
+    fn test_parse_request_wait_for_worker() {
+        let req = parse_request("GET /select-worker?project=test&wait=true").unwrap();
+        match req {
+            ApiRequest::SelectWorker { wait_for_worker, .. } => {
+                assert!(wait_for_worker);
+            }
+            _ => panic!("expected select worker request"),
+        }
+
+        let req = parse_request("GET /select-worker?project=test&wait=false").unwrap();
+        match req {
+            ApiRequest::SelectWorker { wait_for_worker, .. } => {
+                assert!(!wait_for_worker);
+            }
+            _ => panic!("expected select worker request"),
+        }
+    }
+
+    // =========================================================================
+    // Handler tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_handle_ready_with_available_workers() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_test_worker("worker1", 8)).await;
+        let ctx = make_test_context(pool);
+
+        let response = handle_ready(&ctx).await;
+        assert_eq!(response.status, "ready");
+        assert!(response.workers_available);
+        assert!(response.reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_handle_ready_no_workers() {
+        let pool = WorkerPool::new();
+        let ctx = make_test_context(pool);
+
+        let response = handle_ready(&ctx).await;
+        assert_eq!(response.status, "not_ready");
+        assert!(!response.workers_available);
+        assert!(response.reason.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_handle_ready_all_slots_used() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_test_worker("worker1", 4)).await;
+
+        // Reserve all slots
+        let worker = pool.get(&WorkerId::new("worker1")).await.unwrap();
+        worker.reserve_slots(4).await;
+
+        let ctx = make_test_context(pool);
+        let response = handle_ready(&ctx).await;
+        assert_eq!(response.status, "not_ready");
+        assert!(!response.workers_available);
+    }
+
+    #[tokio::test]
+    async fn test_handle_cancel_build_not_found() {
+        let pool = WorkerPool::new();
+        let ctx = make_test_context(pool);
+
+        let response = handle_cancel_build(&ctx, 9999, false).await;
+        assert_eq!(response.status, "error");
+        assert_eq!(response.build_id, 9999);
+        assert!(response.message.unwrap().contains("not found"));
+        assert_eq!(response.slots_released, 0);
+    }
+
+    #[tokio::test]
+    async fn test_handle_cancel_all_builds_empty() {
+        let pool = WorkerPool::new();
+        let ctx = make_test_context(pool);
+
+        let response = handle_cancel_all_builds(&ctx, false).await;
+        assert_eq!(response.status, "ok");
+        assert_eq!(response.cancelled_count, 0);
+        assert!(response.cancelled.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_worker_drain_not_found() {
+        let pool = WorkerPool::new();
+        let ctx = make_test_context(pool);
+
+        let response = handle_worker_drain(&ctx, &WorkerId::new("nonexistent")).await;
+        assert_eq!(response.status, "error");
+        assert!(response.message.unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_worker_drain_success() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_test_worker("worker1", 8)).await;
+        let ctx = make_test_context(pool);
+
+        let response = handle_worker_drain(&ctx, &WorkerId::new("worker1")).await;
+        assert_eq!(response.status, "ok");
+        assert_eq!(response.worker_id, "worker1");
+        assert_eq!(response.action, "drain");
+        assert_eq!(response.new_status, Some("draining".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_handle_worker_enable_not_found() {
+        let pool = WorkerPool::new();
+        let ctx = make_test_context(pool);
+
+        let response = handle_worker_enable(&ctx, &WorkerId::new("nonexistent")).await;
+        assert_eq!(response.status, "error");
+        assert!(response.message.unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_worker_enable_success() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_test_worker("worker1", 8)).await;
+        // Set to draining first
+        pool.set_status(&WorkerId::new("worker1"), WorkerStatus::Draining).await;
+        let ctx = make_test_context(pool);
+
+        let response = handle_worker_enable(&ctx, &WorkerId::new("worker1")).await;
+        assert_eq!(response.status, "ok");
+        assert_eq!(response.worker_id, "worker1");
+        assert_eq!(response.action, "enable");
+        assert_eq!(response.new_status, Some("healthy".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_handle_worker_disable_not_found() {
+        let pool = WorkerPool::new();
+        let ctx = make_test_context(pool);
+
+        let response = handle_worker_disable(&ctx, &WorkerId::new("nonexistent"), None, false).await;
+        assert_eq!(response.status, "error");
+        assert!(response.message.unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_worker_disable_success() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_test_worker("worker1", 8)).await;
+        let ctx = make_test_context(pool);
+
+        let response = handle_worker_disable(&ctx, &WorkerId::new("worker1"), Some("maintenance".to_string()), false).await;
+        assert_eq!(response.status, "ok");
+        assert_eq!(response.worker_id, "worker1");
+        assert_eq!(response.action, "disable");
+        assert_eq!(response.new_status, Some("disabled".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_handle_worker_disable_with_drain() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_test_worker("worker1", 8)).await;
+        let ctx = make_test_context(pool);
+
+        let response = handle_worker_disable(&ctx, &WorkerId::new("worker1"), None, true).await;
+        assert_eq!(response.status, "ok");
+        assert_eq!(response.action, "disable");
+        // When drain_first is true, should set to draining first
+        assert_eq!(response.new_status, Some("draining".to_string()));
+    }
+
+    // =========================================================================
+    // Worker capabilities info tests
+    // =========================================================================
+
+    #[test]
+    fn test_worker_capabilities_info_serialization() {
+        let info = WorkerCapabilitiesInfo {
+            id: "worker1".to_string(),
+            host: "localhost".to_string(),
+            user: "test".to_string(),
+            capabilities: WorkerCapabilities::default(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"id\":\"worker1\""));
+    }
+
+    #[test]
+    fn test_worker_capabilities_response_serialization() {
+        let response = WorkerCapabilitiesResponse {
+            workers: vec![],
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"workers\":[]"));
+    }
+
+    // =========================================================================
+    // Self-test response types tests
+    // =========================================================================
+
+    #[test]
+    fn test_self_test_status_response_serialization() {
+        let response = SelfTestStatusResponse {
+            enabled: true,
+            schedule: Some("daily".to_string()),
+            interval: Some("24h".to_string()),
+            last_run: None,
+            next_run: Some("2025-01-02T00:00:00Z".to_string()),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"enabled\":true"));
+        assert!(json.contains("\"schedule\":\"daily\""));
+    }
+
+    // =========================================================================
+    // SpeedScore list response tests
+    // =========================================================================
+
+    #[test]
+    fn test_speedscore_list_response_serialization() {
+        let response = SpeedScoreListResponse {
+            workers: vec![
+                SpeedScoreWorker {
+                    worker_id: "worker1".to_string(),
+                    speedscore: None,
+                    status: WorkerStatus::Healthy,
+                },
+            ],
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"worker_id\":\"worker1\""));
+    }
+
+    #[test]
+    fn test_speedscore_history_response_serialization() {
+        let response = SpeedScoreHistoryResponse {
+            worker_id: "worker1".to_string(),
+            history: vec![],
+            pagination: PaginationInfo {
+                total: 0,
+                offset: 0,
+                limit: 20,
+                has_more: false,
+            },
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"worker_id\":\"worker1\""));
+        assert!(json.contains("\"has_more\":false"));
+    }
+
+    // =========================================================================
+    // ApiResponse tests
+    // =========================================================================
+
+    #[test]
+    fn test_api_response_ok_serialization() {
+        let response: ApiResponse<HealthResponse> = ApiResponse::Ok(HealthResponse {
+            status: "healthy".to_string(),
+            version: "1.0.0".to_string(),
+            uptime_seconds: 100,
+        });
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"status\":\"healthy\""));
+    }
+
+    #[test]
+    fn test_api_response_error_serialization() {
+        let response: ApiResponse<HealthResponse> = ApiResponse::Error(ApiError {
+            code: ErrorCode::NotFound,
+            message: "Not found".to_string(),
+            details: None,
+        });
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"message\":\"Not found\""));
+    }
+
+    // =========================================================================
+    // Telemetry poll tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_handle_telemetry_poll_worker_not_found() {
+        let pool = WorkerPool::new();
+        let ctx = make_test_context(pool);
+
+        let response = handle_telemetry_poll(&ctx, &WorkerId::new("nonexistent")).await;
+        assert!(response.error.is_some());
+        assert!(response.error.unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_speedscore_worker_not_found() {
+        let pool = WorkerPool::new();
+        let ctx = make_test_context(pool);
+
+        let response = handle_speedscore(&ctx, &WorkerId::new("nonexistent")).await;
+        match response {
+            ApiResponse::Error(e) => {
+                assert!(e.message.contains("not found"));
+            }
+            _ => panic!("expected error response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_speedscore_success() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_test_worker("worker1", 8)).await;
+        let ctx = make_test_context(pool);
+
+        let response = handle_speedscore(&ctx, &WorkerId::new("worker1")).await;
+        match response {
+            ApiResponse::Ok(r) => {
+                assert_eq!(r.worker_id, "worker1");
+                // No speedscore initially
+                assert!(r.speedscore.is_none());
+            }
+            _ => panic!("expected ok response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_speedscore_list() {
+        let pool = WorkerPool::new();
+        pool.add_worker(make_test_worker("worker1", 8)).await;
+        pool.add_worker(make_test_worker("worker2", 4)).await;
+        let ctx = make_test_context(pool);
+
+        let response = handle_speedscore_list(&ctx).await;
+        match response {
+            ApiResponse::Ok(r) => {
+                assert_eq!(r.workers.len(), 2);
+            }
+            _ => panic!("expected ok response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_benchmark_trigger_worker_not_found() {
+        let pool = WorkerPool::new();
+        let ctx = make_test_context(pool);
+
+        let response = handle_benchmark_trigger(&ctx, &WorkerId::new("nonexistent")).await;
+        match response {
+            ApiResponse::Error(e) => {
+                assert!(e.message.contains("not found"));
+            }
+            _ => panic!("expected error response"),
+        }
+    }
 }

@@ -269,13 +269,8 @@ fn probe_capabilities() -> WorkerCapabilities {
     if let Ok(output) = Command::new("rustc").args(["--version"]).output()
         && output.status.success()
     {
-        let version_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        // Extract just the version number (e.g., "rustc 1.75.0 (..." -> "1.75.0")
-        if let Some(version) = version_str.split_whitespace().nth(1) {
-            capabilities.rustc_version = Some(version.to_string());
-        } else {
-            capabilities.rustc_version = Some(version_str);
-        }
+        let version_str = String::from_utf8_lossy(&output.stdout);
+        capabilities.rustc_version = parse_rustc_version_stdout(&version_str);
     }
 
     // Probe bun version
@@ -308,12 +303,8 @@ fn probe_capabilities() -> WorkerCapabilities {
     if let Ok(output) = Command::new("node").args(["--version"]).output()
         && output.status.success()
     {
-        let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        // Remove leading 'v' if present (e.g., "v20.10.0" -> "20.10.0")
-        let version = version.strip_prefix('v').unwrap_or(&version).to_string();
-        if !version.is_empty() {
-            capabilities.node_version = Some(version);
-        }
+        let version = String::from_utf8_lossy(&output.stdout);
+        capabilities.node_version = parse_node_version_stdout(&version);
     }
 
     // Probe npm version
@@ -350,7 +341,7 @@ fn probe_num_cpus() -> Option<u32> {
         && output.status.success()
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
-        if let Ok(n) = stdout.trim().parse::<u32>() {
+        if let Some(n) = parse_nproc_stdout(&stdout) {
             return Some(n);
         }
     }
@@ -360,7 +351,7 @@ fn probe_num_cpus() -> Option<u32> {
         && output.status.success()
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
-        if let Ok(n) = stdout.trim().parse::<u32>() {
+        if let Some(n) = parse_nproc_stdout(&stdout) {
             return Some(n);
         }
     }
@@ -371,17 +362,10 @@ fn probe_num_cpus() -> Option<u32> {
 /// Probe load average (1, 5, 15 minute averages).
 fn probe_load_average() -> Option<(f64, f64, f64)> {
     // Try /proc/loadavg first (Linux)
-    if let Ok(contents) = std::fs::read_to_string("/proc/loadavg") {
-        let parts: Vec<&str> = contents.split_whitespace().collect();
-        if parts.len() >= 3
-            && let (Ok(l1), Ok(l5), Ok(l15)) = (
-                parts[0].parse::<f64>(),
-                parts[1].parse::<f64>(),
-                parts[2].parse::<f64>(),
-            )
-        {
-            return Some((l1, l5, l15));
-        }
+    if let Ok(contents) = std::fs::read_to_string("/proc/loadavg")
+        && let Some(avg) = parse_proc_loadavg(&contents)
+    {
+        return Some(avg);
     }
 
     // Fallback: uptime command (macOS and Linux)
@@ -389,30 +373,7 @@ fn probe_load_average() -> Option<(f64, f64, f64)> {
         && output.status.success()
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
-        // Parse "load average: 1.23, 4.56, 7.89" or similar
-        if let Some(idx) = stdout
-            .find("load average:")
-            .or_else(|| stdout.find("load averages:"))
-        {
-            let after = &stdout[idx..];
-            // Find numbers after the colon
-            if let Some(colon_idx) = after.find(':') {
-                let numbers_part = &after[colon_idx + 1..];
-                let parts: Vec<&str> = numbers_part
-                    .split(|c: char| c == ',' || c.is_whitespace())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if parts.len() >= 3
-                    && let (Ok(l1), Ok(l5), Ok(l15)) = (
-                        parts[0].parse::<f64>(),
-                        parts[1].parse::<f64>(),
-                        parts[2].parse::<f64>(),
-                    )
-                {
-                    return Some((l1, l5, l15));
-                }
-            }
-        }
+        return parse_uptime_loadavg(&stdout);
     }
 
     None
@@ -428,23 +389,95 @@ fn probe_disk_space() -> Option<(f64, f64)> {
         && output.status.success()
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
-        // Skip header line, parse second line
-        // Format: Filesystem 1024-blocks Used Available Capacity Mounted
-        for line in stdout.lines().skip(1) {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 4 {
-                // parts[1] = total 1K blocks, parts[3] = available 1K blocks
-                if let (Ok(total_kb), Ok(avail_kb)) =
-                    (parts[1].parse::<u64>(), parts[3].parse::<u64>())
-                {
-                    let total_gb = total_kb as f64 / (1024.0 * 1024.0);
-                    let free_gb = avail_kb as f64 / (1024.0 * 1024.0);
-                    return Some((free_gb, total_gb));
-                }
-            }
+        if let Some((total_kb, avail_kb)) = parse_df_posix_kb(&stdout) {
+            let total_gb = total_kb as f64 / (1024.0 * 1024.0);
+            let free_gb = avail_kb as f64 / (1024.0 * 1024.0);
+            return Some((free_gb, total_gb));
         }
     }
 
+    None
+}
+
+fn parse_rustc_version_stdout(stdout: &str) -> Option<String> {
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut tokens = trimmed.split_whitespace();
+    let first = tokens.next()?;
+    if first == "rustc"
+        && let Some(version) = tokens.next()
+        && !version.is_empty()
+    {
+        return Some(version.to_string());
+    }
+
+    Some(trimmed.to_string())
+}
+
+fn parse_node_version_stdout(stdout: &str) -> Option<String> {
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.strip_prefix('v').unwrap_or(trimmed).to_string())
+}
+
+fn parse_nproc_stdout(stdout: &str) -> Option<u32> {
+    stdout.trim().parse::<u32>().ok()
+}
+
+fn parse_proc_loadavg(contents: &str) -> Option<(f64, f64, f64)> {
+    let parts: Vec<&str> = contents.split_whitespace().collect();
+    if parts.len() < 3 {
+        return None;
+    }
+
+    let load1 = parts[0].parse::<f64>().ok()?;
+    let load5 = parts[1].parse::<f64>().ok()?;
+    let load15 = parts[2].parse::<f64>().ok()?;
+    Some((load1, load5, load15))
+}
+
+fn parse_uptime_loadavg(output: &str) -> Option<(f64, f64, f64)> {
+    // Parse "load average: 1.23, 4.56, 7.89" or "load averages: 1.23 4.56 7.89"
+    let idx = output
+        .find("load average:")
+        .or_else(|| output.find("load averages:"))?;
+    let after = &output[idx..];
+
+    let colon_idx = after.find(':')?;
+    let numbers_part = &after[colon_idx + 1..];
+
+    let parts: Vec<&str> = numbers_part
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if parts.len() < 3 {
+        return None;
+    }
+
+    let load1 = parts[0].parse::<f64>().ok()?;
+    let load5 = parts[1].parse::<f64>().ok()?;
+    let load15 = parts[2].parse::<f64>().ok()?;
+    Some((load1, load5, load15))
+}
+
+fn parse_df_posix_kb(stdout: &str) -> Option<(u64, u64)> {
+    // Skip header line, parse first data line.
+    // POSIX format: Filesystem 1024-blocks Used Available Capacity Mounted on
+    for line in stdout.lines().skip(1) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 4 {
+            // parts[1] = total 1K blocks, parts[3] = available 1K blocks
+            let total_kb = parts[1].parse::<u64>().ok()?;
+            let avail_kb = parts[3].parse::<u64>().ok()?;
+            return Some((total_kb, avail_kb));
+        }
+    }
     None
 }
 
@@ -503,4 +536,126 @@ fn main() {
     let _ = std::fs::remove_dir_all(&temp_dir);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn approx_eq(lhs: f64, rhs: f64) -> bool {
+        (lhs - rhs).abs() < 1e-9
+    }
+
+    #[test]
+    fn test_cli_parses_health() {
+        println!("TEST START: test_cli_parses_health");
+        let cli = Cli::try_parse_from(["rch-wkr", "health"]).expect("cli parse should succeed");
+        assert!(!cli.verbose);
+        assert!(matches!(cli.command, Commands::Health));
+        println!("TEST PASS: test_cli_parses_health");
+    }
+
+    #[test]
+    fn test_cli_parses_execute_with_toolchain() {
+        println!("TEST START: test_cli_parses_execute_with_toolchain");
+        let cli = Cli::try_parse_from([
+            "rch-wkr",
+            "--verbose",
+            "execute",
+            "--workdir",
+            "/tmp",
+            "--command",
+            "echo hello",
+            "--toolchain",
+            "nightly",
+        ])
+        .expect("cli parse should succeed");
+
+        assert!(cli.verbose);
+        match cli.command {
+            Commands::Execute {
+                workdir,
+                command,
+                toolchain,
+            } => {
+                assert_eq!(workdir, "/tmp");
+                assert_eq!(command, "echo hello");
+                assert_eq!(toolchain.as_deref(), Some("nightly"));
+            }
+            _ => panic!("expected execute command"),
+        }
+        println!("TEST PASS: test_cli_parses_execute_with_toolchain");
+    }
+
+    #[test]
+    fn test_cli_parses_cleanup_default_age() {
+        println!("TEST START: test_cli_parses_cleanup_default_age");
+        let cli = Cli::try_parse_from(["rch-wkr", "cleanup"]).expect("cli parse should succeed");
+        match cli.command {
+            Commands::Cleanup { max_age_hours } => {
+                assert_eq!(max_age_hours, 168);
+            }
+            _ => panic!("expected cleanup command"),
+        }
+        println!("TEST PASS: test_cli_parses_cleanup_default_age");
+    }
+
+    #[test]
+    fn test_parse_rustc_version_stdout_extracts_semver() {
+        println!("TEST START: test_parse_rustc_version_stdout_extracts_semver");
+        let parsed = parse_rustc_version_stdout("rustc 1.87.0-nightly (abc 2026-01-01)\n");
+        assert_eq!(parsed.as_deref(), Some("1.87.0-nightly"));
+        println!("TEST PASS: test_parse_rustc_version_stdout_extracts_semver");
+    }
+
+    #[test]
+    fn test_parse_node_version_stdout_strips_v_prefix() {
+        println!("TEST START: test_parse_node_version_stdout_strips_v_prefix");
+        let parsed = parse_node_version_stdout("v20.10.0\n");
+        assert_eq!(parsed.as_deref(), Some("20.10.0"));
+        println!("TEST PASS: test_parse_node_version_stdout_strips_v_prefix");
+    }
+
+    #[test]
+    fn test_parse_proc_loadavg_parses_first_three_numbers() {
+        println!("TEST START: test_parse_proc_loadavg_parses_first_three_numbers");
+        let parsed = parse_proc_loadavg("0.11 0.22 0.33 1/234 5678\n");
+        let (l1, l5, l15) = parsed.expect("should parse");
+        assert!(approx_eq(l1, 0.11));
+        assert!(approx_eq(l5, 0.22));
+        assert!(approx_eq(l15, 0.33));
+        println!("TEST PASS: test_parse_proc_loadavg_parses_first_three_numbers");
+    }
+
+    #[test]
+    fn test_parse_uptime_loadavg_parses_comma_format() {
+        println!("TEST START: test_parse_uptime_loadavg_parses_comma_format");
+        let sample = " 10:30:00 up 1 day,  2 users,  load average: 0.30, 0.20, 0.10\n";
+        let (l1, l5, l15) = parse_uptime_loadavg(sample).expect("should parse");
+        assert!(approx_eq(l1, 0.30));
+        assert!(approx_eq(l5, 0.20));
+        assert!(approx_eq(l15, 0.10));
+        println!("TEST PASS: test_parse_uptime_loadavg_parses_comma_format");
+    }
+
+    #[test]
+    fn test_parse_uptime_loadavg_parses_space_format() {
+        println!("TEST START: test_parse_uptime_loadavg_parses_space_format");
+        let sample = " 10:30:00 up 1 day,  2 users,  load averages: 2.05 1.90 1.50\n";
+        let (l1, l5, l15) = parse_uptime_loadavg(sample).expect("should parse");
+        assert!(approx_eq(l1, 2.05));
+        assert!(approx_eq(l5, 1.90));
+        assert!(approx_eq(l15, 1.50));
+        println!("TEST PASS: test_parse_uptime_loadavg_parses_space_format");
+    }
+
+    #[test]
+    fn test_parse_df_posix_kb_parses_total_and_available() {
+        println!("TEST START: test_parse_df_posix_kb_parses_total_and_available");
+        let sample = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 1048576 524288 524288 50% /tmp\n";
+        let (total_kb, avail_kb) = parse_df_posix_kb(sample).expect("should parse");
+        assert_eq!(total_kb, 1_048_576);
+        assert_eq!(avail_kb, 524_288);
+        println!("TEST PASS: test_parse_df_posix_kb_parses_total_and_available");
+    }
 }

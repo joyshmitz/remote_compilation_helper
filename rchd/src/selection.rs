@@ -3722,7 +3722,7 @@ mod tests {
                 let count = history.recent_selections("test-worker", Duration::from_secs(3600));
                 prop_assert_eq!(
                     count, num_selections,
-                    "Expected {num_selections} selections, got {count}"
+                    "Expected {} selections, got {}", num_selections, count
                 );
             }
         }

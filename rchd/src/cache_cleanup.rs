@@ -409,12 +409,13 @@ mod tests {
 
     #[test]
     fn test_cleanup_stats_with_errors() {
-        let mut stats = CleanupStats::default();
-
-        stats.workers_checked = 5;
-        stats.workers_cleaned = 2;
-        stats.workers_skipped = 1;
-        stats.errors = 2;
+        let stats = CleanupStats {
+            workers_checked: 5,
+            workers_cleaned: 2,
+            workers_skipped: 1,
+            errors: 2,
+            ..Default::default()
+        };
 
         assert_eq!(
             stats.workers_checked,
@@ -537,8 +538,10 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_scheduler_disabled_config() {
         let pool = WorkerPool::new();
-        let mut config = CacheCleanupConfig::default();
-        config.enabled = false;
+        let config = CacheCleanupConfig {
+            enabled: false,
+            ..Default::default()
+        };
 
         let scheduler = CacheCleanupScheduler::new(pool, config);
         assert!(!scheduler.config.enabled);
@@ -783,15 +786,15 @@ mod tests {
 
     #[test]
     fn test_cleanup_stats_large_accumulation() {
-        let mut stats = CleanupStats::default();
-
         // Simulate large-scale cleanup
-        stats.workers_checked = 100;
-        stats.workers_cleaned = 95;
-        stats.workers_skipped = 3;
-        stats.errors = 2;
-        stats.total_bytes_freed = 1024 * 1024 * 1024 * 500; // 500GB
-        stats.total_dirs_removed = 5000;
+        let stats = CleanupStats {
+            workers_checked: 100,
+            workers_cleaned: 95,
+            workers_skipped: 3,
+            errors: 2,
+            total_bytes_freed: 1024 * 1024 * 1024 * 500, // 500GB
+            total_dirs_removed: 5000,
+        };
 
         assert_eq!(stats.workers_checked, 100);
         assert_eq!(stats.total_bytes_freed, 536870912000);

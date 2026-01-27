@@ -626,6 +626,66 @@ mod tests {
     }
 
     // =========================================================================
+    // test_cli_parsing - CLI argument parsing sanity checks
+    // =========================================================================
+
+    #[test]
+    fn test_cli_parsing_defaults() {
+        let cli = Cli::try_parse_from(["rchd"]).unwrap();
+
+        assert_eq!(cli.socket, crate::config::default_socket_path());
+        assert_eq!(cli.history_capacity, 100);
+        assert_eq!(cli.metrics_port, 9100);
+        assert_eq!(cli.metrics_reset_interval, 300);
+
+        assert!(!cli.verbose);
+        assert!(!cli.foreground);
+        assert!(!cli.debug_routing);
+        assert!(!cli.no_hot_reload);
+    }
+
+    #[test]
+    fn test_cli_parsing_overrides() {
+        let cli = Cli::try_parse_from([
+            "rchd",
+            "--socket",
+            "/tmp/rch-test.sock",
+            "--workers-config",
+            "/tmp/workers.toml",
+            "--history-file",
+            "/tmp/history.jsonl",
+            "--history-capacity",
+            "250",
+            "--metrics-port",
+            "0",
+            "--metrics-reset-interval",
+            "60",
+            "--debug-routing",
+            "--no-hot-reload",
+            "--verbose",
+            "--foreground",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.socket, std::path::PathBuf::from("/tmp/rch-test.sock"));
+        assert_eq!(
+            cli.workers_config,
+            Some(std::path::PathBuf::from("/tmp/workers.toml"))
+        );
+        assert_eq!(
+            cli.history_file,
+            Some(std::path::PathBuf::from("/tmp/history.jsonl"))
+        );
+        assert_eq!(cli.history_capacity, 250);
+        assert_eq!(cli.metrics_port, 0);
+        assert_eq!(cli.metrics_reset_interval, 60);
+        assert!(cli.debug_routing);
+        assert!(cli.no_hot_reload);
+        assert!(cli.verbose);
+        assert!(cli.foreground);
+    }
+
+    // =========================================================================
     // test_daemon_context_creation - DaemonContext initialization tests
     // =========================================================================
 

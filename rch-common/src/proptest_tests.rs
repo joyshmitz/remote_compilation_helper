@@ -832,7 +832,7 @@ mod tests {
         fn worker_capabilities_float_precision() {
             // Test that f64 values roundtrip correctly
             let caps = WorkerCapabilities {
-                load_avg_1: Some(3.14159265358979),
+                load_avg_1: Some(std::f64::consts::PI),
                 disk_free_gb: Some(123.456789),
                 ..Default::default()
             };
@@ -1507,13 +1507,13 @@ mod tests {
 
         fn arb_selection_weight_config() -> impl Strategy<Value = SelectionWeightConfig> {
             (
-                0.0f64..=1.0f64,  // speedscore
-                0.0f64..=1.0f64,  // slots
-                0.0f64..=1.0f64,  // health
-                0.0f64..=1.0f64,  // cache
-                0.0f64..=1.0f64,  // network
-                0.0f64..=1.0f64,  // priority
-                0.0f64..=1.0f64,  // half_open_penalty
+                0.0f64..=1.0f64, // speedscore
+                0.0f64..=1.0f64, // slots
+                0.0f64..=1.0f64, // health
+                0.0f64..=1.0f64, // cache
+                0.0f64..=1.0f64, // network
+                0.0f64..=1.0f64, // priority
+                0.0f64..=1.0f64, // half_open_penalty
             )
                 .prop_map(
                     |(speedscore, slots, health, cache, network, priority, half_open_penalty)| {
@@ -1533,25 +1533,30 @@ mod tests {
         // ---- Strategy for generating arbitrary FairnessConfig ----
 
         fn arb_fairness_config() -> impl Strategy<Value = FairnessConfig> {
-            (1u64..=3600u64, 1u32..=100u32).prop_map(|(lookback_secs, max_consecutive_selections)| {
-                FairnessConfig {
+            (1u64..=3600u64, 1u32..=100u32).prop_map(
+                |(lookback_secs, max_consecutive_selections)| FairnessConfig {
                     lookback_secs,
                     max_consecutive_selections,
-                }
-            })
+                },
+            )
         }
 
         // ---- Strategy for generating arbitrary AffinityConfig ----
 
         fn arb_affinity_config() -> impl Strategy<Value = AffinityConfig> {
             (
-                any::<bool>(),    // enabled
-                1u64..=1440u64,   // pin_minutes (up to 24 hours)
-                any::<bool>(),    // enable_last_success_fallback
-                0.0f64..=1.0f64,  // fallback_min_success_rate
+                any::<bool>(),   // enabled
+                1u64..=1440u64,  // pin_minutes (up to 24 hours)
+                any::<bool>(),   // enable_last_success_fallback
+                0.0f64..=1.0f64, // fallback_min_success_rate
             )
                 .prop_map(
-                    |(enabled, pin_minutes, enable_last_success_fallback, fallback_min_success_rate)| {
+                    |(
+                        enabled,
+                        pin_minutes,
+                        enable_last_success_fallback,
+                        fallback_min_success_rate,
+                    )| {
                         AffinityConfig {
                             enabled,
                             pin_minutes,
@@ -1567,15 +1572,23 @@ mod tests {
         fn arb_selection_config() -> impl Strategy<Value = SelectionConfig> {
             (
                 arb_selection_strategy(),
-                0.0f64..=1.0f64,  // min_success_rate
+                0.0f64..=1.0f64, // min_success_rate
                 arb_selection_weight_config(),
                 arb_fairness_config(),
                 arb_affinity_config(),
-                proptest::option::of(0.1f64..=10.0f64),  // max_load_per_core
+                proptest::option::of(0.1f64..=10.0f64), // max_load_per_core
                 proptest::option::of(1.0f64..=1000.0f64), // min_free_gb
             )
                 .prop_map(
-                    |(strategy, min_success_rate, weights, fairness, affinity, max_load_per_core, min_free_gb)| {
+                    |(
+                        strategy,
+                        min_success_rate,
+                        weights,
+                        fairness,
+                        affinity,
+                        max_load_per_core,
+                        min_free_gb,
+                    )| {
                         SelectionConfig {
                             strategy,
                             min_success_rate,
@@ -1822,9 +1835,14 @@ mod tests {
                 // Clamp to [0,1] for edge cases where priority is outside range
                 let clamped = normalized.clamp(0.0, 1.0);
 
-                prop_assert!(clamped >= 0.0 && clamped <= 1.0,
+                prop_assert!(
+                    (0.0..=1.0).contains(&clamped),
                     "Normalized priority {} not in [0,1] (priority={}, min={}, max={})",
-                    clamped, priority, min_priority, max_priority);
+                    clamped,
+                    priority,
+                    min_priority,
+                    max_priority
+                );
             }
 
             /// Property: Same priority range produces 1.0.
@@ -1933,7 +1951,11 @@ mod tests {
 
             // The sum of main weights should be reasonable (not necessarily 1.0)
             let sum = config.speedscore + config.slots + config.health + config.cache;
-            assert!(sum > 0.5 && sum < 3.0, "Weight sum {} seems unreasonable", sum);
+            assert!(
+                sum > 0.5 && sum < 3.0,
+                "Weight sum {} seems unreasonable",
+                sum
+            );
 
             // half_open_penalty should be a multiplier (0-1)
             assert!(config.half_open_penalty > 0.0 && config.half_open_penalty <= 1.0);
@@ -1947,7 +1969,9 @@ mod tests {
             assert!(config.lookback_secs >= 60 && config.lookback_secs <= 600);
 
             // Default max consecutive should be small
-            assert!(config.max_consecutive_selections >= 1 && config.max_consecutive_selections <= 10);
+            assert!(
+                config.max_consecutive_selections >= 1 && config.max_consecutive_selections <= 10
+            );
         }
 
         #[test]
@@ -1965,6 +1989,414 @@ mod tests {
 
             // Fallback rate should be more lenient than main rate
             assert!(config.fallback_min_success_rate < 0.8);
+        }
+    }
+
+    // ============================================================================
+    // Artifact Pattern Matching Tests (bd-1m7t)
+    // ============================================================================
+    //
+    // These tests verify artifact verification types and their invariants:
+    // - FileHash: blake3 hash format, JSON roundtrip
+    // - ArtifactManifest: file collection, JSON roundtrip
+    // - VerificationResult: all_passed() invariant, summary format
+    // - VerificationFailure: failure details, JSON roundtrip
+
+    mod artifact_verification {
+        use super::*;
+        use crate::artifact_verify::{
+            ArtifactManifest, FileHash, VerificationFailure, VerificationResult,
+        };
+
+        // ---- Strategy for generating arbitrary FileHash ----
+
+        fn arb_file_hash() -> impl Strategy<Value = FileHash> {
+            ("[0-9a-f]{64}", 0u64..=u64::MAX / 2).prop_map(|(hash, size)| FileHash { hash, size })
+        }
+
+        // ---- Strategy for generating arbitrary VerificationFailure ----
+
+        fn arb_verification_failure() -> impl Strategy<Value = VerificationFailure> {
+            (
+                "[a-zA-Z0-9_./\\-]{1,100}",
+                "[0-9a-f]{64}",
+                "[0-9a-f]{64}",
+                0u64..=u64::MAX / 2,
+                0u64..=u64::MAX / 2,
+            )
+                .prop_map(
+                    |(path, expected_hash, actual_hash, expected_size, actual_size)| {
+                        VerificationFailure {
+                            path,
+                            expected_hash,
+                            actual_hash,
+                            expected_size,
+                            actual_size,
+                        }
+                    },
+                )
+        }
+
+        // ---- Strategy for generating arbitrary ArtifactManifest ----
+
+        fn arb_artifact_manifest() -> impl Strategy<Value = ArtifactManifest> {
+            (
+                proptest::collection::hash_map("[a-zA-Z0-9_./\\-]{1,50}", arb_file_hash(), 0..10),
+                0u64..=u64::MAX,
+                proptest::option::of("[a-zA-Z0-9_-]{1,30}"),
+            )
+                .prop_map(|(files, created_at, worker_id)| ArtifactManifest {
+                    files,
+                    created_at,
+                    worker_id,
+                })
+        }
+
+        // ---- Strategy for generating arbitrary VerificationResult ----
+
+        fn arb_verification_result() -> impl Strategy<Value = VerificationResult> {
+            (
+                proptest::collection::vec("[a-zA-Z0-9_./\\-]{1,50}", 0..10),
+                proptest::collection::vec(arb_verification_failure(), 0..5),
+                proptest::collection::vec("[a-zA-Z0-9_./\\-]{1,50}", 0..5),
+            )
+                .prop_map(|(passed, failed, skipped)| VerificationResult {
+                    passed,
+                    failed,
+                    skipped,
+                })
+        }
+
+        // ---- Helper for JSON roundtrip ----
+
+        fn assert_json_roundtrip<T>(value: &T) -> Result<(), TestCaseError>
+        where
+            T: serde::Serialize + for<'de> serde::Deserialize<'de> + std::fmt::Debug + PartialEq,
+        {
+            let json = serde_json::to_string(value)
+                .map_err(|e| TestCaseError::fail(format!("Serialization failed: {}", e)))?;
+
+            let deserialized: T = serde_json::from_str(&json)
+                .map_err(|e| TestCaseError::fail(format!("Deserialization failed: {}", e)))?;
+
+            prop_assert_eq!(
+                value,
+                &deserialized,
+                "Roundtrip mismatch for JSON: {}",
+                json
+            );
+            Ok(())
+        }
+
+        fn assert_json_roundtrip_no_eq<T>(value: &T) -> Result<(), TestCaseError>
+        where
+            T: serde::Serialize + for<'de> serde::Deserialize<'de> + std::fmt::Debug,
+        {
+            let json = serde_json::to_string(value)
+                .map_err(|e| TestCaseError::fail(format!("Serialization failed: {}", e)))?;
+
+            let _deserialized: T = serde_json::from_str(&json)
+                .map_err(|e| TestCaseError::fail(format!("Deserialization failed: {}", e)))?;
+
+            Ok(())
+        }
+
+        // ---- Proptest tests for FileHash ----
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(1000))]
+
+            #[test]
+            fn roundtrip_file_hash(hash in arb_file_hash()) {
+                info!(target: "proptest::artifact", "Testing FileHash roundtrip: size={}", hash.size);
+                assert_json_roundtrip(&hash)?;
+            }
+
+            #[test]
+            fn file_hash_format_valid(hash in arb_file_hash()) {
+                prop_assert_eq!(hash.hash.len(), 64, "Blake3 hash must be 64 hex chars");
+                prop_assert!(
+                    hash.hash.chars().all(|c| c.is_ascii_hexdigit()),
+                    "Hash must be hexadecimal"
+                );
+            }
+
+            #[test]
+            fn file_hash_size_preserved(hash in arb_file_hash()) {
+                let json = serde_json::to_string(&hash).unwrap();
+                let deserialized: FileHash = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(hash.size, deserialized.size);
+            }
+        }
+
+        // ---- Proptest tests for VerificationFailure ----
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(1000))]
+
+            #[test]
+            fn roundtrip_verification_failure(failure in arb_verification_failure()) {
+                info!(target: "proptest::artifact", "Testing VerificationFailure roundtrip: {}", failure.path);
+                assert_json_roundtrip_no_eq(&failure)?;
+            }
+
+            #[test]
+            fn verification_failure_hashes_valid(failure in arb_verification_failure()) {
+                prop_assert_eq!(failure.expected_hash.len(), 64);
+                prop_assert_eq!(failure.actual_hash.len(), 64);
+            }
+
+            #[test]
+            fn verification_failure_new(
+                path in "[a-zA-Z0-9_./\\-]{1,50}",
+                expected_hash in "[0-9a-f]{64}",
+                actual_hash in "[0-9a-f]{64}",
+                expected_size in 0u64..1_000_000u64,
+                actual_size in 0u64..1_000_000u64,
+            ) {
+                let failure = VerificationFailure::new(
+                    path.clone(),
+                    expected_hash.clone(),
+                    actual_hash.clone(),
+                    expected_size,
+                    actual_size,
+                );
+
+                prop_assert_eq!(failure.path, path);
+                prop_assert_eq!(failure.expected_hash, expected_hash);
+                prop_assert_eq!(failure.actual_hash, actual_hash);
+                prop_assert_eq!(failure.expected_size, expected_size);
+                prop_assert_eq!(failure.actual_size, actual_size);
+            }
+        }
+
+        // ---- Proptest tests for ArtifactManifest ----
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(500))]
+
+            #[test]
+            fn roundtrip_artifact_manifest(manifest in arb_artifact_manifest()) {
+                info!(target: "proptest::artifact", "Testing ArtifactManifest roundtrip: {} files", manifest.files.len());
+                assert_json_roundtrip_no_eq(&manifest)?;
+            }
+
+            #[test]
+            fn manifest_files_count_preserved(manifest in arb_artifact_manifest()) {
+                let json = serde_json::to_string(&manifest).unwrap();
+                let deserialized: ArtifactManifest = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(manifest.files.len(), deserialized.files.len());
+            }
+
+            #[test]
+            fn manifest_timestamp_preserved(manifest in arb_artifact_manifest()) {
+                let json = serde_json::to_string(&manifest).unwrap();
+                let deserialized: ArtifactManifest = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(manifest.created_at, deserialized.created_at);
+            }
+
+            #[test]
+            fn manifest_worker_id_preserved(manifest in arb_artifact_manifest()) {
+                let json = serde_json::to_string(&manifest).unwrap();
+                let deserialized: ArtifactManifest = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(manifest.worker_id, deserialized.worker_id);
+            }
+        }
+
+        // ---- Proptest tests for VerificationResult ----
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(1000))]
+
+            #[test]
+            fn roundtrip_verification_result(result in arb_verification_result()) {
+                info!(target: "proptest::artifact", "Testing VerificationResult roundtrip");
+                assert_json_roundtrip_no_eq(&result)?;
+            }
+
+            #[test]
+            fn all_passed_consistency(result in arb_verification_result()) {
+                prop_assert_eq!(
+                    result.all_passed(),
+                    result.failed.is_empty(),
+                    "all_passed() should equal failed.is_empty()"
+                );
+            }
+
+            #[test]
+            fn summary_contains_counts(result in arb_verification_result()) {
+                let summary = result.summary();
+
+                prop_assert!(
+                    summary.contains(&format!("{} passed", result.passed.len())),
+                    "Summary should contain passed count: {}",
+                    summary
+                );
+                prop_assert!(
+                    summary.contains(&format!("{} failed", result.failed.len())),
+                    "Summary should contain failed count: {}",
+                    summary
+                );
+                prop_assert!(
+                    summary.contains(&format!("{} skipped", result.skipped.len())),
+                    "Summary should contain skipped count: {}",
+                    summary
+                );
+            }
+        }
+
+        // ---- Proptest tests for format_failures ----
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(500))]
+
+            #[test]
+            fn format_failures_empty_when_passed(
+                passed in proptest::collection::vec("[a-zA-Z0-9_./\\-]{1,30}", 0..5),
+                skipped in proptest::collection::vec("[a-zA-Z0-9_./\\-]{1,30}", 0..3),
+            ) {
+                let result = VerificationResult {
+                    passed,
+                    failed: vec![],
+                    skipped,
+                };
+
+                let formatted = result.format_failures();
+                prop_assert!(
+                    formatted.is_empty(),
+                    "format_failures should be empty when no failures"
+                );
+            }
+
+            #[test]
+            fn format_failures_contains_paths(failure in arb_verification_failure()) {
+                let result = VerificationResult {
+                    passed: vec![],
+                    failed: vec![failure.clone()],
+                    skipped: vec![],
+                };
+
+                let formatted = result.format_failures();
+                prop_assert!(
+                    formatted.contains(&failure.path),
+                    "format_failures should contain failure path: {}",
+                    failure.path
+                );
+            }
+
+            #[test]
+            fn format_failures_contains_hash_prefixes(failure in arb_verification_failure()) {
+                let result = VerificationResult {
+                    passed: vec![],
+                    failed: vec![failure.clone()],
+                    skipped: vec![],
+                };
+
+                let formatted = result.format_failures();
+                let expected_prefix = &failure.expected_hash[..16];
+                let actual_prefix = &failure.actual_hash[..16];
+
+                prop_assert!(
+                    formatted.contains(expected_prefix),
+                    "format_failures should contain expected hash prefix"
+                );
+                prop_assert!(
+                    formatted.contains(actual_prefix),
+                    "format_failures should contain actual hash prefix"
+                );
+            }
+        }
+
+        // ---- Specific edge case tests ----
+
+        #[test]
+        fn file_hash_empty_content() {
+            let hash = FileHash {
+                hash: "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+                    .to_string(),
+                size: 0,
+            };
+
+            let json = serde_json::to_string(&hash).unwrap();
+            let deserialized: FileHash = serde_json::from_str(&json).unwrap();
+            assert_eq!(hash, deserialized);
+        }
+
+        #[test]
+        fn artifact_manifest_empty() {
+            let manifest = ArtifactManifest::default();
+
+            assert!(manifest.files.is_empty());
+            assert_eq!(manifest.created_at, 0);
+            assert!(manifest.worker_id.is_none());
+
+            let json = serde_json::to_string(&manifest).unwrap();
+            let deserialized: ArtifactManifest = serde_json::from_str(&json).unwrap();
+            assert_eq!(manifest.files.len(), deserialized.files.len());
+        }
+
+        #[test]
+        fn verification_result_all_categories() {
+            let result = VerificationResult {
+                passed: vec!["a.txt".to_string(), "b.txt".to_string()],
+                failed: vec![VerificationFailure::new(
+                    "c.txt",
+                    "a".repeat(64),
+                    "b".repeat(64),
+                    100,
+                    200,
+                )],
+                skipped: vec!["d.txt".to_string()],
+            };
+
+            assert!(!result.all_passed());
+
+            let summary = result.summary();
+            assert!(summary.contains("2 passed"));
+            assert!(summary.contains("1 failed"));
+            assert!(summary.contains("1 skipped"));
+
+            let formatted = result.format_failures();
+            assert!(formatted.contains("c.txt"));
+            assert!(formatted.contains("HASH MISMATCH"));
+        }
+
+        #[test]
+        fn verification_result_all_passed_empty() {
+            let result = VerificationResult {
+                passed: vec![],
+                failed: vec![],
+                skipped: vec![],
+            };
+
+            assert!(result.all_passed());
+            assert_eq!(result.summary(), "0 passed, 0 failed, 0 skipped");
+        }
+
+        #[test]
+        fn artifact_manifest_with_worker_id() {
+            let manifest = ArtifactManifest {
+                worker_id: Some("worker-1".to_string()),
+                ..Default::default()
+            };
+
+            let json = serde_json::to_string(&manifest).unwrap();
+            assert!(json.contains("worker-1"));
+
+            let deserialized: ArtifactManifest = serde_json::from_str(&json).unwrap();
+            assert_eq!(deserialized.worker_id, Some("worker-1".to_string()));
+        }
+
+        #[test]
+        fn artifact_manifest_without_worker_id_skips_field() {
+            let manifest = ArtifactManifest::default();
+            let json = serde_json::to_string(&manifest).unwrap();
+
+            assert!(
+                !json.contains("worker_id"),
+                "worker_id should be skipped when None: {}",
+                json
+            );
         }
     }
 }

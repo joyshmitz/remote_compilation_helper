@@ -3163,6 +3163,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk 0.31.0",
  "prometheus",
+ "proptest",
  "rand 0.9.2",
  "rch-common",
  "rch-telemetry",
