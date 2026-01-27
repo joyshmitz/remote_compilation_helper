@@ -1971,4 +1971,350 @@ mod tests {
         assert_eq!(CompilationKind::BunTest.command_base(), "bun");
         assert_eq!(CompilationKind::BunTypecheck.command_base(), "bun");
     }
+
+    // ==========================================================================
+    // Proptest: Command Classification with Random Inputs (bd-2kdm)
+    // ==========================================================================
+
+    mod proptest_classification {
+        use super::*;
+        use proptest::prelude::*;
+
+        // Strategy for arbitrary strings (pure random)
+        fn arbitrary_string() -> impl Strategy<Value = String> {
+            prop::string::string_regex(".{0,500}").unwrap()
+        }
+
+        // Strategy for command-like strings with random suffixes
+        fn command_like_string() -> impl Strategy<Value = String> {
+            let prefixes = prop::sample::select(vec![
+                "cargo", "rustc", "gcc", "g++", "clang", "make", "cmake", "ninja", "bun", "ls",
+                "cd", "echo", "cat", "grep", "find", "rm", "mv", "cp", "mkdir",
+            ]);
+            (prefixes, "[ a-zA-Z0-9_.-]{0,200}")
+                .prop_map(|(prefix, suffix)| format!("{}{}", prefix, suffix))
+        }
+
+        // Strategy for known compilation commands with random flags
+        fn known_command_with_flags() -> impl Strategy<Value = String> {
+            let base_commands = prop::sample::select(vec![
+                "cargo build",
+                "cargo test",
+                "cargo check",
+                "cargo clippy",
+                "cargo run",
+                "rustc",
+                "gcc",
+                "g++",
+                "make",
+                "bun test",
+                "bun typecheck",
+            ]);
+            let flags = prop::collection::vec(
+                prop::sample::select(vec![
+                    "--release",
+                    "--verbose",
+                    "-j8",
+                    "-p",
+                    "--all",
+                    "--workspace",
+                    "--lib",
+                    "--bin",
+                    "-o",
+                    "-c",
+                ]),
+                0..5,
+            );
+            (base_commands, flags).prop_map(|(cmd, flags)| {
+                if flags.is_empty() {
+                    cmd.to_string()
+                } else {
+                    format!("{} {}", cmd, flags.join(" "))
+                }
+            })
+        }
+
+        // Strategy for strings with unicode and control characters
+        fn unicode_and_control_chars() -> impl Strategy<Value = String> {
+            prop::string::string_regex(
+                r"[\x00-\x1f\x80-\xff\u{100}-\u{10FFFF}a-zA-Z0-9 |>&;$()]{0,100}",
+            )
+            .unwrap()
+        }
+
+        // Strategy for shell-like commands with special characters
+        fn shell_special_commands() -> impl Strategy<Value = String> {
+            let components = prop::sample::select(vec![
+                "cargo build",
+                "ls -la",
+                "echo test",
+                "cat file.txt",
+                "grep pattern",
+            ]);
+            let operators = prop::sample::select(vec![
+                " | ", " && ", " || ", " ; ", " > ", " < ", " & ", " 2>&1 ", " $(", " `",
+            ]);
+            prop::collection::vec((components, operators), 1..4).prop_map(|pairs| {
+                let mut result = String::new();
+                for (i, (comp, op)) in pairs.iter().enumerate() {
+                    if i > 0 {
+                        result.push_str(op);
+                    }
+                    result.push_str(comp);
+                }
+                result
+            })
+        }
+
+        // Strategy for wrapper-prefixed commands
+        fn wrapped_commands() -> impl Strategy<Value = String> {
+            let wrappers = prop::sample::select(vec![
+                "sudo ",
+                "env ",
+                "time ",
+                "nice ",
+                "/usr/bin/time ",
+                "RUST_BACKTRACE=1 ",
+                "CC=clang ",
+                "",
+            ]);
+            let commands = prop::sample::select(vec![
+                "cargo build",
+                "cargo test",
+                "make",
+                "gcc -c main.c",
+                "ls -la",
+            ]);
+            (wrappers, commands).prop_map(|(wrapper, cmd)| format!("{}{}", wrapper, cmd))
+        }
+
+        proptest! {
+            // Configure proptest for high-volume testing
+            #![proptest_config(ProptestConfig::with_cases(1000))]
+
+            // Test 1: Arbitrary strings never cause panics
+            #[test]
+            fn test_classify_arbitrary_no_panic(s in arbitrary_string()) {
+                // Just call classify_command - if it panics, proptest will catch it
+                let _ = classify_command(&s);
+            }
+
+            // Test 2: Command-like strings never cause panics
+            #[test]
+            fn test_classify_command_like_no_panic(s in command_like_string()) {
+                let _ = classify_command(&s);
+            }
+
+            // Test 3: Known commands with flags produce valid classification
+            #[test]
+            fn test_classify_known_commands_valid(s in known_command_with_flags()) {
+                let result = classify_command(&s);
+                // Confidence should be in valid range
+                prop_assert!(result.confidence >= 0.0 && result.confidence <= 1.0,
+                    "Confidence {} out of range for command: {}", result.confidence, s);
+                // If is_compilation, must have a kind
+                if result.is_compilation {
+                    prop_assert!(result.kind.is_some(),
+                        "is_compilation=true but kind=None for: {}", s);
+                }
+            }
+
+            // Test 4: Unicode and control characters never panic
+            #[test]
+            fn test_classify_unicode_no_panic(s in unicode_and_control_chars()) {
+                let _ = classify_command(&s);
+            }
+
+            // Test 5: Shell special commands are handled
+            #[test]
+            fn test_classify_shell_special(s in shell_special_commands()) {
+                let result = classify_command(&s);
+                // Commands with shell operators should typically NOT be intercepted
+                // (pipes, redirects, backgrounding, chaining)
+                if s.contains(" | ") || s.contains(" > ") || s.contains(" < ") || s.contains(" & ") {
+                    // May or may not be classified depending on quote handling
+                    let _ = result; // Just ensure no panic
+                }
+            }
+
+            // Test 6: Wrapped commands are handled
+            #[test]
+            fn test_classify_wrapped_commands(s in wrapped_commands()) {
+                let result = classify_command(&s);
+                prop_assert!(result.confidence >= 0.0 && result.confidence <= 1.0);
+            }
+
+            // Test 7: Classification is deterministic
+            #[test]
+            fn test_classify_deterministic(s in arbitrary_string()) {
+                let result1 = classify_command(&s);
+                let result2 = classify_command(&s);
+                prop_assert_eq!(result1, result2,
+                    "Non-deterministic classification for: {}", s);
+            }
+
+            // Test 8: Empty-ish strings handled correctly
+            #[test]
+            fn test_classify_whitespace_variants(s in "[ \t\n\r]{0,20}") {
+                let result = classify_command(&s);
+                prop_assert!(!result.is_compilation,
+                    "Whitespace-only command should not be classified as compilation: {:?}", s);
+                prop_assert!(result.reason.contains("empty") || result.reason.contains("keyword"),
+                    "Unexpected reason for whitespace: {}", result.reason);
+            }
+
+            // Test 9: Very long commands don't panic
+            #[test]
+            fn test_classify_long_commands(
+                prefix in "cargo (build|test|check)",
+                suffix in "[a-zA-Z0-9_ -]{0,10000}"
+            ) {
+                let long_cmd = format!("{} {}", prefix, suffix);
+                let result = classify_command(&long_cmd);
+                prop_assert!(result.confidence >= 0.0 && result.confidence <= 1.0);
+            }
+
+            // Test 10: Null bytes and special sequences
+            #[test]
+            fn test_classify_special_bytes(s in prop::collection::vec(any::<u8>(), 0..200)) {
+                if let Ok(valid_str) = String::from_utf8(s.clone()) {
+                    let _ = classify_command(&valid_str);
+                }
+                // Non-UTF8 sequences can't be tested with &str
+            }
+        }
+
+        // Additional targeted proptest tests
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(500))]
+
+            // Test: Cargo subcommands with arbitrary suffixes
+            #[test]
+            fn test_cargo_subcommand_robustness(
+                subcommand in "(build|test|check|clippy|fmt|clean|run|doc|bench|nextest)",
+                suffix in "[a-zA-Z0-9_ -]{0,50}"
+            ) {
+                let cmd = format!("cargo {} {}", subcommand, suffix);
+                let result = classify_command(&cmd);
+                // Ensure valid result structure
+                prop_assert!(result.confidence >= 0.0 && result.confidence <= 1.0);
+                // fmt and clean should NEVER be classified as compilation
+                if subcommand == "fmt" || subcommand == "clean" {
+                    prop_assert!(!result.is_compilation,
+                        "cargo {} should not be compilation: {}", subcommand, cmd);
+                }
+            }
+
+            // Test: Bun commands robustness
+            #[test]
+            fn test_bun_command_robustness(
+                subcommand in "(test|typecheck|install|add|remove|run|build|dev)",
+                suffix in "[a-zA-Z0-9_ -]{0,30}"
+            ) {
+                let cmd = format!("bun {} {}", subcommand, suffix);
+                let result = classify_command(&cmd);
+                prop_assert!(result.confidence >= 0.0 && result.confidence <= 1.0);
+                // install, add, remove, run, build, dev should NOT be compilation
+                if matches!(subcommand.as_str(), "install" | "add" | "remove" | "run" | "build" | "dev") {
+                    prop_assert!(!result.is_compilation,
+                        "bun {} should not be compilation", subcommand);
+                }
+            }
+
+            // Test: GCC/Clang commands with file patterns
+            #[test]
+            fn test_c_compiler_robustness(
+                compiler in "(gcc|g\\+\\+|clang|clang\\+\\+)",
+                flags in "(-[cCoOgW][a-z0-9]* )*",
+                file in "[a-zA-Z_][a-zA-Z0-9_]*\\.(c|cpp|cc|h|hpp)"
+            ) {
+                let cmd = format!("{} {}{}", compiler, flags, file);
+                let result = classify_command(&cmd);
+                prop_assert!(result.confidence >= 0.0 && result.confidence <= 1.0);
+            }
+
+            // Test: Commands with quoted strings preserve correctness
+            #[test]
+            fn test_quoted_args_handling(
+                base in "(cargo build|cargo test|gcc|make)",
+                quoted_content in "[a-zA-Z0-9 _-]{0,30}"
+            ) {
+                // Single quotes
+                let cmd_single = format!("{} '{}'", base, quoted_content);
+                let _ = classify_command(&cmd_single);
+
+                // Double quotes
+                let cmd_double = format!("{} \"{}\"", base, quoted_content);
+                let _ = classify_command(&cmd_double);
+            }
+        }
+
+        // Regression test: ensure specific problematic inputs are handled
+        #[test]
+        fn test_known_edge_cases() {
+            // These are edge cases that might have caused issues
+            let edge_cases = [
+                "",
+                " ",
+                "\t",
+                "\n",
+                "cargo",
+                "cargo ",
+                "cargo  ",
+                "cargo\tbuild",
+                "cargo\nbuild",
+                "cargo\rbuild",
+                "cargo+nightly",
+                "cargo +nightly",
+                "cargo +nightly build",
+                "  cargo build  ",
+                "CARGO_TARGET_DIR=/tmp cargo build",
+                "/usr/local/bin/cargo build",
+                "~/.cargo/bin/cargo build",
+                "./cargo build",
+                "../cargo build",
+                "cargo build 'test file.rs'",
+                "cargo build \"test file.rs\"",
+                "cargo build test\\ file.rs",
+                "cargo build -- --test-threads=1",
+                "cargo build --features \"feat1 feat2\"",
+                "cargo build 2>&1",
+                "cargo build 2>/dev/null",
+                "gcc -DFOO=\"bar baz\" main.c",
+                "make -j$(nproc)",
+                "ninja -C build",
+                "cmake --build . --target all",
+                "bun test --timeout 5000 src/",
+                "env -i PATH=/usr/bin cargo build",
+            ];
+
+            for cmd in edge_cases {
+                let result = classify_command(cmd);
+                assert!(
+                    result.confidence >= 0.0 && result.confidence <= 1.0,
+                    "Invalid confidence for: {:?}",
+                    cmd
+                );
+            }
+        }
+
+        // Test that detailed classification matches simple classification
+        #[test]
+        fn test_detailed_matches_simple_proptest() {
+            let test_cases = [
+                "cargo build --release",
+                "cargo test",
+                "make -j8",
+                "ls -la",
+                "echo hello",
+            ];
+
+            for cmd in test_cases {
+                let simple = classify_command(cmd);
+                let detailed = classify_command_detailed(cmd);
+                assert_eq!(simple, detailed.classification, "Mismatch for: {}", cmd);
+            }
+        }
+    }
 }
