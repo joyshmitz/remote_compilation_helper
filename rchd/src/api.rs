@@ -29,6 +29,33 @@ use tokio::net::UnixStream;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Format wait time in seconds to a human-readable string.
+fn format_wait_time(secs: u64) -> String {
+    if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        let mins = secs / 60;
+        let s = secs % 60;
+        if s == 0 {
+            format!("{}m", mins)
+        } else {
+            format!("{}m {}s", mins, s)
+        }
+    } else {
+        let hours = secs / 3600;
+        let mins = (secs % 3600) / 60;
+        if mins == 0 {
+            format!("{}h", hours)
+        } else {
+            format!("{}h {}m", hours, mins)
+        }
+    }
+}
+
 /// Parsed API request variants.
 #[derive(Debug)]
 enum ApiRequest {
@@ -111,8 +138,10 @@ pub struct DaemonFullStatus {
     pub daemon: DaemonStatusInfo,
     /// Worker states.
     pub workers: Vec<WorkerStatusInfo>,
-    /// Currently active builds (placeholder for future).
+    /// Currently active builds.
     pub active_builds: Vec<ActiveBuild>,
+    /// Queued builds waiting for workers.
+    pub queued_builds: Vec<QueuedBuild>,
     /// Recent completed builds.
     pub recent_builds: Vec<BuildRecord>,
     /// Issues and warnings.
@@ -206,6 +235,29 @@ pub struct ActiveBuild {
     pub command: String,
     /// When build started (ISO 8601).
     pub started_at: String,
+}
+
+/// Queued build information.
+///
+/// Represents a build waiting for an available worker.
+#[derive(Debug, Serialize)]
+pub struct QueuedBuild {
+    /// Queue position ID.
+    pub id: u64,
+    /// Project identifier.
+    pub project_id: String,
+    /// Command to execute.
+    pub command: String,
+    /// When build was queued (ISO 8601).
+    pub queued_at: String,
+    /// Queue position (1-indexed).
+    pub position: usize,
+    /// Slots needed.
+    pub slots_needed: u32,
+    /// Estimated start time (ISO 8601), if available.
+    pub estimated_start: Option<String>,
+    /// Time waiting in queue (formatted string, e.g., "2m 15s").
+    pub wait_time: String,
 }
 
 /// Issue or warning.
@@ -2272,6 +2324,12 @@ async fn handle_status(ctx: &DaemonContext) -> Result<DaemonFullStatus> {
     // Collect active alerts from the alert manager
     let alerts = ctx.alert_manager.active_alerts();
 
+    // Update queue depth metric
+    let queue_depth = ctx.history.queue_depth();
+    if !cfg!(test) {
+        metrics::set_build_queue_depth(queue_depth);
+    }
+
     Ok(DaemonFullStatus {
         daemon: DaemonStatusInfo {
             pid: ctx.pid,
@@ -2295,6 +2353,25 @@ async fn handle_status(ctx: &DaemonContext) -> Result<DaemonFullStatus> {
                 worker_id: b.worker_id,
                 command: b.command,
                 started_at: b.started_at,
+            })
+            .collect(),
+        queued_builds: ctx
+            .history
+            .queued_builds()
+            .into_iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let wait_secs = b.queued_at_mono.elapsed().as_secs();
+                QueuedBuild {
+                    id: b.id,
+                    project_id: b.project_id,
+                    command: b.command,
+                    queued_at: b.queued_at,
+                    position: i + 1,
+                    slots_needed: b.slots_needed,
+                    estimated_start: b.estimated_start,
+                    wait_time: format_wait_time(wait_secs),
+                }
             })
             .collect(),
         recent_builds,
