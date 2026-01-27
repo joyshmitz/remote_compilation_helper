@@ -13,11 +13,9 @@
 //!
 //! This implements part of bead bd-12hi: True E2E Cargo Compilation Tests (bench component)
 
-use rch_common::e2e::{
-    LogLevel, LogSource, TestConfigError, TestLoggerBuilder, TestWorkersConfig,
-    should_skip_worker_check,
-};
+use rch_common::e2e::{TestConfigError, TestWorkersConfig, should_skip_worker_check};
 use rch_common::ssh::{KnownHostsPolicy, SshClient, SshOptions};
+use rch_common::testing::{TestLogger, TestPhase};
 use rch_common::types::WorkerConfig;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -201,65 +199,59 @@ fn find_bench_binary(root: &Path) -> Option<PathBuf> {
 /// Expected: exit code 0 and bench artifact present
 #[tokio::test]
 async fn test_cargo_bench_basic() {
-    let logger = TestLoggerBuilder::new("test_cargo_bench_basic")
-        .print_realtime(true)
-        .build();
+    let logger = TestLogger::for_test("test_cargo_bench_basic");
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("test".to_string()),
+    logger.log_with_data(
+        TestPhase::Setup,
         "Starting cargo bench basic test",
-        vec![
-            ("phase".to_string(), "setup".to_string()),
-            ("fixture".to_string(), "bench_project".to_string()),
-        ],
+        serde_json::json!({"fixture": "bench_project"}),
     );
 
     let Some(config) = require_workers() else {
-        logger.warn("Test skipped: no workers available");
+        logger.log(TestPhase::Setup, "Test skipped: no workers available");
         return;
     };
 
     let Some(worker_entry) = get_test_worker(&config) else {
-        logger.warn("Test skipped: no enabled worker found");
+        logger.log(TestPhase::Setup, "Test skipped: no enabled worker found");
         return;
     };
 
     let fixture_dir = bench_project_fixture_dir();
     if !fixture_dir.exists() {
-        logger.warn(format!(
-            "Test skipped: bench_project fixture not found at {}",
-            fixture_dir.display()
-        ));
+        logger.log(
+            TestPhase::Setup,
+            format!(
+                "Test skipped: bench_project fixture not found at {}",
+                fixture_dir.display()
+            ),
+        );
         return;
     }
 
     let worker_config = worker_entry.to_worker_config();
     let Some(mut client) = get_connected_client(&config, worker_entry).await else {
-        logger.error("Failed to connect to worker");
+        logger.fail("Failed to connect to worker");
         return;
     };
 
     let remote_path = format!("{}/cargo_bench_basic", config.settings.remote_work_dir);
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("test".to_string()),
+    logger.log_with_data(
+        TestPhase::Setup,
         "Syncing fixture to remote",
-        vec![
-            ("phase".to_string(), "setup".to_string()),
-            ("worker".to_string(), worker_entry.id.clone()),
-        ],
+        serde_json::json!({"worker": &worker_entry.id}),
     );
 
     if let Err(e) =
         sync_fixture_to_remote(&mut client, &worker_config, &fixture_dir, &remote_path).await
     {
-        logger.error(format!("Failed to sync fixture: {e}"));
+        logger.fail(format!("Failed to sync fixture: {e}"));
         return;
     }
 
     // Local baseline
+    logger.log(TestPhase::Execute, "Running local cargo bench baseline");
     let local_start = Instant::now();
     let local_result = std::process::Command::new("cargo")
         .args(["bench", "--bench", "bench"])
@@ -272,33 +264,23 @@ async fn test_cargo_bench_basic() {
         .and_then(|r| r.status.code())
         .unwrap_or(-1);
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("test".to_string()),
-        "Local cargo bench baseline",
-        vec![
-            ("phase".to_string(), "execute_local".to_string()),
-            ("cmd".to_string(), "cargo bench --bench bench".to_string()),
-            ("exit_code".to_string(), local_exit.to_string()),
-            (
-                "duration_ms".to_string(),
-                local_duration.as_millis().to_string(),
-            ),
-        ],
+    logger.log_with_data(
+        TestPhase::Execute,
+        "Local cargo bench completed",
+        serde_json::json!({
+            "cmd": "cargo bench --bench bench",
+            "exit_code": local_exit,
+            "duration_ms": local_duration.as_millis() as u64
+        }),
     );
 
     // Remote bench
     let bench_cmd = format!("cd {} && cargo bench --bench bench 2>&1", remote_path);
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("test".to_string()),
+    logger.log_with_data(
+        TestPhase::Execute,
         "Executing remote cargo bench",
-        vec![
-            ("phase".to_string(), "execute_remote".to_string()),
-            ("cmd".to_string(), "cargo bench --bench bench".to_string()),
-            ("worker".to_string(), worker_entry.id.clone()),
-        ],
+        serde_json::json!({"cmd": "cargo bench --bench bench", "worker": &worker_entry.id}),
     );
 
     let remote_start = Instant::now();
@@ -306,19 +288,14 @@ async fn test_cargo_bench_basic() {
         Ok(result) => {
             let remote_duration = remote_start.elapsed();
 
-            logger.log_with_context(
-                LogLevel::Info,
-                LogSource::Custom("test".to_string()),
+            logger.log_with_data(
+                TestPhase::Execute,
                 "Remote cargo bench completed",
-                vec![
-                    ("phase".to_string(), "execute_remote".to_string()),
-                    ("exit_code".to_string(), result.exit_code.to_string()),
-                    (
-                        "duration_ms".to_string(),
-                        remote_duration.as_millis().to_string(),
-                    ),
-                    ("worker".to_string(), worker_entry.id.clone()),
-                ],
+                serde_json::json!({
+                    "exit_code": result.exit_code,
+                    "duration_ms": remote_duration.as_millis() as u64,
+                    "worker": &worker_entry.id
+                }),
             );
 
             assert_eq!(
@@ -328,10 +305,14 @@ async fn test_cargo_bench_basic() {
             );
 
             // Sync artifacts back
+            logger.log(TestPhase::Verify, "Syncing artifacts back from remote");
             if let Err(e) =
                 sync_artifacts_from_remote(&worker_config, &remote_path, &fixture_dir).await
             {
-                logger.warn(format!("Failed to sync artifacts back: {e}"));
+                logger.log(
+                    TestPhase::Verify,
+                    format!("Warning: Failed to sync artifacts back: {e}"),
+                );
             }
 
             // Verify bench artifact exists
@@ -340,40 +321,40 @@ async fn test_cargo_bench_basic() {
             let size = bench_binary
                 .as_ref()
                 .and_then(|p| fs::metadata(p).ok())
-                .map(|m| m.len().to_string())
-                .unwrap_or_else(|| "0".to_string());
+                .map(|m| m.len())
+                .unwrap_or(0);
             let path_str = bench_binary
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "<missing>".to_string());
 
-            logger.log_with_context(
-                LogLevel::Info,
-                LogSource::Custom("test".to_string()),
+            logger.log_with_data(
+                TestPhase::Verify,
                 "Bench artifact verification",
-                vec![
-                    ("phase".to_string(), "verify".to_string()),
-                    ("path".to_string(), path_str.clone()),
-                    ("exists".to_string(), exists.to_string()),
-                    ("size".to_string(), size),
-                ],
+                serde_json::json!({
+                    "path": path_str.clone(),
+                    "exists": exists,
+                    "size": size
+                }),
             );
 
             assert!(exists, "Bench binary should exist at {}", path_str);
         }
         Err(e) => {
-            logger.error(format!("Remote cargo bench failed: {e}"));
             let _ = cleanup_remote(&mut client, &remote_path).await;
             client.disconnect().await.ok();
+            logger.fail(format!("Remote cargo bench command failed: {e}"));
             panic!("Remote cargo bench command failed: {e}");
         }
     }
 
+    // Teardown
     if config.settings.cleanup_after_test {
+        logger.log(TestPhase::Teardown, "Cleaning up remote directory");
         let _ = cleanup_remote(&mut client, &remote_path).await;
     }
 
     client.disconnect().await.ok();
-    logger.info("Cargo bench basic test completed");
-    logger.print_summary();
+    logger.log(TestPhase::Verify, "All verifications passed");
+    logger.pass();
 }

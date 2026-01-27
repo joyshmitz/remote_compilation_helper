@@ -22,11 +22,9 @@
 //!
 //! This implements bead bd-20zz: True E2E Artifact Transfer & Retrieval Tests
 
-use rch_common::e2e::{
-    LogLevel, LogSource, TestConfigError, TestLoggerBuilder, TestWorkersConfig,
-    should_skip_worker_check,
-};
+use rch_common::e2e::{TestConfigError, TestWorkersConfig, should_skip_worker_check};
 use rch_common::ssh::{KnownHostsPolicy, SshClient, SshOptions};
+use rch_common::testing::{TestLogger, TestPhase};
 use rch_common::types::WorkerConfig;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -352,33 +350,27 @@ impl IntegrityResult {
 /// - Verify binary executes correctly
 #[tokio::test]
 async fn test_binary_artifact_integrity() {
-    let logger = TestLoggerBuilder::new("test_binary_artifact_integrity")
-        .print_realtime(true)
-        .build();
+    let logger = TestLogger::for_test("test_binary_artifact_integrity");
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
+    logger.log_with_data(
+        TestPhase::Setup,
         "Starting binary artifact integrity test",
-        vec![
-            ("phase".to_string(), "setup".to_string()),
-            ("artifact_type".to_string(), "binary".to_string()),
-        ],
+        serde_json::json!({"artifact_type": "binary"}),
     );
 
     let Some(config) = require_workers() else {
-        logger.warn("Test skipped: no workers available");
+        logger.log(TestPhase::Setup, "Test skipped: no workers available");
         return;
     };
 
     let Some(worker_entry) = get_test_worker(&config) else {
-        logger.warn("Test skipped: no enabled worker found");
+        logger.log(TestPhase::Setup, "Test skipped: no enabled worker found");
         return;
     };
 
     let worker_config = worker_entry.to_worker_config();
     let Some(mut client) = get_connected_client(&config, worker_entry).await else {
-        logger.error("Failed to connect to worker");
+        logger.fail("Failed to connect to worker");
         return;
     };
 
@@ -389,35 +381,26 @@ async fn test_binary_artifact_integrity() {
     );
 
     // Sync fixture to remote
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
-        "Syncing fixture to remote",
-        vec![("phase".to_string(), "sync".to_string())],
-    );
+    logger.log(TestPhase::Setup, "Syncing fixture to remote");
 
     if let Err(e) =
         sync_fixture_to_remote(&mut client, &worker_config, &fixture_dir, &remote_path).await
     {
-        logger.error(format!("Failed to sync fixture: {e}"));
+        logger.fail(format!("Failed to sync fixture: {e}"));
         return;
     }
 
     // Build on remote
     let build_cmd = format!("cd {} && cargo build", remote_path);
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
+    logger.log_with_data(
+        TestPhase::Execute,
         "Building on remote",
-        vec![
-            ("phase".to_string(), "build".to_string()),
-            ("cmd".to_string(), "cargo build".to_string()),
-        ],
+        serde_json::json!({"cmd": "cargo build"}),
     );
 
     let build_result = client.execute(&build_cmd).await;
     if let Err(e) = &build_result {
-        logger.error(format!("Remote build failed: {e}"));
+        logger.fail(format!("Remote build failed: {e}"));
         let _ = cleanup_remote(&mut client, &remote_path).await;
         client.disconnect().await.ok();
         return;
@@ -425,7 +408,7 @@ async fn test_binary_artifact_integrity() {
 
     let result = build_result.unwrap();
     if !result.success() {
-        logger.error(format!("Remote build failed: {}", result.stderr));
+        logger.fail(format!("Remote build failed: {}", result.stderr));
         let _ = cleanup_remote(&mut client, &remote_path).await;
         client.disconnect().await.ok();
         panic!("Remote cargo build failed");
@@ -434,20 +417,18 @@ async fn test_binary_artifact_integrity() {
     // Compute remote hash BEFORE transfer
     let remote_binary_path = format!("{}/target/debug/hello_world", remote_path);
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
+    logger.log_with_data(
+        TestPhase::Verify,
         "Computing remote hash before transfer",
-        vec![
-            ("phase".to_string(), "verify".to_string()),
-            ("remote_path".to_string(), remote_binary_path.clone()),
-        ],
+        serde_json::json!({
+            "remote_path": remote_binary_path.clone()
+        }),
     );
 
     let remote_hash = match compute_remote_hash(&mut client, &remote_binary_path).await {
         Ok(hash) => hash,
         Err(e) => {
-            logger.error(format!("Failed to compute remote hash: {e}"));
+            logger.fail(format!("Failed to compute remote hash: {e}"));
             let _ = cleanup_remote(&mut client, &remote_path).await;
             client.disconnect().await.ok();
             panic!("Failed to compute remote hash");
@@ -457,64 +438,46 @@ async fn test_binary_artifact_integrity() {
     let remote_size = match get_remote_file_size(&mut client, &remote_binary_path).await {
         Ok(size) => size,
         Err(e) => {
-            logger.error(format!("Failed to get remote size: {e}"));
+            logger.log(
+                TestPhase::Verify,
+                format!("Warning: Failed to get remote size: {e}"),
+            );
             0
         }
     };
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
+    logger.log_with_data(
+        TestPhase::Verify,
         "Remote artifact info",
-        vec![
-            ("phase".to_string(), "verify".to_string()),
-            ("remote_hash".to_string(), remote_hash.clone()),
-            ("remote_size".to_string(), remote_size.to_string()),
-        ],
+        serde_json::json!({
+            "remote_hash": remote_hash.clone(),
+            "remote_size": remote_size
+        }),
     );
 
     // Transfer artifacts back
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
-        "Transferring artifacts",
-        vec![("phase".to_string(), "transfer".to_string())],
-    );
+    logger.log(TestPhase::Execute, "Transferring artifacts");
 
     let transfer_stats =
         match sync_artifacts_from_remote(&worker_config, &remote_path, &fixture_dir).await {
             Ok(stats) => stats,
             Err(e) => {
-                logger.error(format!("Failed to transfer artifacts: {e}"));
+                logger.fail(format!("Failed to transfer artifacts: {e}"));
                 let _ = cleanup_remote(&mut client, &remote_path).await;
                 client.disconnect().await.ok();
                 panic!("Artifact transfer failed");
             }
         };
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
+    logger.log_with_data(
+        TestPhase::Execute,
         "Transfer complete",
-        vec![
-            ("phase".to_string(), "transfer".to_string()),
-            (
-                "bytes".to_string(),
-                transfer_stats.bytes_transferred.to_string(),
-            ),
-            (
-                "duration_ms".to_string(),
-                transfer_stats.duration.as_millis().to_string(),
-            ),
-            (
-                "rate_mbps".to_string(),
-                format!("{:.2}", transfer_stats.rate_mbps()),
-            ),
-            (
-                "files".to_string(),
-                transfer_stats.files_transferred.to_string(),
-            ),
-        ],
+        serde_json::json!({
+            "bytes": transfer_stats.bytes_transferred,
+            "duration_ms": transfer_stats.duration.as_millis() as u64,
+            "rate_mbps": format!("{:.2}", transfer_stats.rate_mbps()),
+            "files": transfer_stats.files_transferred
+        }),
     );
 
     // Compute local hash AFTER transfer (using same algorithm as remote)
@@ -523,7 +486,7 @@ async fn test_binary_artifact_integrity() {
     let local_hash = match compute_local_md5(&local_binary_path) {
         Ok(hash) => hash,
         Err(e) => {
-            logger.error(format!("Failed to compute local hash: {e}"));
+            logger.fail(format!("Failed to compute local hash: {e}"));
             let _ = cleanup_remote(&mut client, &remote_path).await;
             client.disconnect().await.ok();
             panic!("Failed to compute local hash");
@@ -542,19 +505,17 @@ async fn test_binary_artifact_integrity() {
         size_match: local_size == remote_size,
     };
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
+    logger.log_with_data(
+        TestPhase::Verify,
         "Integrity verification",
-        vec![
-            ("phase".to_string(), "verify".to_string()),
-            ("local_hash".to_string(), integrity.local_hash.clone()),
-            ("remote_hash".to_string(), integrity.remote_hash.clone()),
-            ("local_size".to_string(), integrity.local_size.to_string()),
-            ("remote_size".to_string(), integrity.remote_size.to_string()),
-            ("hash_match".to_string(), integrity.hash_match.to_string()),
-            ("size_match".to_string(), integrity.size_match.to_string()),
-        ],
+        serde_json::json!({
+            "local_hash": integrity.local_hash.clone(),
+            "remote_hash": integrity.remote_hash.clone(),
+            "local_size": integrity.local_size,
+            "remote_size": integrity.remote_size,
+            "hash_match": integrity.hash_match,
+            "size_match": integrity.size_match
+        }),
     );
 
     assert!(
@@ -570,12 +531,7 @@ async fn test_binary_artifact_integrity() {
     );
 
     // Verify binary executes correctly
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
-        "Testing binary execution",
-        vec![("phase".to_string(), "execute".to_string())],
-    );
+    logger.log(TestPhase::Execute, "Testing binary execution");
 
     let exec_result = std::process::Command::new(&local_binary_path).output();
 
@@ -584,22 +540,14 @@ async fn test_binary_artifact_integrity() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let success = output.status.success();
 
-            logger.log_with_context(
-                LogLevel::Info,
-                LogSource::Custom("artifact".to_string()),
+            logger.log_with_data(
+                TestPhase::Execute,
                 "Binary execution result",
-                vec![
-                    ("phase".to_string(), "execute".to_string()),
-                    (
-                        "exit_code".to_string(),
-                        output.status.code().unwrap_or(-1).to_string(),
-                    ),
-                    ("success".to_string(), success.to_string()),
-                    (
-                        "output_contains_hello".to_string(),
-                        stdout.contains("Hello").to_string(),
-                    ),
-                ],
+                serde_json::json!({
+                    "exit_code": output.status.code().unwrap_or(-1),
+                    "success": success,
+                    "output_contains_hello": stdout.contains("Hello")
+                }),
             );
 
             assert!(success, "Binary should execute successfully");
@@ -610,7 +558,7 @@ async fn test_binary_artifact_integrity() {
             );
         }
         Err(e) => {
-            logger.error(format!("Binary execution failed: {e}"));
+            logger.fail(format!("Binary execution failed: {e}"));
             panic!("Failed to execute binary: {e}");
         }
     }
@@ -619,12 +567,8 @@ async fn test_binary_artifact_integrity() {
     let _ = cleanup_remote(&mut client, &remote_path).await;
     client.disconnect().await.ok();
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
-        "Test completed successfully",
-        vec![("phase".to_string(), "complete".to_string())],
-    );
+    logger.log(TestPhase::Verify, "Test completed successfully");
+    logger.pass();
 }
 
 // =============================================================================
@@ -638,30 +582,27 @@ async fn test_binary_artifact_integrity() {
 /// - Compare sizes (release should be smaller or equal with optimizations)
 #[tokio::test]
 async fn test_debug_vs_release_artifacts() {
-    let logger = TestLoggerBuilder::new("test_debug_vs_release_artifacts")
-        .print_realtime(true)
-        .build();
+    let logger = TestLogger::for_test("test_debug_vs_release_artifacts");
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
+    logger.log_with_data(
+        TestPhase::Setup,
         "Starting debug vs release artifact comparison",
-        vec![("phase".to_string(), "setup".to_string())],
+        serde_json::json!({"artifact_type": "binary"}),
     );
 
     let Some(config) = require_workers() else {
-        logger.warn("Test skipped: no workers available");
+        logger.log(TestPhase::Setup, "Test skipped: no workers available");
         return;
     };
 
     let Some(worker_entry) = get_test_worker(&config) else {
-        logger.warn("Test skipped: no enabled worker found");
+        logger.log(TestPhase::Setup, "Test skipped: no enabled worker found");
         return;
     };
 
     let worker_config = worker_entry.to_worker_config();
     let Some(mut client) = get_connected_client(&config, worker_entry).await else {
-        logger.error("Failed to connect to worker");
+        logger.fail("Failed to connect to worker");
         return;
     };
 
@@ -672,37 +613,27 @@ async fn test_debug_vs_release_artifacts() {
     if let Err(e) =
         sync_fixture_to_remote(&mut client, &worker_config, &fixture_dir, &remote_path).await
     {
-        logger.error(format!("Failed to sync fixture: {e}"));
+        logger.fail(format!("Failed to sync fixture: {e}"));
         return;
     }
 
     // Build debug
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
-        "Building debug binary",
-        vec![("phase".to_string(), "build_debug".to_string())],
-    );
+    logger.log(TestPhase::Execute, "Building debug binary");
 
     let debug_cmd = format!("cd {} && cargo build", remote_path);
     if let Err(e) = client.execute(&debug_cmd).await {
-        logger.error(format!("Debug build failed: {e}"));
+        logger.fail(format!("Debug build failed: {e}"));
         let _ = cleanup_remote(&mut client, &remote_path).await;
         client.disconnect().await.ok();
         return;
     }
 
     // Build release
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
-        "Building release binary",
-        vec![("phase".to_string(), "build_release".to_string())],
-    );
+    logger.log(TestPhase::Execute, "Building release binary");
 
     let release_cmd = format!("cd {} && cargo build --release", remote_path);
     if let Err(e) = client.execute(&release_cmd).await {
-        logger.error(format!("Release build failed: {e}"));
+        logger.fail(format!("Release build failed: {e}"));
         let _ = cleanup_remote(&mut client, &remote_path).await;
         client.disconnect().await.ok();
         return;
@@ -719,28 +650,23 @@ async fn test_debug_vs_release_artifacts() {
         .await
         .unwrap_or(0);
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
+    logger.log_with_data(
+        TestPhase::Verify,
         "Remote binary sizes",
-        vec![
-            ("phase".to_string(), "verify".to_string()),
-            ("debug_size".to_string(), debug_size.to_string()),
-            ("release_size".to_string(), release_size.to_string()),
-            (
-                "size_ratio".to_string(),
-                if debug_size > 0 {
-                    format!("{:.2}", release_size as f64 / debug_size as f64)
-                } else {
-                    "N/A".to_string()
-                },
-            ),
-        ],
+        serde_json::json!({
+            "debug_size": debug_size,
+            "release_size": release_size,
+            "size_ratio": if debug_size > 0 {
+                format!("{:.2}", release_size as f64 / debug_size as f64)
+            } else {
+                "N/A".to_string()
+            }
+        }),
     );
 
     // Transfer artifacts
     if let Err(e) = sync_artifacts_from_remote(&worker_config, &remote_path, &fixture_dir).await {
-        logger.error(format!("Failed to transfer artifacts: {e}"));
+        logger.fail(format!("Failed to transfer artifacts: {e}"));
         let _ = cleanup_remote(&mut client, &remote_path).await;
         client.disconnect().await.ok();
         return;
@@ -772,15 +698,13 @@ async fn test_debug_vs_release_artifacts() {
         .map(|o| o.status.success())
         .unwrap_or(false);
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
+    logger.log_with_data(
+        TestPhase::Execute,
         "Binary execution verification",
-        vec![
-            ("phase".to_string(), "execute".to_string()),
-            ("debug_runs".to_string(), debug_runs.to_string()),
-            ("release_runs".to_string(), release_runs.to_string()),
-        ],
+        serde_json::json!({
+            "debug_runs": debug_runs,
+            "release_runs": release_runs
+        }),
     );
 
     assert!(debug_runs, "Debug binary should run");
@@ -790,12 +714,8 @@ async fn test_debug_vs_release_artifacts() {
     let _ = cleanup_remote(&mut client, &remote_path).await;
     client.disconnect().await.ok();
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
-        "Test completed successfully",
-        vec![("phase".to_string(), "complete".to_string())],
-    );
+    logger.log(TestPhase::Verify, "Test completed successfully");
+    logger.pass();
 }
 
 // =============================================================================
@@ -809,33 +729,27 @@ async fn test_debug_vs_release_artifacts() {
 /// - Verify archive integrity
 #[tokio::test]
 async fn test_library_artifact_retrieval() {
-    let logger = TestLoggerBuilder::new("test_library_artifact_retrieval")
-        .print_realtime(true)
-        .build();
+    let logger = TestLogger::for_test("test_library_artifact_retrieval");
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
+    logger.log_with_data(
+        TestPhase::Setup,
         "Starting library artifact retrieval test",
-        vec![
-            ("phase".to_string(), "setup".to_string()),
-            ("artifact_type".to_string(), "library".to_string()),
-        ],
+        serde_json::json!({"artifact_type": "library"}),
     );
 
     let Some(config) = require_workers() else {
-        logger.warn("Test skipped: no workers available");
+        logger.log(TestPhase::Setup, "Test skipped: no workers available");
         return;
     };
 
     let Some(worker_entry) = get_test_worker(&config) else {
-        logger.warn("Test skipped: no enabled worker found");
+        logger.log(TestPhase::Setup, "Test skipped: no enabled worker found");
         return;
     };
 
     let worker_config = worker_entry.to_worker_config();
     let Some(mut client) = get_connected_client(&config, worker_entry).await else {
-        logger.error("Failed to connect to worker");
+        logger.fail("Failed to connect to worker");
         return;
     };
 
@@ -847,26 +761,22 @@ async fn test_library_artifact_retrieval() {
     if let Err(e) =
         sync_fixture_to_remote(&mut client, &worker_config, &fixture_dir, &remote_path).await
     {
-        logger.error(format!("Failed to sync fixture: {e}"));
+        logger.fail(format!("Failed to sync fixture: {e}"));
         return;
     }
 
     // Build library only (core crate is a library)
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
+    logger.log_with_data(
+        TestPhase::Execute,
         "Building library crate",
-        vec![
-            ("phase".to_string(), "build".to_string()),
-            ("crate".to_string(), "core".to_string()),
-        ],
+        serde_json::json!({"crate": "core"}),
     );
 
     let build_cmd = format!("cd {} && cargo build -p core", remote_path);
     let result = client.execute(&build_cmd).await;
 
     if let Err(e) = &result {
-        logger.error(format!("Library build failed: {e}"));
+        logger.fail(format!("Library build failed: {e}"));
         let _ = cleanup_remote(&mut client, &remote_path).await;
         client.disconnect().await.ok();
         return;
@@ -874,7 +784,7 @@ async fn test_library_artifact_retrieval() {
 
     // Transfer artifacts
     if let Err(e) = sync_artifacts_from_remote(&worker_config, &remote_path, &fixture_dir).await {
-        logger.error(format!("Failed to transfer artifacts: {e}"));
+        logger.fail(format!("Failed to transfer artifacts: {e}"));
         let _ = cleanup_remote(&mut client, &remote_path).await;
         client.disconnect().await.ok();
         return;
@@ -898,32 +808,29 @@ async fn test_library_artifact_retrieval() {
             })
             .unwrap_or(0);
 
-        logger.log_with_context(
-            LogLevel::Info,
-            LogSource::Custom("artifact".to_string()),
+        logger.log_with_data(
+            TestPhase::Verify,
             "Library artifacts found",
-            vec![
-                ("phase".to_string(), "verify".to_string()),
-                ("rlib_count".to_string(), rlib_count.to_string()),
-                ("deps_dir".to_string(), deps_dir.display().to_string()),
-            ],
+            serde_json::json!({
+                "rlib_count": rlib_count,
+                "deps_dir": deps_dir.display().to_string()
+            }),
         );
 
         assert!(rlib_count > 0, "Should have at least one .rlib file");
     } else {
-        logger.warn("deps directory not found - build may have failed");
+        logger.log(
+            TestPhase::Verify,
+            "deps directory not found - build may have failed",
+        );
     }
 
     // Cleanup
     let _ = cleanup_remote(&mut client, &remote_path).await;
     client.disconnect().await.ok();
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
-        "Test completed",
-        vec![("phase".to_string(), "complete".to_string())],
-    );
+    logger.log(TestPhase::Verify, "Test completed");
+    logger.pass();
 }
 
 // =============================================================================
@@ -937,30 +844,23 @@ async fn test_library_artifact_retrieval() {
 /// - Transfer again, verify only changed artifacts transferred
 #[tokio::test]
 async fn test_incremental_artifact_sync() {
-    let logger = TestLoggerBuilder::new("test_incremental_artifact_sync")
-        .print_realtime(true)
-        .build();
+    let logger = TestLogger::for_test("test_incremental_artifact_sync");
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
-        "Starting incremental artifact sync test",
-        vec![("phase".to_string(), "setup".to_string())],
-    );
+    logger.log(TestPhase::Setup, "Starting incremental artifact sync test");
 
     let Some(config) = require_workers() else {
-        logger.warn("Test skipped: no workers available");
+        logger.log(TestPhase::Setup, "Test skipped: no workers available");
         return;
     };
 
     let Some(worker_entry) = get_test_worker(&config) else {
-        logger.warn("Test skipped: no enabled worker found");
+        logger.log(TestPhase::Setup, "Test skipped: no enabled worker found");
         return;
     };
 
     let worker_config = worker_entry.to_worker_config();
     let Some(mut client) = get_connected_client(&config, worker_entry).await else {
-        logger.error("Failed to connect to worker");
+        logger.fail("Failed to connect to worker");
         return;
     };
 
@@ -971,21 +871,16 @@ async fn test_incremental_artifact_sync() {
     if let Err(e) =
         sync_fixture_to_remote(&mut client, &worker_config, &fixture_dir, &remote_path).await
     {
-        logger.error(format!("Failed to sync fixture: {e}"));
+        logger.fail(format!("Failed to sync fixture: {e}"));
         return;
     }
 
     // First build
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
-        "First build",
-        vec![("phase".to_string(), "build_1".to_string())],
-    );
+    logger.log(TestPhase::Execute, "First build");
 
     let build_cmd = format!("cd {} && cargo build", remote_path);
     if let Err(e) = client.execute(&build_cmd).await {
-        logger.error(format!("First build failed: {e}"));
+        logger.fail(format!("First build failed: {e}"));
         let _ = cleanup_remote(&mut client, &remote_path).await;
         client.disconnect().await.ok();
         return;
@@ -1001,14 +896,10 @@ async fn test_incremental_artifact_sync() {
         .map(|s| s.bytes_transferred)
         .unwrap_or(0);
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
+    logger.log_with_data(
+        TestPhase::Execute,
         "First transfer complete",
-        vec![
-            ("phase".to_string(), "transfer_1".to_string()),
-            ("bytes".to_string(), first_bytes.to_string()),
-        ],
+        serde_json::json!({"bytes": first_bytes}),
     );
 
     // Touch a source file on remote to trigger rebuild (without changing content)
@@ -1016,15 +907,13 @@ async fn test_incremental_artifact_sync() {
     let _ = client.execute(&touch_cmd).await;
 
     // Second build (incremental)
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
-        "Second build (incremental)",
-        vec![("phase".to_string(), "build_2".to_string())],
-    );
+    logger.log(TestPhase::Execute, "Second build (incremental)");
 
     if let Err(e) = client.execute(&build_cmd).await {
-        logger.error(format!("Second build failed: {e}"));
+        logger.log(
+            TestPhase::Execute,
+            format!("Warning: Second build failed: {e}"),
+        );
     }
 
     // Second transfer
@@ -1037,25 +926,17 @@ async fn test_incremental_artifact_sync() {
         .map(|s| s.bytes_transferred)
         .unwrap_or(0);
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
+    logger.log_with_data(
+        TestPhase::Execute,
         "Second transfer complete",
-        vec![
-            ("phase".to_string(), "transfer_2".to_string()),
-            ("bytes".to_string(), second_bytes.to_string()),
-            (
-                "reduction_pct".to_string(),
-                if first_bytes > 0 {
-                    format!(
-                        "{:.1}",
-                        (1.0 - second_bytes as f64 / first_bytes as f64) * 100.0
-                    )
-                } else {
-                    "N/A".to_string()
-                },
-            ),
-        ],
+        serde_json::json!({
+            "bytes": second_bytes,
+            "reduction_pct": if first_bytes > 0 {
+                format!("{:.1}", (1.0 - second_bytes as f64 / first_bytes as f64) * 100.0)
+            } else {
+                "N/A".to_string()
+            }
+        }),
     );
 
     // Note: We don't assert on byte reduction because rsync behavior depends on
@@ -1065,12 +946,8 @@ async fn test_incremental_artifact_sync() {
     let _ = cleanup_remote(&mut client, &remote_path).await;
     client.disconnect().await.ok();
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
-        "Test completed",
-        vec![("phase".to_string(), "complete".to_string())],
-    );
+    logger.log(TestPhase::Verify, "Test completed");
+    logger.pass();
 }
 
 // =============================================================================
@@ -1083,30 +960,23 @@ async fn test_incremental_artifact_sync() {
 /// transfer correctly without corruption.
 #[tokio::test]
 async fn test_large_artifact_handling() {
-    let logger = TestLoggerBuilder::new("test_large_artifact_handling")
-        .print_realtime(true)
-        .build();
+    let logger = TestLogger::for_test("test_large_artifact_handling");
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
-        "Starting large artifact handling test",
-        vec![("phase".to_string(), "setup".to_string())],
-    );
+    logger.log(TestPhase::Setup, "Starting large artifact handling test");
 
     let Some(config) = require_workers() else {
-        logger.warn("Test skipped: no workers available");
+        logger.log(TestPhase::Setup, "Test skipped: no workers available");
         return;
     };
 
     let Some(worker_entry) = get_test_worker(&config) else {
-        logger.warn("Test skipped: no enabled worker found");
+        logger.log(TestPhase::Setup, "Test skipped: no enabled worker found");
         return;
     };
 
     let worker_config = worker_entry.to_worker_config();
     let Some(mut client) = get_connected_client(&config, worker_entry).await else {
-        logger.error("Failed to connect to worker");
+        logger.fail("Failed to connect to worker");
         return;
     };
 
@@ -1118,17 +988,12 @@ async fn test_large_artifact_handling() {
     if let Err(e) =
         sync_fixture_to_remote(&mut client, &worker_config, &fixture_dir, &remote_path).await
     {
-        logger.error(format!("Failed to sync fixture: {e}"));
+        logger.fail(format!("Failed to sync fixture: {e}"));
         return;
     }
 
     // Build entire workspace
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
-        "Building entire workspace",
-        vec![("phase".to_string(), "build".to_string())],
-    );
+    logger.log(TestPhase::Execute, "Building entire workspace");
 
     let build_cmd = format!("cd {} && cargo build --workspace", remote_path);
     let build_start = Instant::now();
@@ -1136,23 +1001,16 @@ async fn test_large_artifact_handling() {
     let build_duration = build_start.elapsed();
 
     if let Err(e) = &result {
-        logger.error(format!("Build failed: {e}"));
+        logger.fail(format!("Build failed: {e}"));
         let _ = cleanup_remote(&mut client, &remote_path).await;
         client.disconnect().await.ok();
         return;
     }
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
+    logger.log_with_data(
+        TestPhase::Execute,
         "Build complete",
-        vec![
-            ("phase".to_string(), "build".to_string()),
-            (
-                "duration_ms".to_string(),
-                build_duration.as_millis().to_string(),
-            ),
-        ],
+        serde_json::json!({"duration_ms": build_duration.as_millis() as u64}),
     );
 
     // Transfer all artifacts
@@ -1161,20 +1019,15 @@ async fn test_large_artifact_handling() {
 
     match transfer_result {
         Ok(stats) => {
-            logger.log_with_context(
-                LogLevel::Info,
-                LogSource::Custom("artifact".to_string()),
+            logger.log_with_data(
+                TestPhase::Execute,
                 "Large artifact transfer complete",
-                vec![
-                    ("phase".to_string(), "transfer".to_string()),
-                    ("bytes".to_string(), stats.bytes_transferred.to_string()),
-                    (
-                        "duration_ms".to_string(),
-                        stats.duration.as_millis().to_string(),
-                    ),
-                    ("rate_mbps".to_string(), format!("{:.2}", stats.rate_mbps())),
-                    ("files".to_string(), stats.files_transferred.to_string()),
-                ],
+                serde_json::json!({
+                    "bytes": stats.bytes_transferred,
+                    "duration_ms": stats.duration.as_millis() as u64,
+                    "rate_mbps": format!("{:.2}", stats.rate_mbps()),
+                    "files": stats.files_transferred
+                }),
             );
 
             // Verify target directory exists with content
@@ -1197,22 +1050,17 @@ async fn test_large_artifact_handling() {
                 })
                 .unwrap_or(0);
 
-            logger.log_with_context(
-                LogLevel::Info,
-                LogSource::Custom("artifact".to_string()),
+            logger.log_with_data(
+                TestPhase::Verify,
                 "Artifact size verification",
-                vec![
-                    ("phase".to_string(), "verify".to_string()),
-                    ("total_size".to_string(), total_size.to_string()),
-                    (
-                        "size_mb".to_string(),
-                        format!("{:.2}", total_size as f64 / 1_000_000.0),
-                    ),
-                ],
+                serde_json::json!({
+                    "total_size": total_size,
+                    "size_mb": format!("{:.2}", total_size as f64 / 1_000_000.0)
+                }),
             );
         }
         Err(e) => {
-            logger.error(format!("Transfer failed: {e}"));
+            logger.fail(format!("Transfer failed: {e}"));
             panic!("Large artifact transfer failed");
         }
     }
@@ -1221,10 +1069,6 @@ async fn test_large_artifact_handling() {
     let _ = cleanup_remote(&mut client, &remote_path).await;
     client.disconnect().await.ok();
 
-    logger.log_with_context(
-        LogLevel::Info,
-        LogSource::Custom("artifact".to_string()),
-        "Test completed",
-        vec![("phase".to_string(), "complete".to_string())],
-    );
+    logger.log(TestPhase::Verify, "Test completed");
+    logger.pass();
 }

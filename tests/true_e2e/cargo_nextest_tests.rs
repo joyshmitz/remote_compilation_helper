@@ -14,8 +14,8 @@
 //! This implements part of bead bd-12hi: True E2E Cargo Compilation Tests (nextest component)
 
 use rch_common::e2e::{TestConfigError, TestWorkersConfig, should_skip_worker_check};
-use rch_common::testing::{TestLogger, TestPhase};
 use rch_common::ssh::{KnownHostsPolicy, SshClient, SshOptions};
+use rch_common::testing::{TestLogger, TestPhase};
 use rch_common::types::WorkerConfig;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -161,7 +161,10 @@ async fn test_cargo_nextest_run() {
     );
 
     if !nextest_available_local() {
-        logger.log(TestPhase::Setup, "Test skipped: cargo nextest not installed locally");
+        logger.log(
+            TestPhase::Setup,
+            "Test skipped: cargo nextest not installed locally",
+        );
         return;
     }
 
@@ -179,7 +182,10 @@ async fn test_cargo_nextest_run() {
     if !fixture_dir.exists() {
         logger.log(
             TestPhase::Setup,
-            format!("Test skipped: hello_world fixture not found at {}", fixture_dir.display()),
+            format!(
+                "Test skipped: hello_world fixture not found at {}",
+                fixture_dir.display()
+            ),
         );
         return;
     }
@@ -191,7 +197,10 @@ async fn test_cargo_nextest_run() {
     };
 
     if !nextest_available_remote(&mut client).await {
-        logger.log(TestPhase::Setup, "Test skipped: cargo nextest not installed on worker");
+        logger.log(
+            TestPhase::Setup,
+            "Test skipped: cargo nextest not installed on worker",
+        );
         client.disconnect().await.ok();
         return;
     }
