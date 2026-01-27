@@ -3,7 +3,7 @@
 //! Maintains a ring buffer of recent builds for status reporting and analytics.
 
 use chrono::Utc;
-use rch_common::{BuildLocation, BuildRecord, BuildStats};
+use rch_common::{BuildLocation, BuildRecord, BuildStats, CommandTimingBreakdown};
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
@@ -193,6 +193,7 @@ impl BuildHistory {
         exit_code: i32,
         duration_ms: Option<u64>,
         bytes_transferred: Option<u64>,
+        timing: Option<CommandTimingBreakdown>,
     ) -> Option<BuildRecord> {
         let state = {
             let mut active = self.active.write().unwrap();
@@ -212,7 +213,7 @@ impl BuildHistory {
             duration_ms,
             location: state.location,
             bytes_transferred,
-            timing: None,
+            timing,
         };
 
         self.record(record.clone());

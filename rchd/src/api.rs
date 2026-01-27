@@ -59,7 +59,11 @@ fn format_wait_time(secs: u64) -> String {
 /// Parsed API request variants.
 #[derive(Debug)]
 enum ApiRequest {
-    SelectWorker(SelectionRequest),
+    SelectWorker {
+        request: SelectionRequest,
+        /// If true and all workers are busy, enqueue and wait for a worker.
+        wait_for_worker: bool,
+    },
     ReleaseWorker(ReleaseRequest),
     RecordBuild {
         worker_id: WorkerId,
@@ -485,13 +489,28 @@ pub async fn handle_connection(
 
     // Parse and handle the request
     let (response_json, content_type) = match parse_request(line) {
-        Ok(ApiRequest::SelectWorker(request)) => {
+        Ok(ApiRequest::SelectWorker {
+            request,
+            wait_for_worker,
+        }) => {
             metrics::inc_requests("select-worker");
-            let response = handle_select_worker(&ctx, request).await?;
+            let response = handle_select_worker(&ctx, request, wait_for_worker).await?;
             (serde_json::to_string(&response)?, "application/json")
         }
-        Ok(ApiRequest::ReleaseWorker(request)) => {
+        Ok(ApiRequest::ReleaseWorker(mut request)) => {
             metrics::inc_requests("release-worker");
+            // Read optional JSON body line for timing breakdown
+            // Use read_line instead of read_to_string to avoid blocking on EOF
+            let mut body_line = String::new();
+            let _ = reader.read_line(&mut body_line).await;
+            let body = body_line.trim();
+            if !body.is_empty() {
+                if let Ok(timing) =
+                    serde_json::from_str::<rch_common::CommandTimingBreakdown>(body)
+                {
+                    request.timing = Some(timing);
+                }
+            }
             handle_release_worker(&ctx, request).await?;
             ("{}".to_string(), "application/json")
         }
@@ -1107,6 +1126,7 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
             exit_code,
             duration_ms,
             bytes_transferred,
+            timing: None, // Parsed from body in handle_connection
         }));
     }
 
@@ -1277,6 +1297,7 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
     let mut project = None;
     let mut command = None;
     let mut cores = None;
+    let mut wait_for_worker = false;
     let mut toolchain = None;
     let mut required_runtime = RequiredRuntime::default();
     let mut command_priority = CommandPriority::Normal;
@@ -1295,6 +1316,9 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
             "project" => project = Some(urlencoding_decode(value)),
             "command" => command = Some(urlencoding_decode(value)),
             "cores" => cores = value.parse().ok(),
+            "wait" | "queue" => {
+                wait_for_worker = value == "1" || value.eq_ignore_ascii_case("true");
+            }
             "toolchain" => {
                 let json = urlencoding_decode(value);
                 toolchain = serde_json::from_str(&json).ok();
@@ -1326,17 +1350,20 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
     let project = project.ok_or_else(|| anyhow!("Missing 'project' parameter"))?;
     let estimated_cores = cores.unwrap_or(1);
 
-    Ok(ApiRequest::SelectWorker(SelectionRequest {
-        project,
-        command,
-        command_priority,
-        estimated_cores,
-        preferred_workers: vec![],
-        toolchain,
-        required_runtime,
-        classification_duration_us,
-        hook_pid,
-    }))
+    Ok(ApiRequest::SelectWorker {
+        request: SelectionRequest {
+            project,
+            command,
+            command_priority,
+            estimated_cores,
+            preferred_workers: vec![],
+            toolchain,
+            required_runtime,
+            classification_duration_us,
+            hook_pid,
+        },
+        wait_for_worker,
+    })
 }
 
 fn parse_telemetry_source(value: &str) -> Option<TelemetrySource> {
@@ -1703,6 +1730,7 @@ async fn handle_event_stream(
 async fn handle_select_worker(
     ctx: &DaemonContext,
     request: SelectionRequest,
+    wait_for_worker: bool,
 ) -> Result<SelectionResponse> {
     debug!(
         "Selecting worker for project '{}' with {} cores",
@@ -1740,103 +1768,224 @@ async fn handle_select_worker(
         });
     }
 
-    // Retry loop to handle race conditions where slots are taken between selection and reservation
-    let mut attempts = 0;
-    const MAX_ATTEMPTS: u32 = 3;
+    async fn attempt_select_and_reserve(
+        ctx: &DaemonContext,
+        request: &SelectionRequest,
+    ) -> Result<SelectionResponse> {
+        // Retry loop to handle race conditions where slots are taken between selection and reservation.
+        let mut attempts = 0;
+        const MAX_ATTEMPTS: u32 = 3;
 
-    loop {
-        attempts += 1;
+        loop {
+            attempts += 1;
 
-        // Use the configured worker selector
-        let result = ctx.worker_selector.select(&ctx.pool, &request).await;
+            // Use the configured worker selector.
+            let result = ctx.worker_selector.select(&ctx.pool, request).await;
 
-        let Some(worker) = result.worker else {
-            debug!("No worker selected: {}", result.reason);
-            return Ok(SelectionResponse {
-                worker: None,
-                reason: result.reason,
-                build_id: None,
-            });
-        };
-
-        // Reserve the slots
-        if worker.reserve_slots(request.estimated_cores).await {
-            let (id, host, user, identity_file) = {
-                let config = worker.config.read().await;
-                (
-                    config.id.clone(),
-                    config.host.clone(),
-                    config.user.clone(),
-                    config.identity_file.clone(),
-                )
+            let Some(worker) = result.worker else {
+                debug!("No worker selected: {}", result.reason);
+                return Ok(SelectionResponse {
+                    worker: None,
+                    reason: result.reason,
+                    build_id: None,
+                });
             };
-            let build_id = if let Some(hook_pid) = request.hook_pid.filter(|pid| *pid > 0) {
+
+            // Reserve the slots.
+            if worker.reserve_slots(request.estimated_cores).await {
+                let (id, host, user, identity_file) = {
+                    let config = worker.config.read().await;
+                    (
+                        config.id.clone(),
+                        config.host.clone(),
+                        config.user.clone(),
+                        config.identity_file.clone(),
+                    )
+                };
+
                 let command = request
                     .command
                     .clone()
                     .unwrap_or_else(|| "<unknown>".to_string());
-                let state = ctx.history.start_active_build(
-                    request.project.clone(),
-                    id.as_str().to_string(),
-                    command,
-                    hook_pid,
-                    request.estimated_cores,
-                    rch_common::BuildLocation::Remote,
-                );
-                if !cfg!(test) {
-                    metrics::inc_active_builds("remote");
+
+                let build_id = if let Some(hook_pid) = request.hook_pid.filter(|pid| *pid > 0) {
+                    let state = ctx.history.start_active_build(
+                        request.project.clone(),
+                        id.as_str().to_string(),
+                        command.clone(),
+                        hook_pid,
+                        request.estimated_cores,
+                        rch_common::BuildLocation::Remote,
+                    );
+                    if !cfg!(test) {
+                        metrics::inc_active_builds("remote");
+                    }
+                    ctx.events.emit(
+                        "build_started",
+                        &serde_json::json!({
+                            "build_id": state.id,
+                            "project_id": request.project.clone(),
+                            "worker_id": id.as_str(),
+                            "command": command,
+                            "slots": request.estimated_cores,
+                        }),
+                    );
+                    Some(state.id)
+                } else {
+                    None
+                };
+
+                let slots_available = worker.available_slots().await;
+                let speed_score = worker.get_speed_score().await;
+
+                if request.command_priority != CommandPriority::Normal {
+                    ctx.events.emit(
+                        "priority_hint",
+                        &serde_json::json!({
+                            "project": request.project.clone(),
+                            "worker_id": id.as_str(),
+                            "priority": request.command_priority.to_string(),
+                            "estimated_cores": request.estimated_cores,
+                            "command": request.command.clone(),
+                        }),
+                    );
                 }
-                Some(state.id)
-            } else {
-                None
-            };
 
-            let slots_available = worker.available_slots().await;
-            let speed_score = worker.get_speed_score().await;
-
-            if request.command_priority != CommandPriority::Normal {
-                ctx.events.emit(
-                    "priority_hint",
-                    &serde_json::json!({
-                        "project": request.project.clone(),
-                        "worker_id": id.as_str(),
-                        "priority": request.command_priority.to_string(),
-                        "estimated_cores": request.estimated_cores,
-                        "command": request.command.clone(),
+                return Ok(SelectionResponse {
+                    worker: Some(SelectedWorker {
+                        id,
+                        host,
+                        user,
+                        identity_file,
+                        slots_available,
+                        speed_score,
                     }),
-                );
+                    reason: SelectionReason::Success,
+                    build_id,
+                });
             }
-            return Ok(SelectionResponse {
-                worker: Some(SelectedWorker {
-                    id,
-                    host,
-                    user,
-                    identity_file,
-                    slots_available,
-                    speed_score,
-                }),
-                reason: SelectionReason::Success,
-                build_id,
-            });
+
+            warn!(
+                "Failed to reserve {} slots on {} (race condition), attempt {}/{}",
+                request.estimated_cores,
+                worker.config.read().await.id,
+                attempts,
+                MAX_ATTEMPTS
+            );
+
+            if attempts >= MAX_ATTEMPTS {
+                // Give up after max attempts.
+                return Ok(SelectionResponse {
+                    worker: None,
+                    reason: SelectionReason::AllWorkersBusy,
+                    build_id: None,
+                });
+            }
+            // Loop again - next selection will see reduced slot count.
+        }
+    }
+
+    let initial = attempt_select_and_reserve(ctx, &request).await?;
+    if initial.worker.is_some()
+        || !wait_for_worker
+        || initial.reason != SelectionReason::AllWorkersBusy
+    {
+        return Ok(initial);
+    }
+
+    // All workers are busy. If the hook opted into waiting, enqueue and wait.
+    let hook_pid = request.hook_pid.unwrap_or(0);
+    let command = request
+        .command
+        .clone()
+        .unwrap_or_else(|| "<unknown>".to_string());
+
+    let Some(queued) = ctx.history.enqueue_build(
+        request.project.clone(),
+        command.clone(),
+        hook_pid,
+        request.estimated_cores,
+    ) else {
+        // Queue full - fall back to the normal busy response.
+        return Ok(initial);
+    };
+
+    ctx.history.update_queue_estimates();
+    if !cfg!(test) {
+        metrics::set_build_queue_depth(ctx.history.queue_depth());
+    }
+    ctx.events.emit(
+        "build_queued",
+        &serde_json::json!({
+            "queue_id": queued.id,
+            "project_id": queued.project_id,
+            "command": queued.command,
+            "queued_at": queued.queued_at,
+            "position": ctx.history.queue_position(queued.id),
+            "slots_needed": queued.slots_needed,
+        }),
+    );
+
+    const QUEUE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+    loop {
+        // Only the head-of-line build attempts selection (simple FIFO).
+        if ctx.history.queue_position(queued.id) != Some(1) {
+            tokio::time::sleep(QUEUE_POLL_INTERVAL).await;
+            continue;
         }
 
-        warn!(
-            "Failed to reserve {} slots on {} (race condition), attempt {}/{}",
-            request.estimated_cores,
-            worker.config.read().await.id,
-            attempts,
-            MAX_ATTEMPTS
-        );
-
-        if attempts >= MAX_ATTEMPTS {
-            // Give up after max attempts
+        // If the hook process exited while waiting, drop the queued build to avoid leaking slots.
+        if hook_pid > 0 && !is_process_alive(hook_pid) {
+            let _ = ctx.history.remove_queued_build(queued.id);
+            ctx.history.update_queue_estimates();
+            if !cfg!(test) {
+                metrics::set_build_queue_depth(ctx.history.queue_depth());
+            }
+            ctx.events.emit(
+                "build_queue_removed",
+                &serde_json::json!({
+                    "queue_id": queued.id,
+                    "project_id": queued.project_id,
+                    "reason": "hook_exited",
+                }),
+            );
             return Ok(SelectionResponse {
                 worker: None,
-                reason: SelectionReason::AllWorkersBusy,
+                reason: SelectionReason::SelectionError("hook_exited".to_string()),
                 build_id: None,
             });
         }
-        // Loop again - next selection will see reduced slot count
+
+        let response = attempt_select_and_reserve(ctx, &request).await?;
+        if response.worker.is_some() {
+            let _ = ctx.history.remove_queued_build(queued.id);
+            ctx.history.update_queue_estimates();
+            if !cfg!(test) {
+                metrics::set_build_queue_depth(ctx.history.queue_depth());
+            }
+            return Ok(response);
+        }
+
+        // If conditions changed (e.g., all circuits open), stop waiting and fail-open.
+        if response.reason != SelectionReason::AllWorkersBusy {
+            let _ = ctx.history.remove_queued_build(queued.id);
+            ctx.history.update_queue_estimates();
+            if !cfg!(test) {
+                metrics::set_build_queue_depth(ctx.history.queue_depth());
+            }
+            ctx.events.emit(
+                "build_queue_removed",
+                &serde_json::json!({
+                    "queue_id": queued.id,
+                    "project_id": queued.project_id,
+                    "reason": response.reason.to_string(),
+                }),
+            );
+            return Ok(response);
+        }
+
+        tokio::time::sleep(QUEUE_POLL_INTERVAL).await;
     }
 }
 
@@ -1857,6 +2006,7 @@ async fn handle_release_worker(ctx: &DaemonContext, request: ReleaseRequest) -> 
             exit_code,
             request.duration_ms,
             request.bytes_transferred,
+            request.timing,
         );
         if let Some(ref rec) = record {
             if !cfg!(test) {
@@ -1864,6 +2014,18 @@ async fn handle_release_worker(ctx: &DaemonContext, request: ReleaseRequest) -> 
                 let outcome = if exit_code == 0 { "success" } else { "failure" };
                 metrics::inc_build_total(outcome, "remote");
             }
+            ctx.events.emit(
+                "build_completed",
+                &serde_json::json!({
+                    "build_id": rec.id,
+                    "project_id": rec.project_id,
+                    "worker_id": rec.worker_id,
+                    "command": rec.command,
+                    "exit_code": rec.exit_code,
+                    "duration_ms": rec.duration_ms,
+                    "location": format!("{:?}", rec.location),
+                }),
+            );
 
             // Record successful builds for affinity pinning
             if exit_code == 0
@@ -1964,6 +2126,21 @@ fn send_signal_to_process(pid: u32, force: bool) -> bool {
             false
         }
     }
+}
+
+fn is_process_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+
+    // `kill -0` performs error checking without sending a signal.
+    // Exit status 0 means the process exists and is signalable.
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 /// Handle a build cancellation request.
@@ -2428,7 +2605,7 @@ mod tests {
     #[test]
     fn test_parse_request_basic() {
         let req = parse_request("GET /select-worker?project=myproject&cores=4").unwrap();
-        let ApiRequest::SelectWorker(req) = req else {
+        let ApiRequest::SelectWorker { request: req, .. } = req else {
             panic!("expected select-worker request");
         };
         assert_eq!(req.project, "myproject");
@@ -2438,7 +2615,7 @@ mod tests {
     #[test]
     fn test_parse_request_project_only() {
         let req = parse_request("GET /select-worker?project=test").unwrap();
-        let ApiRequest::SelectWorker(req) = req else {
+        let ApiRequest::SelectWorker { request: req, .. } = req else {
             panic!("expected select-worker request");
         };
         assert_eq!(req.project, "test");
@@ -2448,7 +2625,7 @@ mod tests {
     #[test]
     fn test_parse_request_with_spaces() {
         let req = parse_request("GET /select-worker?project=my%20project&cores=2").unwrap();
-        let ApiRequest::SelectWorker(req) = req else {
+        let ApiRequest::SelectWorker { request: req, .. } = req else {
             panic!("expected select-worker request");
         };
         assert_eq!(req.project, "my project");
@@ -2458,7 +2635,7 @@ mod tests {
     #[test]
     fn test_parse_request_with_priority_hint() {
         let req = parse_request("GET /select-worker?project=test&cores=2&priority=high").unwrap();
-        let ApiRequest::SelectWorker(req) = req else {
+        let ApiRequest::SelectWorker { request: req, .. } = req else {
             panic!("expected select-worker request");
         };
         assert_eq!(req.command_priority, rch_common::CommandPriority::High);
@@ -2467,7 +2644,7 @@ mod tests {
     #[test]
     fn test_parse_request_invalid_priority_defaults_to_normal() {
         let req = parse_request("GET /select-worker?project=test&cores=2&priority=urgent").unwrap();
-        let ApiRequest::SelectWorker(req) = req else {
+        let ApiRequest::SelectWorker { request: req, .. } = req else {
             panic!("expected select-worker request");
         };
         assert_eq!(req.command_priority, rch_common::CommandPriority::Normal);
@@ -2630,7 +2807,7 @@ mod tests {
         );
 
         let req = parse_request(&query).unwrap();
-        let ApiRequest::SelectWorker(req) = req else {
+        let ApiRequest::SelectWorker { request: req, .. } = req else {
             panic!("expected select-worker request");
         };
 
@@ -2647,14 +2824,14 @@ mod tests {
     fn test_parse_request_with_runtime() {
         let query = "GET /select-worker?project=test&runtime=bun";
         let req = parse_request(query).unwrap();
-        let ApiRequest::SelectWorker(req) = req else {
+        let ApiRequest::SelectWorker { request: req, .. } = req else {
             panic!("expected select-worker request");
         };
         assert_eq!(req.required_runtime, RequiredRuntime::Bun);
 
         let query = "GET /select-worker?project=test&runtime=rust";
         let req = parse_request(query).unwrap();
-        let ApiRequest::SelectWorker(req) = req else {
+        let ApiRequest::SelectWorker { request: req, .. } = req else {
             panic!("expected select-worker request");
         };
         assert_eq!(req.required_runtime, RequiredRuntime::Rust);
@@ -2662,7 +2839,7 @@ mod tests {
         // Invalid runtime should default to None
         let query = "GET /select-worker?project=test&runtime=invalid";
         let req = parse_request(query).unwrap();
-        let ApiRequest::SelectWorker(req) = req else {
+        let ApiRequest::SelectWorker { request: req, .. } = req else {
             panic!("expected select-worker request");
         };
         assert_eq!(req.required_runtime, RequiredRuntime::None);
@@ -2791,7 +2968,7 @@ mod tests {
             hook_pid: None,
         };
 
-        let response = handle_select_worker(&ctx, request).await.unwrap();
+        let response = handle_select_worker(&ctx, request, false).await.unwrap();
         assert!(response.worker.is_none());
         assert_eq!(response.reason, SelectionReason::NoWorkersConfigured);
     }
@@ -2821,7 +2998,7 @@ mod tests {
             hook_pid: None,
         };
 
-        let response = handle_select_worker(&ctx, request).await.unwrap();
+        let response = handle_select_worker(&ctx, request, false).await.unwrap();
         assert!(response.worker.is_none());
         assert_eq!(response.reason, SelectionReason::AllWorkersUnreachable);
     }
@@ -2848,7 +3025,7 @@ mod tests {
             hook_pid: None,
         };
 
-        let response = handle_select_worker(&ctx, request).await.unwrap();
+        let response = handle_select_worker(&ctx, request, false).await.unwrap();
         assert!(response.worker.is_none());
         assert_eq!(response.reason, SelectionReason::AllWorkersBusy);
     }
@@ -2871,7 +3048,7 @@ mod tests {
             hook_pid: None,
         };
 
-        let response = handle_select_worker(&ctx, request).await.unwrap();
+        let response = handle_select_worker(&ctx, request, false).await.unwrap();
         assert!(response.worker.is_some());
         assert_eq!(response.reason, SelectionReason::Success);
 
@@ -2899,7 +3076,7 @@ mod tests {
             hook_pid: Some(4242),
         };
 
-        let response = handle_select_worker(&ctx, request).await.unwrap();
+        let response = handle_select_worker(&ctx, request, false).await.unwrap();
         assert_eq!(response.reason, SelectionReason::Success);
         let build_id = response.build_id.expect("build_id should be assigned");
 
@@ -2920,6 +3097,7 @@ mod tests {
                 exit_code: Some(0),
                 duration_ms: None,
                 bytes_transferred: None,
+                timing: None,
             },
         )
         .await
@@ -2954,7 +3132,7 @@ mod tests {
             hook_pid: None,
         };
 
-        let response = handle_select_worker(&ctx, request).await.unwrap();
+        let response = handle_select_worker(&ctx, request, false).await.unwrap();
         let worker = response.worker.unwrap();
         assert_eq!(worker.id.as_str(), "worker2");
     }
