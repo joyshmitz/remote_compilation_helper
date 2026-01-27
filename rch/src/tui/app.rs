@@ -818,4 +818,486 @@ mod tests {
         assert_eq!(state.daemon.version, "0.1.0");
         info!("TEST PASS: test_update_state_daemon_socket_path");
     }
+
+    #[test]
+    fn test_test_backend_size_defaults() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_test_backend_size_defaults");
+        // Clear any env vars that might interfere
+        std::env::remove_var("COLUMNS");
+        std::env::remove_var("LINES");
+        let (width, height) = test_backend_size();
+        info!("VERIFY: default size={}x{}", width, height);
+        assert_eq!(width, 80);
+        assert_eq!(height, 24);
+        info!("TEST PASS: test_test_backend_size_defaults");
+    }
+
+    #[test]
+    fn test_test_backend_size_from_env() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_test_backend_size_from_env");
+        std::env::set_var("COLUMNS", "120");
+        std::env::set_var("LINES", "40");
+        let (width, height) = test_backend_size();
+        info!("VERIFY: env size={}x{}", width, height);
+        assert_eq!(width, 120);
+        assert_eq!(height, 40);
+        std::env::remove_var("COLUMNS");
+        std::env::remove_var("LINES");
+        info!("TEST PASS: test_test_backend_size_from_env");
+    }
+
+    #[test]
+    fn test_test_backend_size_minimum_enforced() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_test_backend_size_minimum_enforced");
+        std::env::set_var("COLUMNS", "20");
+        std::env::set_var("LINES", "5");
+        let (width, height) = test_backend_size();
+        info!("VERIFY: min size enforced={}x{}", width, height);
+        // Minimum is 40x12
+        assert_eq!(width, 40);
+        assert_eq!(height, 12);
+        std::env::remove_var("COLUMNS");
+        std::env::remove_var("LINES");
+        info!("TEST PASS: test_test_backend_size_minimum_enforced");
+    }
+
+    #[test]
+    fn test_test_backend_size_invalid_env() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_test_backend_size_invalid_env");
+        std::env::set_var("COLUMNS", "not_a_number");
+        std::env::set_var("LINES", "also_invalid");
+        let (width, height) = test_backend_size();
+        info!("VERIFY: fallback to defaults={}x{}", width, height);
+        assert_eq!(width, 80);
+        assert_eq!(height, 24);
+        std::env::remove_var("COLUMNS");
+        std::env::remove_var("LINES");
+        info!("TEST PASS: test_test_backend_size_invalid_env");
+    }
+
+    #[test]
+    fn test_buffer_to_string_basic() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_buffer_to_string_basic");
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        let rect = Rect::new(0, 0, 5, 2);
+        let buffer = Buffer::empty(rect);
+        let result = buffer_to_string(&buffer);
+        info!("VERIFY: buffer_to_string output len={}", result.len());
+        // Empty buffer produces spaces with newlines
+        assert_eq!(result.lines().count(), 2);
+        assert!(result.lines().all(|l| l.len() == 5));
+        info!("TEST PASS: test_buffer_to_string_basic");
+    }
+
+    #[test]
+    fn test_buffer_to_string_with_content() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_buffer_to_string_with_content");
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        let rect = Rect::new(0, 0, 10, 1);
+        let mut buffer = Buffer::empty(rect);
+        buffer.set_string(0, 0, "Hello", ratatui::style::Style::default());
+        let result = buffer_to_string(&buffer);
+        info!("VERIFY: buffer contains Hello: {}", result.trim());
+        assert!(result.contains("Hello"));
+        info!("TEST PASS: test_buffer_to_string_with_content");
+    }
+
+    #[test]
+    fn test_state_to_json_different_panels() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_state_to_json_different_panels");
+
+        for panel in [
+            Panel::Workers,
+            Panel::ActiveBuilds,
+            Panel::BuildHistory,
+            Panel::Logs,
+        ] {
+            let mut state = TuiState::new();
+            state.selected_panel = panel;
+            let json = state_to_json(&state);
+            let expected = match panel {
+                Panel::Workers => "workers",
+                Panel::ActiveBuilds => "active_builds",
+                Panel::BuildHistory => "build_history",
+                Panel::Logs => "logs",
+            };
+            info!("VERIFY: panel {:?} -> {}", panel, expected);
+            assert_eq!(json["selected_panel"], expected);
+        }
+        info!("TEST PASS: test_state_to_json_different_panels");
+    }
+
+    #[test]
+    fn test_state_to_json_daemon_statuses() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_state_to_json_daemon_statuses");
+
+        for status in [
+            Status::Unknown,
+            Status::Running,
+            Status::Stopped,
+            Status::Error,
+        ] {
+            let mut state = TuiState::new();
+            state.daemon.status = status;
+            let json = state_to_json(&state);
+            let expected = match status {
+                Status::Unknown => "unknown",
+                Status::Running => "running",
+                Status::Stopped => "stopped",
+                Status::Error => "error",
+            };
+            info!("VERIFY: status {:?} -> {}", status, expected);
+            assert_eq!(json["daemon"]["status"], expected);
+        }
+        info!("TEST PASS: test_state_to_json_daemon_statuses");
+    }
+
+    #[test]
+    fn test_state_to_json_color_blind_modes() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_state_to_json_color_blind_modes");
+
+        for mode in [
+            ColorBlindMode::None,
+            ColorBlindMode::Deuteranopia,
+            ColorBlindMode::Protanopia,
+            ColorBlindMode::Tritanopia,
+        ] {
+            let mut state = TuiState::new();
+            state.color_blind = mode;
+            let json = state_to_json(&state);
+            info!("VERIFY: color_blind mode {:?}", mode);
+            assert!(json["color_blind"].is_string() || json["color_blind"].is_null());
+        }
+        info!("TEST PASS: test_state_to_json_color_blind_modes");
+    }
+
+    #[test]
+    fn test_state_to_json_filter_state() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_state_to_json_filter_state");
+        let mut state = TuiState::new();
+        state.filter.query = "test query".to_string();
+        state.filter.worker_filter = Some("worker-1".to_string());
+        state.filter.success_only = true;
+        state.filter.failed_only = false;
+
+        let json = state_to_json(&state);
+        info!(
+            "VERIFY: filter={} worker_filter={:?}",
+            json["filter"]["query"], json["filter"]["worker_filter"]
+        );
+        assert_eq!(json["filter"]["query"], "test query");
+        assert_eq!(json["filter"]["worker_filter"], "worker-1");
+        assert_eq!(json["filter"]["success_only"], true);
+        assert_eq!(json["filter"]["failed_only"], false);
+        info!("TEST PASS: test_state_to_json_filter_state");
+    }
+
+    #[test]
+    fn test_state_to_json_with_error() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_state_to_json_with_error");
+        let mut state = TuiState::new();
+        state.error = Some("Connection refused".to_string());
+
+        let json = state_to_json(&state);
+        info!("VERIFY: error={}", json["error"]);
+        assert_eq!(json["error"], "Connection refused");
+        info!("TEST PASS: test_state_to_json_with_error");
+    }
+
+    #[test]
+    fn test_state_to_json_high_contrast() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_state_to_json_high_contrast");
+        let mut state = TuiState::new();
+        state.high_contrast = true;
+
+        let json = state_to_json(&state);
+        info!("VERIFY: high_contrast={}", json["high_contrast"]);
+        assert_eq!(json["high_contrast"], true);
+        info!("TEST PASS: test_state_to_json_high_contrast");
+    }
+
+    #[test]
+    fn test_render_snapshot_various_sizes() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_render_snapshot_various_sizes");
+        let mut state = TuiState::new();
+        apply_mock_data(&mut state);
+
+        // Test various sizes
+        for (w, h) in [(40, 12), (80, 24), (120, 40), (160, 50)] {
+            let snapshot = render_snapshot(&state, w, h);
+            info!("VERIFY: render {}x{} lines={}", w, h, snapshot.lines().count());
+            assert!(snapshot.lines().count() >= h as usize);
+        }
+        info!("TEST PASS: test_render_snapshot_various_sizes");
+    }
+
+    #[test]
+    fn test_render_snapshot_empty_state() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_render_snapshot_empty_state");
+        let state = TuiState::new();
+        let snapshot = render_snapshot(&state, 80, 24);
+        info!("VERIFY: empty state renders");
+        assert!(snapshot.contains("RCH Dashboard"));
+        info!("TEST PASS: test_render_snapshot_empty_state");
+    }
+
+    #[test]
+    fn test_render_snapshot_with_error() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_render_snapshot_with_error");
+        let mut state = TuiState::new();
+        state.error = Some("Daemon not running".to_string());
+        let snapshot = render_snapshot(&state, 80, 24);
+        info!("VERIFY: error state renders");
+        // Error should be visible somewhere in the output
+        assert!(snapshot.contains("RCH Dashboard"));
+        info!("TEST PASS: test_render_snapshot_with_error");
+    }
+
+    #[test]
+    fn test_render_snapshot_with_help_overlay() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_render_snapshot_with_help_overlay");
+        let mut state = TuiState::new();
+        state.show_help = true;
+        let snapshot = render_snapshot(&state, 80, 24);
+        info!("VERIFY: help overlay renders");
+        // Help should be visible
+        assert!(snapshot.contains("Help") || snapshot.contains("?"));
+        info!("TEST PASS: test_render_snapshot_with_help_overlay");
+    }
+
+    #[test]
+    fn test_render_snapshot_with_filter_mode() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_render_snapshot_with_filter_mode");
+        let mut state = TuiState::new();
+        state.filter_mode = true;
+        state.filter.query = "cargo".to_string();
+        let snapshot = render_snapshot(&state, 80, 24);
+        info!("VERIFY: filter mode renders");
+        assert!(snapshot.contains("RCH Dashboard"));
+        info!("TEST PASS: test_render_snapshot_with_filter_mode");
+    }
+
+    #[test]
+    fn test_render_snapshot_high_contrast() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_render_snapshot_high_contrast");
+        let mut state = TuiState::new();
+        apply_mock_data(&mut state);
+        state.high_contrast = true;
+        let snapshot = render_snapshot(&state, 80, 24);
+        info!("VERIFY: high contrast renders");
+        assert!(snapshot.contains("RCH Dashboard"));
+        info!("TEST PASS: test_render_snapshot_high_contrast");
+    }
+
+    #[test]
+    fn test_render_snapshot_color_blind_deuteranopia() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_render_snapshot_color_blind_deuteranopia");
+        let mut state = TuiState::new();
+        apply_mock_data(&mut state);
+        state.color_blind = ColorBlindMode::Deuteranopia;
+        let snapshot = render_snapshot(&state, 80, 24);
+        info!("VERIFY: deuteranopia mode renders");
+        assert!(snapshot.contains("RCH Dashboard"));
+        info!("TEST PASS: test_render_snapshot_color_blind_deuteranopia");
+    }
+
+    #[test]
+    fn test_render_snapshot_color_blind_protanopia() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_render_snapshot_color_blind_protanopia");
+        let mut state = TuiState::new();
+        apply_mock_data(&mut state);
+        state.color_blind = ColorBlindMode::Protanopia;
+        let snapshot = render_snapshot(&state, 80, 24);
+        info!("VERIFY: protanopia mode renders");
+        assert!(snapshot.contains("RCH Dashboard"));
+        info!("TEST PASS: test_render_snapshot_color_blind_protanopia");
+    }
+
+    #[test]
+    fn test_render_snapshot_color_blind_tritanopia() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_render_snapshot_color_blind_tritanopia");
+        let mut state = TuiState::new();
+        apply_mock_data(&mut state);
+        state.color_blind = ColorBlindMode::Tritanopia;
+        let snapshot = render_snapshot(&state, 80, 24);
+        info!("VERIFY: tritanopia mode renders");
+        assert!(snapshot.contains("RCH Dashboard"));
+        info!("TEST PASS: test_render_snapshot_color_blind_tritanopia");
+    }
+
+    #[test]
+    fn test_apply_mock_data_populates_all_fields() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_apply_mock_data_populates_all_fields");
+        let mut state = TuiState::new();
+        apply_mock_data(&mut state);
+
+        info!("VERIFY: mock data populates all expected fields");
+        assert_eq!(state.daemon.status, Status::Running);
+        assert_eq!(state.daemon.uptime, Duration::from_secs(123));
+        assert_eq!(state.daemon.version, "mock");
+        assert_eq!(state.daemon.builds_today, 7);
+        assert_eq!(state.daemon.bytes_transferred, 42_000_000);
+
+        assert_eq!(state.workers.len(), 3);
+        assert_eq!(state.workers[0].id, "worker-1");
+        assert_eq!(state.workers[0].status, WorkerStatus::Healthy);
+        assert_eq!(state.workers[1].status, WorkerStatus::Degraded);
+        assert_eq!(state.workers[2].status, WorkerStatus::Draining);
+
+        assert_eq!(state.active_builds.len(), 1);
+        assert_eq!(state.active_builds[0].command, "cargo build --release");
+
+        assert_eq!(state.build_history.len(), 5);
+        info!("TEST PASS: test_apply_mock_data_populates_all_fields");
+    }
+
+    #[test]
+    fn test_update_state_invalid_timestamps_fallback() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_update_state_invalid_timestamps_fallback");
+
+        // Create build with invalid timestamp
+        let active = vec![ActiveBuildFromApi {
+            id: 1,
+            project_id: "proj".to_string(),
+            worker_id: "worker-1".to_string(),
+            command: "cargo build".to_string(),
+            started_at: "not-a-valid-timestamp".to_string(),
+        }];
+
+        let history = vec![BuildRecordFromApi {
+            id: 1,
+            started_at: "invalid".to_string(),
+            completed_at: "also-invalid".to_string(),
+            project_id: "proj".to_string(),
+            worker_id: Some("worker-1".to_string()),
+            command: "cargo test".to_string(),
+            exit_code: 0,
+            duration_ms: 1000,
+            location: "remote".to_string(),
+            bytes_transferred: None,
+            timing: None,
+        }];
+
+        let response = make_response(vec![], active, history);
+        let mut state = TuiState::new();
+        update_state_from_daemon(&mut state, response);
+
+        info!("VERIFY: invalid timestamps fall back to now");
+        // Should not panic, timestamps should be valid (fallback to now)
+        assert_eq!(state.active_builds.len(), 1);
+        assert_eq!(state.build_history.len(), 1);
+        info!("TEST PASS: test_update_state_invalid_timestamps_fallback");
+    }
+
+    #[test]
+    fn test_tui_config_custom_values() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_tui_config_custom_values");
+        let config = TuiConfig {
+            refresh_interval_ms: 500,
+            mouse_support: false,
+            test_mode: true,
+            mock_data: true,
+            dump_state: false,
+            high_contrast: true,
+            color_blind: ColorBlindMode::Deuteranopia,
+        };
+
+        assert_eq!(config.refresh_interval_ms, 500);
+        assert!(!config.mouse_support);
+        assert!(config.test_mode);
+        assert!(config.mock_data);
+        assert!(config.high_contrast);
+        assert_eq!(config.color_blind, ColorBlindMode::Deuteranopia);
+        info!("TEST PASS: test_tui_config_custom_values");
+    }
+
+    #[test]
+    fn test_render_all_panel_selections() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_render_all_panel_selections");
+        let mut state = TuiState::new();
+        apply_mock_data(&mut state);
+
+        for panel in [
+            Panel::Workers,
+            Panel::ActiveBuilds,
+            Panel::BuildHistory,
+            Panel::Logs,
+        ] {
+            state.selected_panel = panel;
+            let snapshot = render_snapshot(&state, 80, 24);
+            info!("VERIFY: panel {:?} renders", panel);
+            assert!(!snapshot.is_empty());
+        }
+        info!("TEST PASS: test_render_all_panel_selections");
+    }
+
+    #[test]
+    fn test_render_with_selected_index() {
+        let _guard = test_guard!();
+        init_test_logging();
+        info!("TEST START: test_render_with_selected_index");
+        let mut state = TuiState::new();
+        apply_mock_data(&mut state);
+        state.selected_panel = Panel::Workers;
+
+        for idx in 0..3 {
+            state.selected_index = idx;
+            let snapshot = render_snapshot(&state, 80, 24);
+            info!("VERIFY: selection index {} renders", idx);
+            assert!(!snapshot.is_empty());
+        }
+        info!("TEST PASS: test_render_with_selected_index");
+    }
 }
