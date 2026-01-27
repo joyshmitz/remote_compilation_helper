@@ -82,6 +82,8 @@ pub enum CacheUse {
 struct CacheState {
     last_build: Option<Instant>,
     last_test: Option<Instant>,
+    /// Last successful build (exit_code == 0) for affinity pinning.
+    last_success: Option<Instant>,
 }
 
 impl CacheState {
@@ -95,6 +97,15 @@ impl CacheState {
     }
 }
 
+/// Tracks last successful build per project for affinity fallback.
+#[derive(Debug, Default, Clone)]
+pub struct LastSuccessEntry {
+    /// Worker ID that last succeeded for this project.
+    pub worker_id: String,
+    /// When the successful build completed.
+    pub timestamp: Instant,
+}
+
 /// Tracks recent build/test activity per worker for cache affinity scoring.
 #[derive(Debug, Default)]
 pub struct CacheTracker {
@@ -102,6 +113,8 @@ pub struct CacheTracker {
     workers: HashMap<String, HashMap<String, CacheState>>,
     /// Maximum projects to track per worker.
     max_projects_per_worker: usize,
+    /// Map from project_id -> last successful build info (for fallback).
+    last_success_by_project: HashMap<String, LastSuccessEntry>,
 }
 
 impl CacheTracker {
@@ -110,6 +123,7 @@ impl CacheTracker {
         Self {
             workers: HashMap::new(),
             max_projects_per_worker: 50,
+            last_success_by_project: HashMap::new(),
         }
     }
 
@@ -282,6 +296,141 @@ impl SelectionHistory {
 }
 
 // ============================================================================
+// Selection Audit Log (bd-37hc)
+// ============================================================================
+
+/// Default maximum audit log entries.
+const DEFAULT_AUDIT_LOG_SIZE: usize = 100;
+
+/// Score breakdown for a single worker in a selection decision.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WorkerScoreBreakdown {
+    /// Worker identifier.
+    pub worker_id: String,
+    /// Worker's total score.
+    pub total_score: f64,
+    /// Speed score component.
+    pub speed_score: f64,
+    /// Slot availability component (0.0-1.0).
+    pub slot_availability: f64,
+    /// Cache affinity component (0.0-1.0).
+    pub cache_affinity: f64,
+    /// Priority component (normalized 0.0-1.0).
+    pub priority_score: f64,
+    /// Circuit state at selection time.
+    pub circuit_state: String,
+    /// Whether this worker was selected.
+    pub selected: bool,
+    /// Reason if skipped (e.g., "no slots", "circuit open").
+    pub skip_reason: Option<String>,
+}
+
+/// A single entry in the selection audit log.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SelectionAuditEntry {
+    /// Unique ID for this selection attempt.
+    pub id: u64,
+    /// Timestamp when selection was made (epoch milliseconds).
+    pub timestamp_ms: u64,
+    /// Project being built.
+    pub project: String,
+    /// Command being executed (if available).
+    pub command: Option<String>,
+    /// Selection strategy used.
+    pub strategy: String,
+    /// Command priority hint.
+    pub command_priority: String,
+    /// Required runtime (if any).
+    pub required_runtime: Option<String>,
+    /// Number of eligible workers considered.
+    pub eligible_count: usize,
+    /// Detailed score breakdowns for each considered worker.
+    pub workers_evaluated: Vec<WorkerScoreBreakdown>,
+    /// Selected worker ID (None if no worker selected).
+    pub selected_worker_id: Option<String>,
+    /// Selection reason.
+    pub reason: String,
+    /// Classification duration in microseconds (if available).
+    pub classification_duration_us: Option<u64>,
+    /// Total selection duration in microseconds.
+    pub selection_duration_us: u64,
+}
+
+/// Ring buffer for selection audit log entries (bd-37hc).
+#[derive(Debug)]
+pub struct SelectionAuditLog {
+    /// Audit log entries (newest last).
+    entries: VecDeque<SelectionAuditEntry>,
+    /// Maximum number of entries to keep.
+    max_entries: usize,
+    /// Counter for generating unique IDs.
+    next_id: u64,
+}
+
+impl Default for SelectionAuditLog {
+    fn default() -> Self {
+        Self::new(DEFAULT_AUDIT_LOG_SIZE)
+    }
+}
+
+impl SelectionAuditLog {
+    /// Create a new audit log with the specified capacity.
+    pub fn new(max_entries: usize) -> Self {
+        Self {
+            entries: VecDeque::with_capacity(max_entries),
+            max_entries,
+            next_id: 1,
+        }
+    }
+
+    /// Add a new entry to the audit log, evicting oldest if at capacity.
+    pub fn push(&mut self, mut entry: SelectionAuditEntry) {
+        entry.id = self.next_id;
+        self.next_id += 1;
+
+        if self.entries.len() >= self.max_entries {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(entry);
+    }
+
+    /// Get all entries (oldest first).
+    pub fn entries(&self) -> &VecDeque<SelectionAuditEntry> {
+        &self.entries
+    }
+
+    /// Get the last N entries (newest first).
+    pub fn last_n(&self, n: usize) -> Vec<&SelectionAuditEntry> {
+        self.entries.iter().rev().take(n).collect()
+    }
+
+    /// Get the most recent entry.
+    pub fn last(&self) -> Option<&SelectionAuditEntry> {
+        self.entries.back()
+    }
+
+    /// Get entry by ID.
+    pub fn get(&self, id: u64) -> Option<&SelectionAuditEntry> {
+        self.entries.iter().find(|e| e.id == id)
+    }
+
+    /// Get the current entry count.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Check if the log is empty.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Clear all entries.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+// ============================================================================
 // Worker Selection Context
 // ============================================================================
 
@@ -295,6 +444,8 @@ pub struct WorkerSelector {
     pub cache_tracker: Arc<RwLock<CacheTracker>>,
     /// Selection history for fairness.
     pub selection_history: Arc<RwLock<SelectionHistory>>,
+    /// Selection audit log (bd-37hc).
+    pub audit_log: Arc<RwLock<SelectionAuditLog>>,
 }
 
 /// Result of worker selection with reason.
@@ -330,6 +481,7 @@ impl WorkerSelector {
             circuit_config: CircuitBreakerConfig::default(),
             cache_tracker: Arc::new(RwLock::new(CacheTracker::new())),
             selection_history: Arc::new(RwLock::new(SelectionHistory::new())),
+            audit_log: Arc::new(RwLock::new(SelectionAuditLog::default())),
         }
     }
 
@@ -340,18 +492,38 @@ impl WorkerSelector {
             circuit_config,
             cache_tracker: Arc::new(RwLock::new(CacheTracker::new())),
             selection_history: Arc::new(RwLock::new(SelectionHistory::new())),
+            audit_log: Arc::new(RwLock::new(SelectionAuditLog::default())),
         }
+    }
+
+    /// Get a read-only view of the audit log entries.
+    pub async fn get_audit_log(&self, limit: Option<usize>) -> Vec<SelectionAuditEntry> {
+        let log = self.audit_log.read().await;
+        match limit {
+            Some(n) => log.last_n(n).into_iter().cloned().collect(),
+            None => log.entries().iter().cloned().collect(),
+        }
+    }
+
+    /// Get the most recent audit log entry.
+    pub async fn get_last_audit_entry(&self) -> Option<SelectionAuditEntry> {
+        let log = self.audit_log.read().await;
+        log.last().cloned()
     }
 
     /// Select a worker using the configured strategy.
     pub async fn select(&self, pool: &WorkerPool, request: &SelectionRequest) -> SelectionResult {
         let _timer = DecisionTimer::new(DecisionType::WorkerSelection);
+        let select_start = Instant::now();
         let cache_use = cache_use_for_request(request);
 
         // Get eligible workers
         let eligible = match self.get_eligible_workers(pool, request).await {
             Ok(workers) => workers,
             Err(reason) => {
+                // Record failed selection in audit log
+                self.record_audit_entry(request, Vec::new(), None, &reason, select_start.elapsed())
+                    .await;
                 return SelectionResult {
                     worker: None,
                     reason,
@@ -360,6 +532,15 @@ impl WorkerSelector {
         };
 
         if eligible.is_empty() {
+            // Record empty selection in audit log
+            self.record_audit_entry(
+                request,
+                Vec::new(),
+                None,
+                &SelectionReason::AllWorkersBusy,
+                select_start.elapsed(),
+            )
+            .await;
             return SelectionResult {
                 worker: None,
                 reason: SelectionReason::AllWorkersBusy,
@@ -398,9 +579,10 @@ impl WorkerSelector {
         };
 
         if let Some((worker, circuit_state)) = selected {
+            let worker_id = worker.config.read().await.id.as_str().to_string();
+
             if debug_routing_enabled() {
                 let scores = self.debug_scores(&eligible, request, cache_use).await;
-                let worker_id = worker.config.read().await.id.as_str().to_string();
                 let circuit_label = format!("{:?}", circuit_state);
                 log_routing_decision(
                     self.config.strategy,
@@ -411,31 +593,55 @@ impl WorkerSelector {
                 );
             }
 
+            // Record in audit log (bd-37hc)
+            let breakdowns = self
+                .build_score_breakdowns(&eligible, request, cache_use, Some(&worker_id))
+                .await;
+            self.record_audit_entry(
+                request,
+                breakdowns,
+                Some(worker_id.clone()),
+                &SelectionReason::Success,
+                select_start.elapsed(),
+            )
+            .await;
+
             // If selecting a half-open worker, start the probe
             if circuit_state == CircuitState::HalfOpen {
                 worker.start_probe(&self.circuit_config).await;
                 debug!(
                     "Worker {} selected (half-open probe), strategy={:?}",
-                    worker.config.read().await.id,
-                    self.config.strategy
+                    worker_id, self.config.strategy
                 );
             } else {
                 debug!(
                     "Worker {} selected, strategy={:?}",
-                    worker.config.read().await.id,
-                    self.config.strategy
+                    worker_id, self.config.strategy
                 );
             }
 
             // Record the selection for fairness tracking
             let mut history = self.selection_history.write().await;
-            history.record_selection(worker.config.read().await.id.as_str());
+            history.record_selection(&worker_id);
 
             SelectionResult {
                 worker: Some(worker),
                 reason: SelectionReason::Success,
             }
         } else {
+            // Record failed selection in audit log (bd-37hc)
+            let breakdowns = self
+                .build_score_breakdowns(&eligible, request, cache_use, None)
+                .await;
+            self.record_audit_entry(
+                request,
+                breakdowns,
+                None,
+                &SelectionReason::AllWorkersBusy,
+                select_start.elapsed(),
+            )
+            .await;
+
             SelectionResult {
                 worker: None,
                 reason: SelectionReason::AllWorkersBusy,
@@ -452,6 +658,97 @@ impl WorkerSelector {
             CacheUse::Build
         };
         cache.record_build(worker_id, project_id, cache_use);
+    }
+
+    /// Build score breakdowns for all workers in a selection decision (bd-37hc).
+    async fn build_score_breakdowns(
+        &self,
+        workers: &[(Arc<WorkerState>, CircuitState)],
+        request: &SelectionRequest,
+        cache_use: CacheUse,
+        selected_id: Option<&str>,
+    ) -> Vec<WorkerScoreBreakdown> {
+        let cache = self.cache_tracker.read().await;
+        let mut breakdowns = Vec::with_capacity(workers.len());
+
+        for (worker, circuit_state) in workers {
+            let config = worker.config.read().await;
+            let worker_id = config.id.as_str().to_string();
+            let speed_score = worker.get_speed_score().await;
+            let total_slots = config.total_slots;
+            let used_slots = worker.used_slots();
+            let slot_availability = if total_slots > 0 {
+                1.0 - (used_slots as f64 / total_slots as f64)
+            } else {
+                0.0
+            };
+            let cache_affinity = cache.estimate_warmth(&worker_id, &request.project, cache_use);
+            let priority_score = 1.0 / (config.priority as f64 + 1.0); // Lower priority number = higher score
+
+            // Check if this worker can actually take the job
+            let skip_reason = if *circuit_state == CircuitState::Open {
+                Some("circuit open".to_string())
+            } else if used_slots >= total_slots {
+                Some("no slots available".to_string())
+            } else {
+                None
+            };
+
+            let selected = selected_id == Some(worker_id.as_str());
+
+            breakdowns.push(WorkerScoreBreakdown {
+                worker_id,
+                total_score: speed_score * slot_availability, // Simplified total
+                speed_score,
+                slot_availability,
+                cache_affinity,
+                priority_score,
+                circuit_state: format!("{:?}", circuit_state),
+                selected,
+                skip_reason,
+            });
+        }
+
+        breakdowns
+    }
+
+    /// Record an entry in the selection audit log (bd-37hc).
+    async fn record_audit_entry(
+        &self,
+        request: &SelectionRequest,
+        workers_evaluated: Vec<WorkerScoreBreakdown>,
+        selected_worker_id: Option<String>,
+        reason: &SelectionReason,
+        duration: Duration,
+    ) {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let entry = SelectionAuditEntry {
+            id: 0, // Will be assigned by the log
+            timestamp_ms,
+            project: request.project.clone(),
+            command: request.command.clone(),
+            strategy: format!("{:?}", self.config.strategy),
+            command_priority: format!("{:?}", request.command_priority),
+            required_runtime: match request.required_runtime {
+                RequiredRuntime::None => None,
+                ref rt => Some(format!("{:?}", rt)),
+            },
+            eligible_count: workers_evaluated.len(),
+            workers_evaluated,
+            selected_worker_id,
+            reason: format!("{:?}", reason),
+            classification_duration_us: request.classification_duration_us,
+            selection_duration_us: duration.as_micros() as u64,
+        };
+
+        let mut log = self.audit_log.write().await;
+        log.push(entry);
     }
 
     async fn debug_scores(
@@ -2499,5 +2796,229 @@ mod tests {
         let selected = result.worker.expect("Expected a worker");
         // Preferred workers take precedence even with Fastest strategy
         assert_eq!(selected.config.read().await.id.as_str(), "preferred");
+    }
+
+    // =========================================================================
+    // Selection Audit Log Tests (bd-37hc)
+    // =========================================================================
+
+    #[test]
+    fn test_audit_log_push_and_retrieve() {
+        let mut log = SelectionAuditLog::new(10);
+        assert!(log.is_empty());
+        assert_eq!(log.len(), 0);
+
+        // Create a test entry
+        let entry = SelectionAuditEntry {
+            id: 0,
+            timestamp_ms: 1234567890,
+            project: "test-project".to_string(),
+            command: Some("cargo build".to_string()),
+            strategy: "Balanced".to_string(),
+            command_priority: "Normal".to_string(),
+            required_runtime: None,
+            eligible_count: 3,
+            workers_evaluated: vec![],
+            selected_worker_id: Some("worker-1".to_string()),
+            reason: "Success".to_string(),
+            classification_duration_us: Some(500),
+            selection_duration_us: 1200,
+        };
+
+        log.push(entry);
+        assert_eq!(log.len(), 1);
+        assert!(!log.is_empty());
+
+        let last = log.last().unwrap();
+        assert_eq!(last.id, 1); // ID should be assigned
+        assert_eq!(last.project, "test-project");
+        assert_eq!(last.selected_worker_id, Some("worker-1".to_string()));
+    }
+
+    #[test]
+    fn test_audit_log_eviction() {
+        let mut log = SelectionAuditLog::new(3);
+
+        // Add 5 entries to a log with capacity 3
+        for i in 0..5 {
+            let entry = SelectionAuditEntry {
+                id: 0,
+                timestamp_ms: i as u64,
+                project: format!("project-{}", i),
+                command: None,
+                strategy: "Fastest".to_string(),
+                command_priority: "Normal".to_string(),
+                required_runtime: None,
+                eligible_count: 1,
+                workers_evaluated: vec![],
+                selected_worker_id: None,
+                reason: "AllWorkersBusy".to_string(),
+                classification_duration_us: None,
+                selection_duration_us: 100,
+            };
+            log.push(entry);
+        }
+
+        // Should only have 3 entries (oldest evicted)
+        assert_eq!(log.len(), 3);
+
+        // Should have entries for projects 2, 3, 4 (0 and 1 evicted)
+        let entries: Vec<_> = log.entries().iter().collect();
+        assert_eq!(entries[0].project, "project-2");
+        assert_eq!(entries[1].project, "project-3");
+        assert_eq!(entries[2].project, "project-4");
+    }
+
+    #[test]
+    fn test_audit_log_last_n() {
+        let mut log = SelectionAuditLog::new(10);
+
+        for i in 0..5 {
+            let entry = SelectionAuditEntry {
+                id: 0,
+                timestamp_ms: i as u64,
+                project: format!("project-{}", i),
+                command: None,
+                strategy: "Priority".to_string(),
+                command_priority: "Normal".to_string(),
+                required_runtime: None,
+                eligible_count: 1,
+                workers_evaluated: vec![],
+                selected_worker_id: Some(format!("worker-{}", i)),
+                reason: "Success".to_string(),
+                classification_duration_us: None,
+                selection_duration_us: 50,
+            };
+            log.push(entry);
+        }
+
+        // Get last 2 (should be newest first)
+        let last_2 = log.last_n(2);
+        assert_eq!(last_2.len(), 2);
+        assert_eq!(last_2[0].project, "project-4"); // Newest
+        assert_eq!(last_2[1].project, "project-3");
+    }
+
+    #[test]
+    fn test_audit_log_get_by_id() {
+        let mut log = SelectionAuditLog::new(10);
+
+        for i in 0..3 {
+            let entry = SelectionAuditEntry {
+                id: 0,
+                timestamp_ms: i as u64,
+                project: format!("project-{}", i),
+                command: None,
+                strategy: "CacheAffinity".to_string(),
+                command_priority: "Normal".to_string(),
+                required_runtime: None,
+                eligible_count: 2,
+                workers_evaluated: vec![],
+                selected_worker_id: None,
+                reason: "AllWorkersBusy".to_string(),
+                classification_duration_us: None,
+                selection_duration_us: 75,
+            };
+            log.push(entry);
+        }
+
+        // IDs should be 1, 2, 3
+        assert!(log.get(1).is_some());
+        assert_eq!(log.get(1).unwrap().project, "project-0");
+        assert!(log.get(2).is_some());
+        assert!(log.get(3).is_some());
+        assert!(log.get(4).is_none()); // Doesn't exist
+        assert!(log.get(0).is_none()); // ID 0 is never assigned
+    }
+
+    #[test]
+    fn test_audit_log_clear() {
+        let mut log = SelectionAuditLog::new(10);
+
+        let entry = SelectionAuditEntry {
+            id: 0,
+            timestamp_ms: 0,
+            project: "test".to_string(),
+            command: None,
+            strategy: "FairFastest".to_string(),
+            command_priority: "High".to_string(),
+            required_runtime: Some("Rust".to_string()),
+            eligible_count: 0,
+            workers_evaluated: vec![],
+            selected_worker_id: None,
+            reason: "NoWorkersConfigured".to_string(),
+            classification_duration_us: None,
+            selection_duration_us: 25,
+        };
+        log.push(entry);
+
+        assert_eq!(log.len(), 1);
+        log.clear();
+        assert_eq!(log.len(), 0);
+        assert!(log.is_empty());
+    }
+
+    #[test]
+    fn test_worker_score_breakdown_serialization() {
+        let breakdown = WorkerScoreBreakdown {
+            worker_id: "worker-1".to_string(),
+            total_score: 0.85,
+            speed_score: 0.9,
+            slot_availability: 0.75,
+            cache_affinity: 0.5,
+            priority_score: 0.8,
+            circuit_state: "Closed".to_string(),
+            selected: true,
+            skip_reason: None,
+        };
+
+        let json = serde_json::to_string(&breakdown).unwrap();
+        assert!(json.contains("\"worker_id\":\"worker-1\""));
+        assert!(json.contains("\"selected\":true"));
+    }
+
+    #[tokio::test]
+    async fn test_selection_records_audit_entry() {
+        // Create a selector and pool
+        let selector = WorkerSelector::new();
+        let pool = WorkerPool::new();
+
+        // Create a simple worker
+        let worker_config = WorkerConfig {
+            id: WorkerId::new("audit-test-worker"),
+            host: "localhost".to_string(),
+            user: "test".to_string(),
+            identity_file: "/tmp/test".to_string(),
+            total_slots: 4,
+            priority: 1,
+            tags: vec![],
+        };
+        pool.add_worker(worker_config).await;
+
+        // Make a selection request
+        let request = SelectionRequest {
+            project: "audit-test-project".to_string(),
+            command: Some("cargo test".to_string()),
+            command_priority: CommandPriority::Normal,
+            estimated_cores: 2,
+            preferred_workers: vec![],
+            toolchain: None,
+            required_runtime: RequiredRuntime::Rust,
+            classification_duration_us: Some(250),
+            hook_pid: Some(12345),
+        };
+
+        // Make a selection
+        let _result = selector.select(&pool, &request).await;
+
+        // Check that an audit entry was recorded
+        let audit_entries = selector.get_audit_log(Some(1)).await;
+        assert_eq!(audit_entries.len(), 1);
+
+        let entry = &audit_entries[0];
+        assert_eq!(entry.project, "audit-test-project");
+        assert_eq!(entry.command, Some("cargo test".to_string()));
+        assert_eq!(entry.strategy, "Priority"); // Default strategy
+        assert_eq!(entry.classification_duration_us, Some(250));
     }
 }

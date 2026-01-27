@@ -204,6 +204,36 @@ impl CompilationKind {
                 | CompilationKind::BunTest
         )
     }
+
+    /// Returns the base command name for allowlist matching (bd-785w).
+    ///
+    /// This is the primary executable name that should appear in the
+    /// execution allowlist configuration.
+    pub fn command_base(&self) -> &'static str {
+        match self {
+            // Rust commands
+            CompilationKind::CargoBuild
+            | CompilationKind::CargoTest
+            | CompilationKind::CargoCheck
+            | CompilationKind::CargoClippy
+            | CompilationKind::CargoDoc
+            | CompilationKind::CargoBench => "cargo",
+            CompilationKind::CargoNextest => "cargo", // cargo nextest, base is still cargo
+            CompilationKind::Rustc => "rustc",
+            // C/C++ commands
+            CompilationKind::Gcc => "gcc",
+            CompilationKind::Gpp => "g++",
+            CompilationKind::Clang => "clang",
+            CompilationKind::Clangpp => "clang++",
+            // Build systems
+            CompilationKind::Make => "make",
+            CompilationKind::CmakeBuild => "cmake",
+            CompilationKind::Ninja => "ninja",
+            CompilationKind::Meson => "meson",
+            // Bun commands
+            CompilationKind::BunTest | CompilationKind::BunTypecheck => "bun",
+        }
+    }
 }
 
 /// Classify a shell command.
@@ -1902,5 +1932,43 @@ mod tests {
         let result = classify_command("/usr/bin/time cargo build");
 
         assert!(result.is_compilation);
+    }
+
+    // ==========================================================================
+    // Command Base Tests (bd-785w)
+    // ==========================================================================
+
+    #[test]
+    fn test_command_base_rust() {
+        assert_eq!(CompilationKind::CargoBuild.command_base(), "cargo");
+        assert_eq!(CompilationKind::CargoTest.command_base(), "cargo");
+        assert_eq!(CompilationKind::CargoCheck.command_base(), "cargo");
+        assert_eq!(CompilationKind::CargoClippy.command_base(), "cargo");
+        assert_eq!(CompilationKind::CargoDoc.command_base(), "cargo");
+        assert_eq!(CompilationKind::CargoBench.command_base(), "cargo");
+        assert_eq!(CompilationKind::CargoNextest.command_base(), "cargo");
+        assert_eq!(CompilationKind::Rustc.command_base(), "rustc");
+    }
+
+    #[test]
+    fn test_command_base_c_cpp() {
+        assert_eq!(CompilationKind::Gcc.command_base(), "gcc");
+        assert_eq!(CompilationKind::Gpp.command_base(), "g++");
+        assert_eq!(CompilationKind::Clang.command_base(), "clang");
+        assert_eq!(CompilationKind::Clangpp.command_base(), "clang++");
+    }
+
+    #[test]
+    fn test_command_base_build_systems() {
+        assert_eq!(CompilationKind::Make.command_base(), "make");
+        assert_eq!(CompilationKind::CmakeBuild.command_base(), "cmake");
+        assert_eq!(CompilationKind::Ninja.command_base(), "ninja");
+        assert_eq!(CompilationKind::Meson.command_base(), "meson");
+    }
+
+    #[test]
+    fn test_command_base_bun() {
+        assert_eq!(CompilationKind::BunTest.command_base(), "bun");
+        assert_eq!(CompilationKind::BunTypecheck.command_base(), "bun");
     }
 }

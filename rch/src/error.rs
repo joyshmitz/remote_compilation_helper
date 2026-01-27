@@ -9,6 +9,7 @@
 #![allow(unused_assignments)]
 
 use miette::{Diagnostic, NamedSource, SourceSpan};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -536,6 +537,122 @@ pub enum UpdateError {
 }
 
 // =============================================================================
+// Artifact Retrieval Warning (bd-1q3p)
+// =============================================================================
+
+/// Warning details when artifact retrieval fails but compilation succeeded.
+///
+/// This struct captures actionable information for users when the build artifacts
+/// couldn't be retrieved from the worker, even though the remote compilation succeeded.
+/// This enables soft-fail semantics where the user can understand what went wrong
+/// and take corrective action.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactRetrievalWarning {
+    /// The artifact patterns that were attempted for retrieval.
+    pub attempted_patterns: Vec<String>,
+    /// Snippet of rsync stderr (truncated for display).
+    pub rsync_stderr_snippet: String,
+    /// Exit code from rsync command.
+    pub rsync_exit_code: Option<i32>,
+    /// Worker ID where the artifacts remain.
+    pub worker_id: String,
+    /// Suggested actions for remediation.
+    pub suggestions: Vec<String>,
+}
+
+impl ArtifactRetrievalWarning {
+    /// Maximum length for stderr snippet.
+    const MAX_STDERR_LEN: usize = 500;
+
+    /// Create a new artifact retrieval warning with default suggestions.
+    pub fn new(
+        worker_id: impl Into<String>,
+        attempted_patterns: Vec<String>,
+        rsync_stderr: impl Into<String>,
+        rsync_exit_code: Option<i32>,
+    ) -> Self {
+        let stderr = rsync_stderr.into();
+        let rsync_stderr_snippet = if stderr.len() > Self::MAX_STDERR_LEN {
+            format!("{}...", &stderr[..Self::MAX_STDERR_LEN])
+        } else {
+            stderr
+        };
+
+        Self {
+            attempted_patterns,
+            rsync_stderr_snippet,
+            rsync_exit_code,
+            worker_id: worker_id.into(),
+            suggestions: vec![
+                "Run `rch diagnose` for detailed diagnostics".to_string(),
+                "Check worker connectivity: `rch workers probe`".to_string(),
+                "Build artifacts remain on worker and can be fetched manually".to_string(),
+            ],
+        }
+    }
+
+    /// Add custom suggestions.
+    pub fn with_suggestions(mut self, suggestions: Vec<String>) -> Self {
+        self.suggestions = suggestions;
+        self
+    }
+
+    /// Format a user-friendly warning message.
+    pub fn format_warning(&self) -> String {
+        let mut msg = String::new();
+        msg.push_str("⚠️  Artifact retrieval failed (compilation succeeded)\n\n");
+
+        msg.push_str("Attempted patterns:\n");
+        for pattern in &self.attempted_patterns {
+            msg.push_str(&format!("  • {}\n", pattern));
+        }
+
+        if !self.rsync_stderr_snippet.is_empty() {
+            msg.push_str("\nrsync error:\n");
+            for line in self.rsync_stderr_snippet.lines().take(5) {
+                msg.push_str(&format!("  {}\n", line));
+            }
+        }
+
+        if let Some(code) = self.rsync_exit_code {
+            msg.push_str(&format!("\nrsync exit code: {}\n", code));
+        }
+
+        msg.push_str(&format!(
+            "\nArtifacts remain on worker: {}\n",
+            self.worker_id
+        ));
+
+        if !self.suggestions.is_empty() {
+            msg.push_str("\nSuggested actions:\n");
+            for (i, suggestion) in self.suggestions.iter().enumerate() {
+                msg.push_str(&format!("  {}. {}\n", i + 1, suggestion));
+            }
+        }
+
+        msg
+    }
+
+    /// Convert to JSON for machine-readable output.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "artifact_retrieval_warning",
+            "worker_id": self.worker_id,
+            "attempted_patterns": self.attempted_patterns,
+            "rsync_stderr_snippet": self.rsync_stderr_snippet,
+            "rsync_exit_code": self.rsync_exit_code,
+            "suggestions": self.suggestions,
+        })
+    }
+}
+
+impl std::fmt::Display for ArtifactRetrievalWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.format_warning())
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -1039,5 +1156,121 @@ user = "test"
         assert!(display.len() <= debug.len());
         // Both should contain the core message
         assert!(display.contains("No workers configured"));
+    }
+
+    // =========================================================================
+    // ArtifactRetrievalWarning Tests (bd-1q3p)
+    // =========================================================================
+
+    #[test]
+    fn test_artifact_retrieval_warning_basic() {
+        info!("TEST START: test_artifact_retrieval_warning_basic");
+        let warning = ArtifactRetrievalWarning::new(
+            "worker1",
+            vec![
+                "target/debug/**".to_string(),
+                "target/release/**".to_string(),
+            ],
+            "connection reset by peer",
+            Some(12),
+        );
+
+        assert_eq!(warning.worker_id, "worker1");
+        assert_eq!(warning.attempted_patterns.len(), 2);
+        assert_eq!(warning.rsync_exit_code, Some(12));
+        assert!(warning.rsync_stderr_snippet.contains("connection reset"));
+        info!("TEST PASS: test_artifact_retrieval_warning_basic");
+    }
+
+    #[test]
+    fn test_artifact_retrieval_warning_format() {
+        info!("TEST START: test_artifact_retrieval_warning_format");
+        let warning = ArtifactRetrievalWarning::new(
+            "gpu-worker-1",
+            vec!["target/debug/**".to_string()],
+            "Permission denied",
+            Some(1),
+        );
+
+        let formatted = warning.format_warning();
+        info!("Formatted warning:\n{}", formatted);
+
+        assert!(formatted.contains("Artifact retrieval failed"));
+        assert!(formatted.contains("target/debug/**"));
+        assert!(formatted.contains("gpu-worker-1"));
+        assert!(formatted.contains("Permission denied"));
+        assert!(formatted.contains("rch diagnose"));
+        info!("TEST PASS: test_artifact_retrieval_warning_format");
+    }
+
+    #[test]
+    fn test_artifact_retrieval_warning_json() {
+        info!("TEST START: test_artifact_retrieval_warning_json");
+        let warning = ArtifactRetrievalWarning::new(
+            "worker2",
+            vec!["*.o".to_string(), "build/**".to_string()],
+            "rsync error",
+            Some(23),
+        );
+
+        let json = warning.to_json();
+        info!("JSON output: {}", json);
+
+        assert_eq!(json["type"], "artifact_retrieval_warning");
+        assert_eq!(json["worker_id"], "worker2");
+        assert_eq!(json["rsync_exit_code"], 23);
+        assert!(json["attempted_patterns"].as_array().unwrap().len() == 2);
+        info!("TEST PASS: test_artifact_retrieval_warning_json");
+    }
+
+    #[test]
+    fn test_artifact_retrieval_warning_truncates_stderr() {
+        info!("TEST START: test_artifact_retrieval_warning_truncates_stderr");
+        // Create a very long stderr message
+        let long_stderr = "x".repeat(1000);
+        let warning = ArtifactRetrievalWarning::new(
+            "worker1",
+            vec!["target/**".to_string()],
+            long_stderr,
+            None,
+        );
+
+        // Snippet should be truncated
+        assert!(warning.rsync_stderr_snippet.len() <= 503); // 500 + "..."
+        assert!(warning.rsync_stderr_snippet.ends_with("..."));
+        info!("TEST PASS: test_artifact_retrieval_warning_truncates_stderr");
+    }
+
+    #[test]
+    fn test_artifact_retrieval_warning_with_custom_suggestions() {
+        info!("TEST START: test_artifact_retrieval_warning_with_custom_suggestions");
+        let warning =
+            ArtifactRetrievalWarning::new("worker1", vec!["target/**".to_string()], "error", None)
+                .with_suggestions(vec![
+                    "Custom suggestion 1".to_string(),
+                    "Custom suggestion 2".to_string(),
+                ]);
+
+        assert_eq!(warning.suggestions.len(), 2);
+        assert!(warning.suggestions[0].contains("Custom"));
+        info!("TEST PASS: test_artifact_retrieval_warning_with_custom_suggestions");
+    }
+
+    #[test]
+    fn test_artifact_retrieval_warning_display_trait() {
+        info!("TEST START: test_artifact_retrieval_warning_display_trait");
+        let warning = ArtifactRetrievalWarning::new(
+            "worker1",
+            vec!["target/**".to_string()],
+            "test error",
+            Some(1),
+        );
+
+        let display_output = format!("{}", warning);
+        let format_output = warning.format_warning();
+
+        // Display trait should use format_warning
+        assert_eq!(display_output, format_output);
+        info!("TEST PASS: test_artifact_retrieval_warning_display_trait");
     }
 }

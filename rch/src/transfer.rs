@@ -292,6 +292,137 @@ impl TransferPipeline {
         )
     }
 
+    // =========================================================================
+    // Transfer Size Estimation (bd-3hho)
+    // =========================================================================
+
+    /// Estimate transfer size using rsync dry-run.
+    ///
+    /// Returns `None` if estimation fails (e.g., rsync unavailable). Fail-open:
+    /// if estimation fails, proceed with transfer rather than blocking.
+    #[allow(dead_code)]
+    pub async fn estimate_transfer_size(&self, worker: &WorkerConfig) -> Option<TransferEstimate> {
+        let effective_excludes = self.get_effective_excludes();
+        let start = std::time::Instant::now();
+
+        let mut cmd = Command::new("rsync");
+        cmd.env("LC_ALL", "C");
+
+        let identity_file = shellexpand::tilde(&worker.identity_file);
+        let escaped_identity = escape(Cow::from(identity_file.as_ref()));
+
+        cmd.arg("-az")
+            .arg("--dry-run")
+            .arg("--stats")
+            .arg("-e")
+            .arg(format!(
+                "ssh -i {} -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5",
+                escaped_identity
+            ));
+
+        for pattern in &effective_excludes {
+            cmd.arg("--exclude").arg(pattern);
+        }
+
+        let remote_path = self.remote_path();
+        let escaped_remote_path = escape(Cow::from(&remote_path));
+        let destination = format!("{}@{}:{}", worker.user, worker.host, escaped_remote_path);
+
+        cmd.arg(format!("{}/", self.project_root.display()))
+            .arg(&destination);
+
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        let output = match cmd.output().await {
+            Ok(output) => output,
+            Err(e) => {
+                debug!("Transfer estimation failed (rsync error): {}", e);
+                return None;
+            }
+        };
+
+        let estimation_ms = start.elapsed().as_millis() as u64;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        if !output.status.success() {
+            debug!(
+                "Transfer estimation failed (exit {}): {}",
+                output.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return None;
+        }
+
+        let bytes = crate::transfer::parse_rsync_total_size(&stdout).unwrap_or(0);
+        let files = crate::transfer::parse_rsync_total_files(&stdout).unwrap_or(0);
+
+        // Calculate estimated transfer time using configured or default bandwidth
+        // Default: 10 MB/s (reasonable for local network)
+        let bandwidth_bps = self
+            .transfer_config
+            .estimated_bandwidth_bps
+            .unwrap_or(10 * 1024 * 1024);
+
+        let estimated_time_ms = if bandwidth_bps > 0 {
+            (bytes as f64 / bandwidth_bps as f64 * 1000.0).round() as u64
+        } else {
+            0
+        };
+
+        Some(TransferEstimate {
+            bytes,
+            files,
+            estimated_time_ms,
+            estimation_ms,
+        })
+    }
+
+    /// Check if transfer should be skipped based on size/time thresholds.
+    ///
+    /// Returns `Some(reason)` if transfer should be skipped, `None` if it should proceed.
+    #[allow(dead_code)]
+    pub async fn should_skip_transfer(&self, worker: &WorkerConfig) -> Option<String> {
+        // Check if any thresholds are configured
+        let max_mb = self.transfer_config.max_transfer_mb;
+        let max_time_ms = self.transfer_config.max_transfer_time_ms;
+
+        if max_mb.is_none() && max_time_ms.is_none() {
+            return None; // No thresholds configured
+        }
+
+        // Run estimation
+        let estimate = match self.estimate_transfer_size(worker).await {
+            Some(e) => e,
+            None => {
+                debug!("Transfer estimation failed, proceeding with transfer (fail-open)");
+                return None;
+            }
+        };
+
+        // Check size threshold
+        if let Some(max_mb) = max_mb {
+            let estimated_mb = estimate.bytes / (1024 * 1024);
+            if estimated_mb > max_mb {
+                return Some(format!(
+                    "Transfer size ({} MB) exceeds threshold ({} MB)",
+                    estimated_mb, max_mb
+                ));
+            }
+        }
+
+        // Check time threshold
+        if let Some(max_time) = max_time_ms
+            && estimate.estimated_time_ms > max_time
+        {
+            return Some(format!(
+                "Estimated transfer time ({} ms) exceeds threshold ({} ms)",
+                estimate.estimated_time_ms, max_time
+            ));
+        }
+
+        None
+    }
+
     /// Build rsync command for sync_to_remote.
     fn build_sync_command(
         &self,
@@ -330,6 +461,13 @@ impl TransferPipeline {
                 "--compress-level={}",
                 self.transfer_config.compression_level
             ));
+        }
+
+        // Add bandwidth limit if configured (bd-3hho)
+        if let Some(bwlimit) = self.transfer_config.bwlimit_kbps
+            && bwlimit > 0
+        {
+            cmd.arg(format!("--bwlimit={}", bwlimit));
         }
 
         // Source and destination
@@ -501,6 +639,13 @@ impl TransferPipeline {
                 "--compress-level={}",
                 self.transfer_config.compression_level
             ));
+        }
+
+        // Add bandwidth limit if configured (bd-3hho)
+        if let Some(bwlimit) = self.transfer_config.bwlimit_kbps
+            && bwlimit > 0
+        {
+            cmd.arg(format!("--bwlimit={}", bwlimit));
         }
 
         // Source and destination
@@ -676,6 +821,13 @@ impl TransferPipeline {
                 "--compress-level={}",
                 self.transfer_config.compression_level
             ));
+        }
+
+        // Add bandwidth limit if configured (bd-3hho)
+        if let Some(bwlimit) = self.transfer_config.bwlimit_kbps
+            && bwlimit > 0
+        {
+            cmd.arg(format!("--bwlimit={}", bwlimit));
         }
 
         // Prune empty directories to prevent cluttering local project with
@@ -871,6 +1023,13 @@ impl TransferPipeline {
             ));
         }
 
+        // Add bandwidth limit if configured (bd-3hho)
+        if let Some(bwlimit) = self.transfer_config.bwlimit_kbps
+            && bwlimit > 0
+        {
+            cmd.arg(format!("--bwlimit={}", bwlimit));
+        }
+
         // Prune empty directories to prevent cluttering local project
         cmd.arg("--prune-empty-dirs");
 
@@ -946,6 +1105,20 @@ pub struct SyncResult {
     pub duration_ms: u64,
 }
 
+/// Estimate of transfer size from rsync dry-run (bd-3hho).
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct TransferEstimate {
+    /// Total bytes that would be transferred.
+    pub bytes: u64,
+    /// Total files that would be transferred.
+    pub files: u32,
+    /// Estimated transfer time in milliseconds (based on configured bandwidth).
+    pub estimated_time_ms: u64,
+    /// Time taken to run the estimation in milliseconds.
+    pub estimation_ms: u64,
+}
+
 /// Parse bytes transferred from rsync output.
 fn parse_rsync_bytes(output: &str) -> u64 {
     // rsync output contains "sent X bytes  received Y bytes"
@@ -989,6 +1162,59 @@ fn parse_rsync_files(output: &str) -> u32 {
         .lines()
         .filter(|l| !l.trim().is_empty() && !l.contains("sent"))
         .count() as u32
+}
+
+// =============================================================================
+// Transfer Estimation Parsers (bd-3hho)
+// =============================================================================
+
+/// Parse total file size from rsync --dry-run --stats output.
+///
+/// Looks for "Total file size:" line which shows the total bytes that would
+/// be transferred (not the delta, but the full file size).
+#[allow(dead_code)]
+fn parse_rsync_total_size(output: &str) -> Option<u64> {
+    for line in output.lines() {
+        // "Total file size: 1,234,567 bytes"
+        if let Some(rest) = line.strip_prefix("Total file size:") {
+            let cleaned = rest.trim().replace(',', "");
+            if let Some(bytes_str) = cleaned.split_whitespace().next() {
+                return bytes_str.parse().ok();
+            }
+        }
+        // Also check "Total transferred file size:" for delta transfers
+        if let Some(rest) = line.strip_prefix("Total transferred file size:") {
+            let cleaned = rest.trim().replace(',', "");
+            if let Some(bytes_str) = cleaned.split_whitespace().next() {
+                return bytes_str.parse().ok();
+            }
+        }
+    }
+    None
+}
+
+/// Parse total file count from rsync --dry-run --stats output.
+///
+/// Looks for "Number of files:" or "Number of regular files:" line.
+#[allow(dead_code)]
+fn parse_rsync_total_files(output: &str) -> Option<u32> {
+    for line in output.lines() {
+        // "Number of files: 1,234 (reg: 1,000, dir: 234)"
+        if let Some(rest) = line.strip_prefix("Number of files:") {
+            let cleaned = rest.trim().replace(',', "");
+            if let Some(count_str) = cleaned.split_whitespace().next() {
+                return count_str.parse().ok();
+            }
+        }
+        // "Number of regular files transferred: 500"
+        if let Some(rest) = line.strip_prefix("Number of regular files transferred:") {
+            let cleaned = rest.trim().replace(',', "");
+            if let Some(count_str) = cleaned.split_whitespace().next() {
+                return count_str.parse().ok();
+            }
+        }
+    }
+    None
 }
 
 async fn run_command_streaming<F>(mut cmd: Command, mut on_line: F) -> Result<(String, u64)>
@@ -1747,5 +1973,218 @@ node_modules/
         // target/ should appear only once
         let target_count = effective.iter().filter(|p| *p == "target/").count();
         assert_eq!(target_count, 1);
+    }
+
+    // ==========================================================================
+    // Transfer Optimization Tests (bd-3hho)
+    // ==========================================================================
+
+    #[test]
+    fn test_parse_rsync_total_size_standard() {
+        let output = "Number of files: 1,234
+Total file size: 56,789,012 bytes
+Total transferred file size: 1,234,567 bytes";
+        assert_eq!(parse_rsync_total_size(output), Some(56789012));
+    }
+
+    #[test]
+    fn test_parse_rsync_total_size_no_commas() {
+        let output = "Total file size: 123456 bytes";
+        assert_eq!(parse_rsync_total_size(output), Some(123456));
+    }
+
+    #[test]
+    fn test_parse_rsync_total_size_transferred() {
+        let output = "Total transferred file size: 9,876,543 bytes";
+        assert_eq!(parse_rsync_total_size(output), Some(9876543));
+    }
+
+    #[test]
+    fn test_parse_rsync_total_size_missing() {
+        let output = "sent 100 bytes received 200 bytes";
+        assert_eq!(parse_rsync_total_size(output), None);
+    }
+
+    #[test]
+    fn test_parse_rsync_total_files_standard() {
+        let output = "Number of files: 1,234 (reg: 1,000, dir: 234)
+Total file size: 56,789,012 bytes";
+        assert_eq!(parse_rsync_total_files(output), Some(1234));
+    }
+
+    #[test]
+    fn test_parse_rsync_total_files_no_commas() {
+        let output = "Number of files: 456
+Total file size: 123 bytes";
+        assert_eq!(parse_rsync_total_files(output), Some(456));
+    }
+
+    #[test]
+    fn test_parse_rsync_total_files_transferred() {
+        let output = "Number of regular files transferred: 789";
+        assert_eq!(parse_rsync_total_files(output), Some(789));
+    }
+
+    #[test]
+    fn test_parse_rsync_total_files_missing() {
+        let output = "Total file size: 100 bytes";
+        assert_eq!(parse_rsync_total_files(output), None);
+    }
+
+    #[test]
+    fn test_transfer_config_optimization_defaults() {
+        let config = TransferConfig::default();
+        assert!(config.max_transfer_mb.is_none());
+        assert!(config.max_transfer_time_ms.is_none());
+        assert!(config.bwlimit_kbps.is_none());
+        assert!(config.estimated_bandwidth_bps.is_none());
+    }
+
+    #[test]
+    fn test_transfer_config_with_optimization_options() {
+        let config = TransferConfig {
+            max_transfer_mb: Some(500),
+            max_transfer_time_ms: Some(5000),
+            bwlimit_kbps: Some(10000),
+            estimated_bandwidth_bps: Some(10 * 1024 * 1024),
+            ..Default::default()
+        };
+        assert_eq!(config.max_transfer_mb, Some(500));
+        assert_eq!(config.max_transfer_time_ms, Some(5000));
+        assert_eq!(config.bwlimit_kbps, Some(10000));
+        assert_eq!(config.estimated_bandwidth_bps, Some(10 * 1024 * 1024));
+    }
+
+    #[test]
+    fn test_transfer_estimate_struct() {
+        let estimate = TransferEstimate {
+            bytes: 1024 * 1024 * 50, // 50 MB
+            files: 100,
+            estimated_time_ms: 5000, // 5 seconds
+            estimation_ms: 150,      // 150ms to estimate
+        };
+        assert_eq!(estimate.bytes, 52428800);
+        assert_eq!(estimate.files, 100);
+        assert_eq!(estimate.estimated_time_ms, 5000);
+        assert_eq!(estimate.estimation_ms, 150);
+    }
+
+    #[test]
+    fn test_build_sync_command_with_bwlimit() {
+        let config = TransferConfig {
+            bwlimit_kbps: Some(5000),
+            ..Default::default()
+        };
+
+        let pipeline = TransferPipeline::new(
+            PathBuf::from("/tmp/test"),
+            "test-project".to_string(),
+            "abc123".to_string(),
+            config,
+        );
+
+        let worker = WorkerConfig {
+            id: WorkerId::new("mock-worker"),
+            host: "mock://worker".to_string(),
+            user: "mockuser".to_string(),
+            identity_file: "~/.ssh/mock".to_string(),
+            total_slots: 4,
+            priority: 100,
+            tags: vec![],
+        };
+
+        let cmd = pipeline.build_sync_command(
+            &worker,
+            "mockuser@mock://worker:/tmp/rch/test-project/abc123",
+            "/tmp/rch/test-project/abc123",
+            &[],
+        );
+
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        assert!(args.contains(&"--bwlimit=5000".to_string()));
+    }
+
+    #[test]
+    fn test_build_sync_command_without_bwlimit() {
+        let config = TransferConfig::default();
+
+        let pipeline = TransferPipeline::new(
+            PathBuf::from("/tmp/test"),
+            "test-project".to_string(),
+            "abc123".to_string(),
+            config,
+        );
+
+        let worker = WorkerConfig {
+            id: WorkerId::new("mock-worker"),
+            host: "mock://worker".to_string(),
+            user: "mockuser".to_string(),
+            identity_file: "~/.ssh/mock".to_string(),
+            total_slots: 4,
+            priority: 100,
+            tags: vec![],
+        };
+
+        let cmd = pipeline.build_sync_command(
+            &worker,
+            "mockuser@mock://worker:/tmp/rch/test-project/abc123",
+            "/tmp/rch/test-project/abc123",
+            &[],
+        );
+
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        // Should not have any --bwlimit arg when not configured
+        assert!(!args.iter().any(|arg| arg.starts_with("--bwlimit")));
+    }
+
+    #[test]
+    fn test_build_sync_command_bwlimit_zero_disabled() {
+        let config = TransferConfig {
+            bwlimit_kbps: Some(0), // Explicitly 0 = disabled
+            ..Default::default()
+        };
+
+        let pipeline = TransferPipeline::new(
+            PathBuf::from("/tmp/test"),
+            "test-project".to_string(),
+            "abc123".to_string(),
+            config,
+        );
+
+        let worker = WorkerConfig {
+            id: WorkerId::new("mock-worker"),
+            host: "mock://worker".to_string(),
+            user: "mockuser".to_string(),
+            identity_file: "~/.ssh/mock".to_string(),
+            total_slots: 4,
+            priority: 100,
+            tags: vec![],
+        };
+
+        let cmd = pipeline.build_sync_command(
+            &worker,
+            "mockuser@mock://worker:/tmp/rch/test-project/abc123",
+            "/tmp/rch/test-project/abc123",
+            &[],
+        );
+
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        // bwlimit=0 should be treated as disabled (no flag)
+        assert!(!args.iter().any(|arg| arg.starts_with("--bwlimit")));
     }
 }

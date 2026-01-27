@@ -32,7 +32,7 @@ impl RchTheme {
     // ═══════════════════════════════════════════════════════════════════════
 
     /// Primary brand color - Purple (compilation/build theme).
-    pub const PRIMARY: &'static str = "#7C3AED";
+    pub const PRIMARY: &'static str = "#8B5CF6";
 
     /// Secondary brand color - Cyan (data/transfer theme).
     pub const SECONDARY: &'static str = "#06B6D4";
@@ -74,7 +74,7 @@ impl RchTheme {
     pub const STATUS_DRAINING: &'static str = "#8B5CF6";
 
     /// Worker is disabled (admin disabled) - Gray.
-    pub const STATUS_DISABLED: &'static str = "#6B7280";
+    pub const STATUS_DISABLED: &'static str = "#737B8A";
 
     // ═══════════════════════════════════════════════════════════════════════
     // TEXT COLORS
@@ -84,7 +84,7 @@ impl RchTheme {
     pub const MUTED: &'static str = "#9CA3AF";
 
     /// Dim text (tertiary information) - Gray-500.
-    pub const DIM: &'static str = "#6B7280";
+    pub const DIM: &'static str = "#737B8A";
 
     /// Bright text (emphasis) - Gray-50.
     pub const BRIGHT: &'static str = "#F9FAFB";
@@ -279,6 +279,42 @@ impl RchTheme {
 mod tests {
     use super::*;
 
+    fn parse_hex_rgb(color: &str) -> (u8, u8, u8) {
+        let color = color.strip_prefix('#').unwrap_or(color);
+        assert_eq!(color.len(), 6, "Expected RRGGBB hex string, got: {color}");
+
+        let r = u8::from_str_radix(&color[0..2], 16).expect("Invalid hex for R");
+        let g = u8::from_str_radix(&color[2..4], 16).expect("Invalid hex for G");
+        let b = u8::from_str_radix(&color[4..6], 16).expect("Invalid hex for B");
+
+        (r, g, b)
+    }
+
+    fn srgb_channel_to_linear(channel: u8) -> f64 {
+        let c = f64::from(channel) / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn relative_luminance(color: &str) -> f64 {
+        let (r, g, b) = parse_hex_rgb(color);
+        let r = srgb_channel_to_linear(r);
+        let g = srgb_channel_to_linear(g);
+        let b = srgb_channel_to_linear(b);
+
+        0.2126 * r + 0.7152 * g + 0.0722 * b
+    }
+
+    fn contrast_ratio(foreground: &str, background: &str) -> f64 {
+        let l1 = relative_luminance(foreground);
+        let l2 = relative_luminance(background);
+        let (lighter, darker) = if l1 >= l2 { (l1, l2) } else { (l2, l1) };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
     #[test]
     fn test_all_color_constants_are_valid_hex() {
         // All color constants should be 7-character hex strings (#RRGGBB)
@@ -306,6 +342,43 @@ mod tests {
             assert!(
                 color[1..].chars().all(|c| c.is_ascii_hexdigit()),
                 "Color should be valid hex: {color}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_semantic_colors_meet_contrast_on_dark_background() {
+        // WCAG 2.1 AA target for normal text is 4.5:1.
+        //
+        // Terminals vary widely, but a dark background is the most common
+        // interactive default. For light terminals (or accessibility tooling),
+        // RCH supports `NO_COLOR=1` to disable color entirely.
+        const BACKGROUND: &str = "#000000";
+        const MIN_RATIO: f64 = 4.5;
+
+        let colors = [
+            ("PRIMARY", RchTheme::PRIMARY),
+            ("SECONDARY", RchTheme::SECONDARY),
+            ("ACCENT", RchTheme::ACCENT),
+            ("SUCCESS", RchTheme::SUCCESS),
+            ("WARNING", RchTheme::WARNING),
+            ("ERROR", RchTheme::ERROR),
+            ("INFO", RchTheme::INFO),
+            ("STATUS_HEALTHY", RchTheme::STATUS_HEALTHY),
+            ("STATUS_DEGRADED", RchTheme::STATUS_DEGRADED),
+            ("STATUS_UNREACHABLE", RchTheme::STATUS_UNREACHABLE),
+            ("STATUS_DRAINING", RchTheme::STATUS_DRAINING),
+            ("STATUS_DISABLED", RchTheme::STATUS_DISABLED),
+            ("MUTED", RchTheme::MUTED),
+            ("DIM", RchTheme::DIM),
+            ("BRIGHT", RchTheme::BRIGHT),
+        ];
+
+        for (name, color) in colors {
+            let ratio = contrast_ratio(color, BACKGROUND);
+            assert!(
+                ratio >= MIN_RATIO,
+                "{name} ({color}) contrast vs {BACKGROUND} too low: {ratio:.2}"
             );
         }
     }
@@ -377,6 +450,49 @@ mod tests {
             for &c2 in &colors[i + 1..] {
                 assert_ne!(c1, c2, "Status colors should be distinct");
             }
+        }
+    }
+
+    // =========================================================================
+    // ADDITIONAL WCAG 2.1 AA ACCESSIBILITY TESTS
+    // =========================================================================
+
+    /// Verify contrast ratio calculation is correct.
+    #[test]
+    fn test_contrast_ratio_calculation_accuracy() {
+        // Black on white should be 21:1 (maximum)
+        let ratio = contrast_ratio("#FFFFFF", "#000000");
+        assert!(
+            (ratio - 21.0).abs() < 0.1,
+            "White/black contrast should be ~21:1, got {ratio:.2}:1"
+        );
+
+        // Same color should be 1:1
+        let same = contrast_ratio("#FF0000", "#FF0000");
+        assert!(
+            (same - 1.0).abs() < 0.01,
+            "Same color contrast should be 1:1"
+        );
+    }
+
+    /// Verify colors work on slightly darker terminal backgrounds.
+    #[test]
+    fn test_colors_on_dark_gray_background() {
+        const DARK_GRAY: &str = "#1a1a1a";
+        const MIN_RATIO: f64 = 4.5;
+
+        let critical_colors = [
+            ("ERROR", RchTheme::ERROR),
+            ("SUCCESS", RchTheme::SUCCESS),
+            ("WARNING", RchTheme::WARNING),
+        ];
+
+        for (name, color) in critical_colors {
+            let ratio = contrast_ratio(color, DARK_GRAY);
+            assert!(
+                ratio >= MIN_RATIO,
+                "{name} ({color}) must be readable on dark gray: {ratio:.2}:1 < {MIN_RATIO}:1"
+            );
         }
     }
 

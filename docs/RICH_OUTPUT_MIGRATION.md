@@ -56,6 +56,13 @@ rch workers list | grep "cpu-worker"
 | `FORCE_COLOR=0` | Explicitly disables color (equivalent to `NO_COLOR=1`). |
 | `RCH_HOOK_MODE=1` | Forces Hook mode (used internally by AI agents). |
 
+## Accessibility
+
+- **Never color-only**: Rich output pairs color with **text labels** and **symbols** (e.g., `✓` / `✗`) so meaning isn’t conveyed by color alone.
+- **Screen readers / logs**: Prefer **Plain mode** via `NO_COLOR=1` (no ANSI escape codes, no rich widgets).
+- **ASCII fallback**: If your environment doesn’t support Unicode, RCH automatically falls back to ASCII. You can force this by using a non-UTF-8 locale (e.g. `LC_ALL=C`) or `TERM=dumb`.
+- **Machine parsing**: Use `--json` or `RCH_JSON=1` so stdout stays stable and decoration-free.
+
 ## Troubleshooting
 
 ### Garbled Output?

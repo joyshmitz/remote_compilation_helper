@@ -7,6 +7,7 @@
 #![deny(unsafe_code)]
 
 pub mod api;
+pub mod artifact_verify;
 pub mod binary_hash;
 pub mod config;
 pub mod discovery;
@@ -31,6 +32,10 @@ pub mod toolchain;
 pub mod types;
 pub mod ui;
 
+pub use artifact_verify::{
+    ArtifactManifest, FileHash, VerificationFailure, VerificationResult, compute_file_hash,
+    create_manifest, verify_artifacts,
+};
 pub use binary_hash::{
     BinaryHashResult, binaries_equivalent, binary_contains_marker, compute_binary_hash,
 };
@@ -47,12 +52,13 @@ pub use toolchain::{ToolchainInfo, wrap_command_with_color, wrap_command_with_to
 pub use types::{
     BuildLocation, BuildRecord, BuildStats, CircuitBreakerConfig, CircuitState, CircuitStats,
     ColorMode, CommandPriority, CommandTimingBreakdown, CompilationConfig, CompilationMetrics,
-    CompilationTimer, CompilationTimingBreakdown, EnvironmentConfig, FairnessConfig, GeneralConfig,
-    MetricsAggregator, OutputConfig, OutputVisibility, RchConfig, ReleaseRequest, RequiredRuntime,
-    RetryConfig, SelectedWorker, SelectionConfig, SelectionReason, SelectionRequest,
-    SelectionResponse, SelectionStrategy, SelectionWeightConfig, SelfHealingConfig, SelfTestConfig,
-    SelfTestFailureAction, SelfTestWorkers, TransferConfig, WorkerCapabilities, WorkerConfig,
-    WorkerId, WorkerStatus, default_socket_path, validate_remote_base,
+    CompilationTimer, CompilationTimingBreakdown, EnvironmentConfig, ExecutionConfig,
+    FairnessConfig, GeneralConfig, MetricsAggregator, OutputConfig, OutputVisibility, RchConfig,
+    ReleaseRequest, RequiredRuntime, RetryConfig, SelectedWorker, SelectionConfig, SelectionReason,
+    SelectionRequest, SelectionResponse, SelectionStrategy, SelectionWeightConfig,
+    SelfHealingConfig, SelfTestConfig, SelfTestFailureAction, SelfTestWorkers, TransferConfig,
+    WorkerCapabilities, WorkerConfig, WorkerId, WorkerStatus, default_socket_path,
+    validate_remote_base,
 };
 
 // Testing module re-exports

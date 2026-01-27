@@ -4,7 +4,7 @@
 //! and routes compilation commands to remote workers.
 
 use crate::config::load_config;
-use crate::error::{DaemonError, TransferError};
+use crate::error::{ArtifactRetrievalWarning, DaemonError, TransferError};
 use crate::status_types::format_bytes;
 use crate::toolchain::detect_toolchain;
 use crate::transfer::{
@@ -974,6 +974,23 @@ async fn process_hook(input: HookInput) -> HookOutput {
         return HookOutput::allow();
     }
 
+    // Check execution allowlist (bd-785w)
+    // Commands not in the allowlist fail-open to local execution
+    if let Some(kind) = classification.kind {
+        let command_base = kind.command_base();
+        if !config.execution.is_allowed(command_base) {
+            debug!(
+                "Command base '{}' not in execution allowlist, allowing local execution",
+                command_base
+            );
+            reporter.summary(&format!(
+                "[RCH] local (command '{}' not in allowlist)",
+                command_base
+            ));
+            return HookOutput::allow();
+        }
+    }
+
     // Query daemon for a worker
     let project = extract_project_name();
     let estimated_cores =
@@ -1917,8 +1934,42 @@ async fn execute_remote_compilation(
             }
             Err(e) => {
                 artifacts_failed = true;
+
+                // Extract rsync exit code from error message if present
+                let error_str = e.to_string();
+                let rsync_exit_code = error_str.find("exit code").and_then(|_| {
+                    error_str
+                        .split("exit code")
+                        .nth(1)
+                        .and_then(|s| s.split(':').next())
+                        .and_then(|s| {
+                            s.trim()
+                                .trim_start_matches("Some(")
+                                .trim_end_matches(')')
+                                .parse()
+                                .ok()
+                        })
+                });
+
+                // Create structured warning (bd-1q3p)
+                let warning = ArtifactRetrievalWarning::new(
+                    worker_config.id.as_str(),
+                    artifact_patterns.clone(),
+                    &error_str,
+                    rsync_exit_code,
+                );
+
                 warn!("Failed to retrieve artifacts: {}", e);
-                reporter.verbose("[RCH] artifacts failed (continuing)");
+
+                // Show detailed warning in verbose mode or when not in machine mode
+                if !console.is_machine() {
+                    reporter.verbose(&warning.format_warning());
+                } else {
+                    // For machine mode, output JSON warning
+                    debug!("Artifact retrieval warning (JSON): {}", warning.to_json());
+                    reporter.verbose("[RCH] artifacts failed (continuing)");
+                }
+
                 if let Some(progress) = &mut download_progress {
                     progress.finish_error(&e.to_string());
                 }

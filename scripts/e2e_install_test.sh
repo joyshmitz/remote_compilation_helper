@@ -105,8 +105,19 @@ create_launchd_stubs() {
 
     cat > "$bin_dir/launchctl" << 'EOF'
 #!/usr/bin/env bash
+#
+# Minimal launchctl stub for installer tests.
+# - Logs calls to $LAUNCHCTL_LOG
+# - Supports `launchctl list` output via $LAUNCHCTL_LIST_OUTPUT
 if [[ -n "${LAUNCHCTL_LOG:-}" ]]; then
     echo "launchctl $*" >> "$LAUNCHCTL_LOG"
+fi
+
+if [[ "${1:-}" == "list" ]]; then
+    if [[ -n "${LAUNCHCTL_LIST_OUTPUT:-}" ]]; then
+        echo "${LAUNCHCTL_LIST_OUTPUT}"
+    fi
+    exit 0
 fi
 exit 0
 EOF
@@ -858,12 +869,12 @@ test_launchd_unit_generation() {
     local install_dir="$TEST_DIR/launchd_install/bin"
     local config_dir="$home_dir/.config/rch"
     local plist_file="$home_dir/Library/LaunchAgents/com.rch.daemon.plist"
-    local launchctl_log="$TEST_DIR/launchctl.log"
+    local launchctl_log="$TEST_DIR/launchctl_install.log"
 
     mkdir -p "$install_dir" "$config_dir"
 
     local output
-    output=$(LAUNCHCTL_LOG="$launchctl_log" run_install_case "$install_dir" "$config_dir" "$tarball" "--install-service" "" "false" "$stub_bin" "" "ok" "$home_dir") || true
+    output=$(LAUNCHCTL_LOG="$launchctl_log" LAUNCHCTL_LIST_OUTPUT="com.rch.daemon" run_install_case "$install_dir" "$config_dir" "$tarball" "--install-service" "" "false" "$stub_bin" "" "ok" "$home_dir") || true
 
     if [[ -f "$plist_file" ]]; then
         pass "Launchd plist created"
@@ -890,26 +901,107 @@ test_launchd_unit_generation() {
         fail "Plist missing rchd path"
     fi
 
+    if grep -q "<string>--foreground</string>" "$plist_file"; then
+        pass "Plist includes --foreground"
+    else
+        fail "Plist missing --foreground"
+    fi
+
+    if grep -q "<string>--workers-config</string>" "$plist_file"; then
+        pass "Plist includes --workers-config"
+    else
+        fail "Plist missing --workers-config"
+    fi
+
+    if grep -q "$config_dir/workers.toml" "$plist_file"; then
+        pass "Plist includes workers.toml path"
+    else
+        fail "Plist missing workers.toml path"
+    fi
+
+    if grep -q "$config_dir/logs/daemon.log" "$plist_file"; then
+        pass "Plist includes daemon stdout log path"
+    else
+        fail "Plist missing daemon stdout log path"
+    fi
+
+    if grep -q "$config_dir/logs/daemon.err" "$plist_file"; then
+        pass "Plist includes daemon stderr log path"
+    else
+        fail "Plist missing daemon stderr log path"
+    fi
+
+    if [[ -f "$launchctl_log" ]] && grep -q "launchctl load" "$launchctl_log"; then
+        pass "launchctl load called"
+    else
+        log "  launchctl log:"
+        [[ -f "$launchctl_log" ]] && sed -n '1,200p' "$launchctl_log" || true
+        fail "Expected launchctl load call"
+    fi
+
+    if [[ -f "$launchctl_log" ]] && grep -q "launchctl unload" "$launchctl_log"; then
+        pass "launchctl unload called when existing service present"
+    else
+        log "  launchctl log:"
+        [[ -f "$launchctl_log" ]] && sed -n '1,200p' "$launchctl_log" || true
+        fail "Expected launchctl unload call (existing service simulated)"
+    fi
+
     # Negative path: --no-service should not create plist
     local no_service_home="$TEST_DIR/launchd_no_service_home"
     local no_service_install="$TEST_DIR/launchd_no_service_install/bin"
     local no_service_config="$no_service_home/.config/rch"
     local no_service_plist="$no_service_home/Library/LaunchAgents/com.rch.daemon.plist"
+    local no_service_launchctl_log="$TEST_DIR/launchctl_no_service.log"
 
     mkdir -p "$no_service_install" "$no_service_config"
-    output=$(LAUNCHCTL_LOG="$launchctl_log" run_install_case "$no_service_install" "$no_service_config" "$tarball" "--no-service --yes" "" "false" "$stub_bin" "" "ok" "$no_service_home") || true
+    output=$(LAUNCHCTL_LOG="$no_service_launchctl_log" run_install_case "$no_service_install" "$no_service_config" "$tarball" "--no-service --yes" "" "false" "$stub_bin" "" "ok" "$no_service_home") || true
 
     if [[ ! -f "$no_service_plist" ]]; then
         pass "No-service flag skips plist creation"
     else
+        log "  Plist content:"
+        sed -n '1,200p' "$no_service_plist" || true
         fail "No-service should not create plist"
     fi
 
-    if [[ -f "$launchctl_log" ]]; then
-        pass "launchctl stub captured calls"
+    if [[ -f "$no_service_launchctl_log" ]]; then
+        log "  launchctl log:"
+        sed -n '1,200p' "$no_service_launchctl_log" || true
+        fail "No-service should not call launchctl"
     else
-        log "  Note: launchctl log missing (output may vary)"
-        pass "launchctl stub (output varies)"
+        pass "No-service avoids launchctl calls"
+    fi
+
+    # Negative path: user declines service prompt (interactive)
+    if command -v script >/dev/null 2>&1; then
+        local decline_home="$TEST_DIR/launchd_decline_home"
+        local decline_install="$TEST_DIR/launchd_decline_install/bin"
+        local decline_config="$decline_home/.config/rch"
+        local decline_plist="$decline_home/Library/LaunchAgents/com.rch.daemon.plist"
+        local decline_launchctl_log="$TEST_DIR/launchctl_decline.log"
+
+        mkdir -p "$decline_install" "$decline_config"
+        output=$(LAUNCHCTL_LOG="$decline_launchctl_log" run_install_case "$decline_install" "$decline_config" "$tarball" "" $'n\n' "true" "$stub_bin" "" "ok" "$decline_home") || true
+
+        if [[ ! -f "$decline_plist" ]]; then
+            pass "Declining prompt skips plist creation"
+        else
+            log "  Plist content:"
+            sed -n '1,200p' "$decline_plist" || true
+            fail "Declining prompt should not create plist"
+        fi
+
+        if [[ -f "$decline_launchctl_log" ]]; then
+            log "  launchctl log:"
+            sed -n '1,200p' "$decline_launchctl_log" || true
+            fail "Declining prompt should not call launchctl"
+        else
+            pass "Declining prompt avoids launchctl calls"
+        fi
+    else
+        log "  SKIP: script command not available for interactive decline test"
+        pass "Decline prompt test skipped (script missing)"
     fi
 }
 

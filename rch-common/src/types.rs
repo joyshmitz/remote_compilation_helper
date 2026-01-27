@@ -251,6 +251,9 @@ pub struct SelectionConfig {
     /// Fairness settings for fair_fastest strategy.
     #[serde(default)]
     pub fairness: FairnessConfig,
+    /// Cache affinity settings for project-to-worker pinning.
+    #[serde(default)]
+    pub affinity: AffinityConfig,
 }
 
 impl Default for SelectionConfig {
@@ -260,6 +263,7 @@ impl Default for SelectionConfig {
             min_success_rate: default_min_success_rate(),
             weights: SelectionWeightConfig::default(),
             fairness: FairnessConfig::default(),
+            affinity: AffinityConfig::default(),
         }
     }
 }
@@ -356,6 +360,54 @@ fn default_fairness_lookback_secs() -> u64 {
 
 fn default_max_consecutive_selections() -> u32 {
     3
+}
+
+/// Cache affinity settings for project-to-worker pinning.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AffinityConfig {
+    /// Enable affinity pinning (pin projects to last successful worker).
+    #[serde(default = "default_affinity_enabled")]
+    pub enabled: bool,
+    /// Time window in minutes to pin a project to its last successful worker.
+    /// After this window expires, normal selection resumes.
+    #[serde(default = "default_affinity_pin_minutes")]
+    pub pin_minutes: u64,
+    /// Enable last-success fallback when no workers match selection criteria.
+    /// If enabled, the daemon will attempt the last successful worker for a project
+    /// when all other workers are unavailable or fail selection.
+    #[serde(default = "default_last_success_fallback")]
+    pub enable_last_success_fallback: bool,
+    /// Minimum success rate for the last-success worker to be used as fallback.
+    /// Must be lower than min_success_rate to be meaningful as a fallback.
+    #[serde(default = "default_fallback_min_success_rate")]
+    pub fallback_min_success_rate: f64,
+}
+
+impl Default for AffinityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_affinity_enabled(),
+            pin_minutes: default_affinity_pin_minutes(),
+            enable_last_success_fallback: default_last_success_fallback(),
+            fallback_min_success_rate: default_fallback_min_success_rate(),
+        }
+    }
+}
+
+fn default_affinity_enabled() -> bool {
+    true
+}
+
+fn default_affinity_pin_minutes() -> u64 {
+    60 // 1 hour default
+}
+
+fn default_last_success_fallback() -> bool {
+    true
+}
+
+fn default_fallback_min_success_rate() -> f64 {
+    0.5 // More lenient than normal min_success_rate (0.8)
 }
 
 /// Details about a selected worker for remote compilation.
@@ -524,6 +576,9 @@ pub struct RchConfig {
     /// Worker selection algorithm configuration.
     #[serde(default)]
     pub selection: SelectionConfig,
+    /// Execution allowlist configuration (bd-785w).
+    #[serde(default)]
+    pub execution: ExecutionConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1280,6 +1335,81 @@ pub struct TransferConfig {
     /// Retry policy for transient network errors during transfer.
     #[serde(default)]
     pub retry: RetryConfig,
+    /// Verify artifact integrity using blake3 hashes after transfer (bd-377q).
+    ///
+    /// When enabled, computes blake3 hashes of key artifacts (binaries, test outputs)
+    /// on the worker after build, then verifies them locally after download.
+    /// Disabled by default to avoid extra overhead.
+    #[serde(default)]
+    pub verify_artifacts: bool,
+    /// Maximum file size (bytes) for artifact verification (bd-377q).
+    ///
+    /// Files larger than this limit are skipped during verification to avoid
+    /// excessive I/O. Defaults to 100MB.
+    #[serde(default = "default_verify_max_size")]
+    pub verify_max_size_bytes: u64,
+
+    // =========================================================================
+    // Transfer Optimization (bd-3hho)
+    // =========================================================================
+    /// Maximum transfer size in MB before skipping remote execution.
+    ///
+    /// When set, runs `rsync --dry-run --stats` to estimate transfer size.
+    /// If the estimated size exceeds this threshold, remote offload is skipped
+    /// and the command runs locally. Set to `None` (default) to disable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_transfer_mb: Option<u64>,
+
+    /// Maximum estimated transfer time in milliseconds before skipping remote.
+    ///
+    /// Uses `estimated_bandwidth_bps` (or measured link speed) to calculate
+    /// expected transfer time. If it exceeds this threshold, remote offload
+    /// is skipped. Set to `None` (default) to disable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_transfer_time_ms: Option<u64>,
+
+    /// Bandwidth limit for rsync in KB/s.
+    ///
+    /// Passed as `rsync --bwlimit=<N>` to limit transfer speed and prevent
+    /// network saturation. Set to `None` or `0` (default) for unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bwlimit_kbps: Option<u64>,
+
+    /// Estimated link bandwidth in bytes per second.
+    ///
+    /// Used for transfer time estimation when `max_transfer_time_ms` is set.
+    /// If not provided, defaults to 10 MB/s (10485760 bytes/sec).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_bandwidth_bps: Option<u64>,
+
+    // =========================================================================
+    // Adaptive Compression (bd-243w)
+    // =========================================================================
+    /// Enable adaptive zstd compression based on transfer size (bd-243w).
+    ///
+    /// When enabled, automatically selects compression level based on estimated
+    /// payload size:
+    /// - < 10MB: level 1 (fast, minimal compression)
+    /// - 10-200MB: level 3 (balanced, default)
+    /// - > 200MB: level 7 (slower, better compression)
+    ///
+    /// When disabled (default), uses the fixed `compression_level` setting.
+    #[serde(default)]
+    pub adaptive_compression: bool,
+
+    /// Minimum compression level for adaptive mode (bd-243w).
+    ///
+    /// Even in adaptive mode, compression level won't go below this.
+    /// Defaults to 1.
+    #[serde(default = "default_min_compression")]
+    pub min_compression_level: u32,
+
+    /// Maximum compression level for adaptive mode (bd-243w).
+    ///
+    /// Even in adaptive mode, compression level won't exceed this.
+    /// Defaults to 9 (avoids CPU-intensive levels 10+).
+    #[serde(default = "default_max_compression")]
+    pub max_compression_level: u32,
 }
 
 impl Default for TransferConfig {
@@ -1291,7 +1421,122 @@ impl Default for TransferConfig {
             ssh_control_persist_secs: None,
             remote_base: default_remote_base(),
             retry: RetryConfig::default(),
+            verify_artifacts: false,
+            verify_max_size_bytes: default_verify_max_size(),
+            // Transfer optimization (bd-3hho)
+            max_transfer_mb: None,
+            max_transfer_time_ms: None,
+            bwlimit_kbps: None,
+            estimated_bandwidth_bps: None,
+            // Adaptive compression (bd-243w)
+            adaptive_compression: false,
+            min_compression_level: default_min_compression(),
+            max_compression_level: default_max_compression(),
         }
+    }
+}
+
+impl TransferConfig {
+    /// Select compression level based on estimated transfer size (bd-243w).
+    ///
+    /// When adaptive compression is enabled, selects an appropriate level
+    /// based on payload size:
+    /// - < 10MB: level 1 (fast, minimal compression)
+    /// - 10-200MB: level 3 (balanced)
+    /// - > 200MB: level 7 (better compression)
+    ///
+    /// The result is clamped between `min_compression_level` and `max_compression_level`.
+    ///
+    /// When adaptive compression is disabled, returns the fixed `compression_level`.
+    pub fn select_compression_level(&self, estimated_bytes: Option<u64>) -> u32 {
+        if !self.adaptive_compression {
+            return self.compression_level;
+        }
+
+        let Some(bytes) = estimated_bytes else {
+            // No estimate available, use default
+            return self.compression_level;
+        };
+
+        // Size thresholds
+        const SMALL_THRESHOLD: u64 = 10_000_000; // 10 MB (decimal)
+        const LARGE_THRESHOLD: u64 = 200_000_000; // 200 MB (decimal)
+
+        let level = if bytes < SMALL_THRESHOLD {
+            1 // Fast compression for small payloads
+        } else if bytes < LARGE_THRESHOLD {
+            3 // Balanced for medium payloads
+        } else {
+            7 // Better compression for large payloads
+        };
+
+        // Clamp to configured bounds
+        level.clamp(self.min_compression_level, self.max_compression_level)
+    }
+}
+
+// =============================================================================
+// Execution Configuration (bd-785w)
+// =============================================================================
+
+/// Default allowlist of commands that can be executed remotely.
+/// Aligned with the classifier's supported CompilationKind values.
+fn default_execution_allowlist() -> Vec<String> {
+    vec![
+        // Rust
+        "cargo".to_string(),
+        "rustc".to_string(),
+        // cargo-nextest
+        "nextest".to_string(),
+        // C/C++
+        "gcc".to_string(),
+        "g++".to_string(),
+        "clang".to_string(),
+        "clang++".to_string(),
+        "cc".to_string(),
+        "c++".to_string(),
+        // Build systems
+        "make".to_string(),
+        "cmake".to_string(),
+        "ninja".to_string(),
+        "meson".to_string(),
+        // Bun
+        "bun".to_string(),
+    ]
+}
+
+/// Execution allowlist configuration for remote builds (bd-785w).
+///
+/// Controls which command base names are permitted for remote execution.
+/// Commands not in the allowlist will fail-open to local execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionConfig {
+    /// Allowlist of command base names permitted for remote execution.
+    ///
+    /// Examples: "cargo", "rustc", "gcc", "bun"
+    ///
+    /// If a classified compilation command's base name is not in this list,
+    /// RCH will fail-open to local execution with a clear reason.
+    ///
+    /// An empty allowlist disables all remote execution (local only).
+    #[serde(default = "default_execution_allowlist")]
+    pub allowlist: Vec<String>,
+}
+
+impl Default for ExecutionConfig {
+    fn default() -> Self {
+        Self {
+            allowlist: default_execution_allowlist(),
+        }
+    }
+}
+
+impl ExecutionConfig {
+    /// Check if a command base name is allowed for remote execution.
+    pub fn is_allowed(&self, command_base: &str) -> bool {
+        self.allowlist
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(command_base))
     }
 }
 
@@ -1519,6 +1764,21 @@ fn default_min_local_time() -> u64 {
 
 fn default_compression() -> u32 {
     3
+}
+
+/// Default maximum file size for artifact verification (100MB).
+fn default_verify_max_size() -> u64 {
+    100 * 1024 * 1024 // 100MB
+}
+
+/// Default minimum compression level for adaptive mode.
+fn default_min_compression() -> u32 {
+    1
+}
+
+/// Default maximum compression level for adaptive mode.
+fn default_max_compression() -> u32 {
+    9
 }
 
 fn default_excludes() -> Vec<String> {
@@ -3124,5 +3384,181 @@ mod tests {
     fn test_transfer_config_includes_retry() {
         let config = TransferConfig::default();
         assert_eq!(config.retry.max_attempts, 3);
+    }
+
+    // =========================================================================
+    // ExecutionConfig Tests (bd-785w)
+    // =========================================================================
+
+    #[test]
+    fn test_execution_config_default_allowlist() {
+        let config = ExecutionConfig::default();
+        // All supported compilers should be in the default allowlist
+        assert!(config.is_allowed("cargo"));
+        assert!(config.is_allowed("rustc"));
+        assert!(config.is_allowed("gcc"));
+        assert!(config.is_allowed("g++"));
+        assert!(config.is_allowed("clang"));
+        assert!(config.is_allowed("clang++"));
+        assert!(config.is_allowed("make"));
+        assert!(config.is_allowed("cmake"));
+        assert!(config.is_allowed("ninja"));
+        assert!(config.is_allowed("meson"));
+        assert!(config.is_allowed("bun"));
+        assert!(config.is_allowed("nextest"));
+        assert!(config.is_allowed("cc"));
+        assert!(config.is_allowed("c++"));
+    }
+
+    #[test]
+    fn test_execution_config_is_allowed_case_insensitive() {
+        let config = ExecutionConfig::default();
+        // Should be case-insensitive
+        assert!(config.is_allowed("CARGO"));
+        assert!(config.is_allowed("Cargo"));
+        assert!(config.is_allowed("GCC"));
+        assert!(config.is_allowed("Gcc"));
+    }
+
+    #[test]
+    fn test_execution_config_is_not_allowed() {
+        let config = ExecutionConfig::default();
+        // Unknown commands should not be allowed
+        assert!(!config.is_allowed("python"));
+        assert!(!config.is_allowed("npm"));
+        assert!(!config.is_allowed("go"));
+        assert!(!config.is_allowed(""));
+    }
+
+    #[test]
+    fn test_execution_config_empty_allowlist() {
+        let config = ExecutionConfig { allowlist: vec![] };
+        // Empty allowlist should block everything
+        assert!(!config.is_allowed("cargo"));
+        assert!(!config.is_allowed("gcc"));
+    }
+
+    #[test]
+    fn test_execution_config_custom_allowlist() {
+        let config = ExecutionConfig {
+            allowlist: vec!["cargo".to_string(), "custom_tool".to_string()],
+        };
+        assert!(config.is_allowed("cargo"));
+        assert!(config.is_allowed("custom_tool"));
+        assert!(!config.is_allowed("gcc"));
+    }
+
+    #[test]
+    fn test_execution_config_serde() {
+        let config = ExecutionConfig {
+            allowlist: vec!["cargo".to_string(), "rustc".to_string()],
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: ExecutionConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.allowlist, config.allowlist);
+    }
+
+    #[test]
+    fn test_rch_config_includes_execution() {
+        let config = RchConfig::default();
+        // RchConfig should include ExecutionConfig with default allowlist
+        assert!(config.execution.is_allowed("cargo"));
+    }
+
+    // ========================================================================
+    // Adaptive Compression Tests (bd-243w)
+    // ========================================================================
+
+    #[test]
+    fn test_adaptive_compression_disabled_by_default() {
+        let config = TransferConfig::default();
+        assert!(!config.adaptive_compression);
+        // Should use fixed level when disabled
+        assert_eq!(config.select_compression_level(Some(1_000_000)), 3);
+        assert_eq!(config.select_compression_level(Some(500_000_000)), 3);
+    }
+
+    #[test]
+    fn test_adaptive_compression_small_payload() {
+        let config = TransferConfig {
+            adaptive_compression: true,
+            ..Default::default()
+        };
+        // < 10MB should use level 1
+        assert_eq!(config.select_compression_level(Some(0)), 1);
+        assert_eq!(config.select_compression_level(Some(1_000_000)), 1); // 1MB
+        assert_eq!(config.select_compression_level(Some(9_999_999)), 1); // ~10MB
+    }
+
+    #[test]
+    fn test_adaptive_compression_medium_payload() {
+        let config = TransferConfig {
+            adaptive_compression: true,
+            ..Default::default()
+        };
+        // 10-200MB should use level 3
+        assert_eq!(config.select_compression_level(Some(10_000_000)), 3); // 10MB
+        assert_eq!(config.select_compression_level(Some(100_000_000)), 3); // 100MB
+        assert_eq!(config.select_compression_level(Some(199_999_999)), 3); // ~200MB
+    }
+
+    #[test]
+    fn test_adaptive_compression_large_payload() {
+        let config = TransferConfig {
+            adaptive_compression: true,
+            ..Default::default()
+        };
+        // > 200MB should use level 7
+        assert_eq!(config.select_compression_level(Some(200_000_000)), 7); // 200MB
+        assert_eq!(config.select_compression_level(Some(500_000_000)), 7); // 500MB
+        assert_eq!(config.select_compression_level(Some(1_000_000_000)), 7); // 1GB
+    }
+
+    #[test]
+    fn test_adaptive_compression_no_estimate() {
+        let config = TransferConfig {
+            adaptive_compression: true,
+            compression_level: 5,
+            ..Default::default()
+        };
+        // No estimate should fallback to default level
+        assert_eq!(config.select_compression_level(None), 5);
+    }
+
+    #[test]
+    fn test_adaptive_compression_respects_min_level() {
+        let config = TransferConfig {
+            adaptive_compression: true,
+            min_compression_level: 3,
+            ..Default::default()
+        };
+        // Small payload would want level 1, but min is 3
+        assert_eq!(config.select_compression_level(Some(1_000_000)), 3);
+    }
+
+    #[test]
+    fn test_adaptive_compression_respects_max_level() {
+        let config = TransferConfig {
+            adaptive_compression: true,
+            max_compression_level: 5,
+            ..Default::default()
+        };
+        // Large payload would want level 7, but max is 5
+        assert_eq!(config.select_compression_level(Some(500_000_000)), 5);
+    }
+
+    #[test]
+    fn test_adaptive_compression_serde_roundtrip() {
+        let config = TransferConfig {
+            adaptive_compression: true,
+            min_compression_level: 2,
+            max_compression_level: 8,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: TransferConfig = serde_json::from_str(&json).unwrap();
+        assert!(parsed.adaptive_compression);
+        assert_eq!(parsed.min_compression_level, 2);
+        assert_eq!(parsed.max_compression_level, 8);
     }
 }
