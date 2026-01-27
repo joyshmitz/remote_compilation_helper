@@ -549,4 +549,272 @@ mod tests {
         assert_ne!(unreachable, disabled);
         assert_ne!(draining, disabled);
     }
+
+    // ==================== Additional Coverage Tests ====================
+
+    #[test]
+    fn test_unicode_icons_are_not_ascii() {
+        let ctx = OutputContext::Interactive;
+
+        // Unicode mode should use actual Unicode characters (not ASCII)
+        assert!(!Icons::check(ctx).is_ascii());
+        assert!(!Icons::cross(ctx).is_ascii());
+        assert!(!Icons::warning(ctx).is_ascii());
+        assert!(!Icons::info(ctx).is_ascii());
+        assert!(!Icons::status_healthy(ctx).is_ascii());
+        assert!(!Icons::status_degraded(ctx).is_ascii());
+        assert!(!Icons::status_unreachable(ctx).is_ascii());
+    }
+
+    #[test]
+    fn test_arrow_icons_are_distinct() {
+        let ctx = OutputContext::Plain;
+
+        let right = Icons::arrow_right(ctx);
+        let left = Icons::arrow_left(ctx);
+        let up = Icons::arrow_up(ctx);
+        let down = Icons::arrow_down(ctx);
+
+        assert_ne!(right, left);
+        assert_ne!(right, up);
+        assert_ne!(right, down);
+        assert_ne!(left, up);
+        assert_ne!(left, down);
+        assert_ne!(up, down);
+    }
+
+    #[test]
+    fn test_arrow_icons_unicode_distinct() {
+        let ctx = OutputContext::Interactive;
+
+        let right = Icons::arrow_right(ctx);
+        let left = Icons::arrow_left(ctx);
+        let up = Icons::arrow_up(ctx);
+        let down = Icons::arrow_down(ctx);
+
+        assert_ne!(right, left);
+        assert_ne!(right, up);
+        assert_ne!(right, down);
+        assert_ne!(left, up);
+        assert_ne!(left, down);
+        assert_ne!(up, down);
+    }
+
+    #[test]
+    fn test_tree_icons_are_distinct() {
+        let ctx = OutputContext::Plain;
+
+        let branch = Icons::tree_branch(ctx);
+        let end = Icons::tree_end(ctx);
+        let vertical = Icons::tree_vertical(ctx);
+        let horizontal = Icons::tree_horizontal(ctx);
+
+        // At least some should be distinct
+        assert_ne!(branch, end);
+        assert_ne!(end, horizontal);
+    }
+
+    #[test]
+    fn test_slot_icons_are_distinct() {
+        let ctx = OutputContext::Plain;
+
+        let filled = Icons::slot_filled(ctx);
+        let empty = Icons::slot_empty(ctx);
+        let partial = Icons::slot_partial(ctx);
+
+        assert_ne!(filled, empty);
+        assert_ne!(filled, partial);
+        assert_ne!(empty, partial);
+    }
+
+    #[test]
+    fn test_progress_icons_are_distinct() {
+        let ctx = OutputContext::Plain;
+
+        let filled = Icons::progress_filled(ctx);
+        let empty = Icons::progress_empty(ctx);
+        let head = Icons::progress_head(ctx);
+
+        assert_ne!(filled, empty);
+        assert_ne!(filled, head);
+        assert_ne!(empty, head);
+    }
+
+    #[test]
+    fn test_bullet_icons() {
+        let unicode_ctx = OutputContext::Interactive;
+        let ascii_ctx = OutputContext::Plain;
+
+        // Unicode bullets should not be ASCII
+        assert!(!Icons::bullet(unicode_ctx).is_ascii());
+
+        // ASCII bullets should be simple
+        assert!(Icons::bullet(ascii_ctx).is_ascii());
+        assert_eq!(Icons::bullet(ascii_ctx), "*");
+
+        // Hollow bullet should be 'o' in ASCII
+        assert_eq!(Icons::bullet_hollow(ascii_ctx), "o");
+    }
+
+    #[test]
+    fn test_check_specific_values() {
+        // Verify specific expected values
+        assert_eq!(Icons::check(OutputContext::Plain), "[OK]");
+        assert_eq!(Icons::cross(OutputContext::Plain), "[FAIL]");
+        assert_eq!(Icons::warning(OutputContext::Plain), "[WARN]");
+        assert_eq!(Icons::info(OutputContext::Plain), "[INFO]");
+    }
+
+    #[test]
+    fn test_status_specific_values() {
+        let ctx = OutputContext::Plain;
+
+        assert_eq!(Icons::status_healthy(ctx), "[*]");
+        assert_eq!(Icons::status_degraded(ctx), "[~]");
+        assert_eq!(Icons::status_unreachable(ctx), "[ ]");
+        assert_eq!(Icons::status_draining(ctx), "[/]");
+        assert_eq!(Icons::status_disabled(ctx), "[x]");
+    }
+
+    #[test]
+    fn test_arrow_specific_values() {
+        let ctx = OutputContext::Plain;
+
+        assert_eq!(Icons::arrow_right(ctx), "->");
+        assert_eq!(Icons::arrow_left(ctx), "<-");
+        assert_eq!(Icons::arrow_up(ctx), "^");
+        assert_eq!(Icons::arrow_down(ctx), "v");
+    }
+
+    #[test]
+    fn test_tree_specific_values() {
+        let ctx = OutputContext::Plain;
+
+        assert_eq!(Icons::tree_branch(ctx), "|");
+        assert_eq!(Icons::tree_end(ctx), "`");
+        assert_eq!(Icons::tree_vertical(ctx), "|");
+        assert_eq!(Icons::tree_horizontal(ctx), "-");
+    }
+
+    #[test]
+    fn test_activity_icons() {
+        let ctx = OutputContext::Plain;
+
+        assert_eq!(Icons::worker(ctx), "[W]");
+        assert_eq!(Icons::compile(ctx), "[C]");
+        assert_eq!(Icons::transfer(ctx), "[T]");
+        assert_eq!(Icons::clock(ctx), "[T]");
+        assert_eq!(Icons::gear(ctx), "[G]");
+    }
+
+    #[test]
+    fn test_slot_specific_values() {
+        let ctx = OutputContext::Plain;
+
+        assert_eq!(Icons::slot_filled(ctx), "#");
+        assert_eq!(Icons::slot_empty(ctx), "-");
+        assert_eq!(Icons::slot_partial(ctx), "=");
+    }
+
+    #[test]
+    fn test_progress_specific_values() {
+        let ctx = OutputContext::Plain;
+
+        assert_eq!(Icons::progress_filled(ctx), "=");
+        assert_eq!(Icons::progress_empty(ctx), "-");
+        assert_eq!(Icons::progress_head(ctx), ">");
+    }
+
+    #[test]
+    fn test_misc_icons() {
+        let ctx = OutputContext::Plain;
+
+        assert_eq!(Icons::lightning(ctx), "!");
+        assert_eq!(Icons::lightbulb(ctx), "TIP:");
+        assert_eq!(Icons::lock(ctx), "[L]");
+        assert_eq!(Icons::hourglass(ctx), "[...]");
+    }
+
+    #[test]
+    fn test_spinner_frames_ascii_values() {
+        let frames = Icons::spinner_frames(OutputContext::Plain);
+
+        assert_eq!(frames, &["|", "/", "-", "\\"]);
+    }
+
+    #[test]
+    fn test_spinner_frames_unicode_count() {
+        let frames = Icons::spinner_frames(OutputContext::Interactive);
+
+        // Unicode spinner should have 10 braille frames
+        assert_eq!(frames.len(), 10);
+
+        // Each frame should be a single character
+        for frame in frames {
+            assert_eq!(frame.chars().count(), 1);
+        }
+    }
+
+    #[test]
+    fn test_quiet_mode_uses_ascii() {
+        let ctx = OutputContext::Quiet;
+
+        // Quiet mode should use ASCII fallbacks
+        assert!(Icons::check(ctx).is_ascii());
+        assert!(Icons::cross(ctx).is_ascii());
+        assert!(Icons::warning(ctx).is_ascii());
+    }
+
+    #[test]
+    fn test_interactive_unicode_characters() {
+        let ctx = OutputContext::Interactive;
+
+        // Verify specific Unicode code points
+        assert_eq!(Icons::check(ctx), "\u{2713}"); // ✓
+        assert_eq!(Icons::cross(ctx), "\u{2717}"); // ✗
+        assert_eq!(Icons::warning(ctx), "\u{26A0}"); // ⚠
+        assert_eq!(Icons::info(ctx), "\u{2139}"); // ℹ
+    }
+
+    #[test]
+    fn test_status_unicode_characters() {
+        let ctx = OutputContext::Interactive;
+
+        assert_eq!(Icons::status_healthy(ctx), "\u{25CF}"); // ●
+        assert_eq!(Icons::status_degraded(ctx), "\u{25D0}"); // ◐
+        assert_eq!(Icons::status_unreachable(ctx), "\u{25CB}"); // ○
+        assert_eq!(Icons::status_draining(ctx), "\u{25D1}"); // ◑
+        assert_eq!(Icons::status_disabled(ctx), "\u{25CC}"); // ◌
+    }
+
+    #[test]
+    fn test_arrow_unicode_characters() {
+        let ctx = OutputContext::Interactive;
+
+        assert_eq!(Icons::arrow_right(ctx), "\u{2192}"); // →
+        assert_eq!(Icons::arrow_left(ctx), "\u{2190}"); // ←
+        assert_eq!(Icons::arrow_up(ctx), "\u{2191}"); // ↑
+        assert_eq!(Icons::arrow_down(ctx), "\u{2193}"); // ↓
+    }
+
+    #[test]
+    fn test_icons_consistency_across_contexts() {
+        // Same icon type should have consistent semantics across contexts
+        // (e.g., check is always "success", cross is always "failure")
+
+        let contexts = [
+            OutputContext::Interactive,
+            OutputContext::Plain,
+            OutputContext::Quiet,
+            OutputContext::Hook,
+            OutputContext::Machine,
+        ];
+
+        for ctx in contexts {
+            // All should return non-empty
+            assert!(!Icons::check(ctx).is_empty());
+            assert!(!Icons::cross(ctx).is_empty());
+            assert!(!Icons::warning(ctx).is_empty());
+        }
+    }
 }
