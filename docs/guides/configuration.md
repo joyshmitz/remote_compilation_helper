@@ -49,7 +49,11 @@ Sections and fields:
 - `confidence_threshold` (float, default `0.85`) — Minimum classifier confidence
   to intercept a command.
 - `min_local_time_ms` (u64, default `2000`) — Skip interception if the estimated
-  local runtime is shorter than this.
+  local runtime is shorter than this. Uses timing history from past builds.
+- `remote_speedup_threshold` (float, default `1.2`) — Minimum predicted speedup
+  ratio (local/remote) required for offloading. Set to `1.0` to always offload
+  when other criteria are met. Set higher (e.g., `1.5`) to only offload builds
+  predicted to be significantly faster remotely.
 
 ### `[transfer]`
 - `compression_level` (u32, default `3`) — zstd compression level.
@@ -80,6 +84,7 @@ socket_path = "~/.cache/rch/rch.sock"
 [compilation]
 confidence_threshold = 0.85
 min_local_time_ms = 2000
+remote_speedup_threshold = 1.2
 
 [transfer]
 compression_level = 3
