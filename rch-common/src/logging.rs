@@ -313,4 +313,215 @@ mod tests {
         assert!(filter_str.contains("info"));
         assert!(filter_str.contains("rchd::api=debug"));
     }
+
+    #[test]
+    fn test_log_config_default() {
+        let config = LogConfig::default();
+        assert_eq!(config.level, "info");
+        assert_eq!(config.format, LogFormat::Pretty);
+        assert!(config.file_path.is_none());
+        assert!(config.targets.is_empty());
+        assert!(config.with_target);
+        assert!(config.with_thread_ids);
+        assert!(config.with_file_line);
+        assert!(!config.use_stderr);
+    }
+
+    #[test]
+    fn test_log_config_with_level() {
+        let config = LogConfig::default().with_level("debug");
+        assert_eq!(config.level, "debug");
+    }
+
+    #[test]
+    fn test_log_config_with_level_owned_string() {
+        let config = LogConfig::default().with_level(String::from("trace"));
+        assert_eq!(config.level, "trace");
+    }
+
+    #[test]
+    fn test_log_config_with_stderr() {
+        let config = LogConfig::default().with_stderr();
+        assert!(config.use_stderr);
+    }
+
+    #[test]
+    fn test_log_config_chained_builders() {
+        let config = LogConfig::default().with_level("warn").with_stderr();
+        assert_eq!(config.level, "warn");
+        assert!(config.use_stderr);
+    }
+
+    #[test]
+    fn test_log_format_equality() {
+        assert_eq!(LogFormat::Pretty, LogFormat::Pretty);
+        assert_eq!(LogFormat::Json, LogFormat::Json);
+        assert_eq!(LogFormat::Compact, LogFormat::Compact);
+        assert_ne!(LogFormat::Pretty, LogFormat::Json);
+        assert_ne!(LogFormat::Json, LogFormat::Compact);
+    }
+
+    #[test]
+    fn test_log_format_copy() {
+        let format = LogFormat::Json;
+        let copy = format; // Copy trait
+        assert_eq!(format, copy);
+    }
+
+    #[test]
+    fn test_log_format_clone() {
+        let format = LogFormat::Compact;
+        let cloned = format.clone();
+        assert_eq!(format, cloned);
+    }
+
+    #[test]
+    fn test_log_format_debug() {
+        let format = LogFormat::Pretty;
+        let debug = format!("{:?}", format);
+        assert!(debug.contains("Pretty"));
+    }
+
+    #[test]
+    fn test_log_format_parse_whitespace() {
+        assert_eq!(LogFormat::parse("  pretty  "), Some(LogFormat::Pretty));
+        assert_eq!(LogFormat::parse("\tjson\t"), Some(LogFormat::Json));
+        assert_eq!(LogFormat::parse(" compact "), Some(LogFormat::Compact));
+    }
+
+    #[test]
+    fn test_log_format_parse_mixed_case() {
+        assert_eq!(LogFormat::parse("PRETTY"), Some(LogFormat::Pretty));
+        assert_eq!(LogFormat::parse("JsOn"), Some(LogFormat::Json));
+        assert_eq!(LogFormat::parse("cOmPaCt"), Some(LogFormat::Compact));
+    }
+
+    #[test]
+    fn test_log_format_parse_empty() {
+        assert_eq!(LogFormat::parse(""), None);
+        assert_eq!(LogFormat::parse("   "), None);
+    }
+
+    #[test]
+    fn test_is_valid_level_all_valid() {
+        assert!(is_valid_level("trace"));
+        assert!(is_valid_level("debug"));
+        assert!(is_valid_level("info"));
+        assert!(is_valid_level("warn"));
+        assert!(is_valid_level("error"));
+        assert!(is_valid_level("off"));
+    }
+
+    #[test]
+    fn test_is_valid_level_invalid() {
+        assert!(!is_valid_level(""));
+        assert!(!is_valid_level("DEBUG")); // Case sensitive
+        assert!(!is_valid_level("warning"));
+        assert!(!is_valid_level("fatal"));
+        assert!(!is_valid_level("verbose"));
+    }
+
+    #[test]
+    fn test_parse_target_overrides_empty() {
+        let targets = parse_target_overrides("");
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn test_parse_target_overrides_whitespace_only() {
+        let targets = parse_target_overrides("   ,  ,  ");
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn test_parse_target_overrides_single_entry() {
+        let targets = parse_target_overrides("my_crate=debug");
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets.get("my_crate"), Some(&"debug".to_string()));
+    }
+
+    #[test]
+    fn test_parse_target_overrides_multiple_entries() {
+        let targets = parse_target_overrides("a=trace,b=debug,c=info,d=warn,e=error,f=off");
+        assert_eq!(targets.len(), 6);
+        assert_eq!(targets.get("a"), Some(&"trace".to_string()));
+        assert_eq!(targets.get("b"), Some(&"debug".to_string()));
+        assert_eq!(targets.get("c"), Some(&"info".to_string()));
+        assert_eq!(targets.get("d"), Some(&"warn".to_string()));
+        assert_eq!(targets.get("e"), Some(&"error".to_string()));
+        assert_eq!(targets.get("f"), Some(&"off".to_string()));
+    }
+
+    #[test]
+    fn test_parse_target_overrides_empty_target() {
+        let targets = parse_target_overrides("=debug");
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn test_parse_target_overrides_no_equals() {
+        let targets = parse_target_overrides("nodebug");
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn test_parse_target_overrides_duplicate_target() {
+        // Later entry should win (BTreeMap behavior)
+        let targets = parse_target_overrides("crate=debug,crate=warn");
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets.get("crate"), Some(&"warn".to_string()));
+    }
+
+    #[test]
+    fn test_log_config_clone() {
+        let mut config = LogConfig::default();
+        config.level = "debug".to_string();
+        config.format = LogFormat::Json;
+        config.file_path = Some(PathBuf::from("/tmp/test.log"));
+        config.targets.insert("a".to_string(), "trace".to_string());
+
+        let cloned = config.clone();
+        assert_eq!(config.level, cloned.level);
+        assert_eq!(config.format, cloned.format);
+        assert_eq!(config.file_path, cloned.file_path);
+        assert_eq!(config.targets, cloned.targets);
+    }
+
+    #[test]
+    fn test_log_config_debug() {
+        let config = LogConfig::default();
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("LogConfig"));
+        assert!(debug.contains("info"));
+    }
+
+    #[test]
+    fn test_env_filter_no_targets() {
+        let config = LogConfig {
+            level: "warn".to_string(),
+            ..LogConfig::default()
+        };
+        let filter = config.env_filter();
+        let filter_str = format!("{filter}");
+        assert!(filter_str.contains("warn"));
+    }
+
+    #[test]
+    fn test_env_filter_multiple_targets() {
+        let mut config = LogConfig {
+            level: "error".to_string(),
+            ..LogConfig::default()
+        };
+        config
+            .targets
+            .insert("mod_a".to_string(), "debug".to_string());
+        config
+            .targets
+            .insert("mod_b".to_string(), "trace".to_string());
+        let filter = config.env_filter();
+        let filter_str = format!("{filter}");
+        assert!(filter_str.contains("error"));
+        assert!(filter_str.contains("mod_a=debug"));
+        assert!(filter_str.contains("mod_b=trace"));
+    }
 }
