@@ -373,6 +373,24 @@ rch status --jobs             # Active and recent compilations
 rch status --stats            # Aggregate statistics
 ```
 
+### `rch dashboard` (alias: `rch tui`)
+
+Interactive TUI dashboard for real-time monitoring in your terminal.
+
+```bash
+rch dashboard                          # Launch interactive dashboard
+rch dashboard --refresh 500            # Faster refresh (ms)
+rch dashboard --no-mouse               # Disable mouse support
+rch dashboard --high-contrast          # Accessibility: high contrast mode
+rch dashboard --color-blind tritanopia # Accessibility: color blind palette
+
+# Non-interactive modes (do not manipulate the terminal)
+rch dashboard --test-mode --mock-data  # Render once and exit (CI-friendly)
+rch dashboard --dump-state --mock-data # Print JSON state and exit (automation)
+```
+
+Controls: `q`/Esc quit, ↑/↓ navigate, Tab switch panels, `r` refresh, `?` help.
+
 ### `rch config`
 
 Manage configuration.
