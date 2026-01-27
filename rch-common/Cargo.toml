@@ -51,6 +51,7 @@ criterion = { version = "0.8.1", features = ["html_reports"] }
 tracing-subscriber = { workspace = true }
 proptest = "1.7.0"
 serde_yaml_ng = "0.10.0"
+ctor = { workspace = true }
 
 [[bench]]
 name = "classifier"

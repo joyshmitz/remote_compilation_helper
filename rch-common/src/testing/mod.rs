@@ -63,4 +63,7 @@
 
 mod log;
 
-pub use log::{TerminalInfo, TestGuard, TestLogEntry, TestLogger, TestPhase, TestResult};
+pub use log::{
+    init_global_test_logging, TerminalInfo, TestGuard, TestLogEntry, TestLogger, TestPhase,
+    TestResult,
+};

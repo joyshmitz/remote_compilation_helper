@@ -121,6 +121,9 @@ crossterm = "0.29"
 # Rich terminal output (optional, for enhanced UI)
 rich_rust = { version = "0.1.1", features = ["full"] }
 
+# Test utilities
+ctor = "0.2"
+
 # Internal crates
 rch-common = { path = "rch-common" }
 

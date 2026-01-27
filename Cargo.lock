@@ -777,6 +777,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctor"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32a2785755761f3ddc1492979ce1e48d2c00d09311c39e4466429188f3dd6501"
+dependencies = [
+ "quote",
+ "syn 2.0.114",
+]
+
+[[package]]
 name = "darling"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3036,6 +3046,7 @@ dependencies = [
  "colored",
  "console 0.16.2",
  "crossterm",
+ "ctor",
  "dialoguer",
  "directories",
  "dirs",
@@ -3081,6 +3092,7 @@ dependencies = [
  "blake3",
  "chrono",
  "criterion",
+ "ctor",
  "dirs",
  "memchr",
  "object 0.38.1",
@@ -3135,6 +3147,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "clap",
+ "ctor",
  "rch-common",
  "serde",
  "serde_json",
@@ -3153,6 +3166,7 @@ dependencies = [
  "chrono",
  "clap",
  "cron",
+ "ctor",
  "directories",
  "humantime",
  "hyper",

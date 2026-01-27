@@ -462,11 +462,13 @@ fn send_webhook_sync(url: &str, payload: &WebhookPayload, timeout_secs: u64) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rch_common::test_guard;
 
     // ============== WebhookConfig Tests ==============
 
     #[test]
     fn test_webhook_config_default() {
+        let _guard = test_guard!();
         let config = WebhookConfig::default();
         assert!(config.url.is_none());
         assert!(config.secret.is_none());
@@ -477,6 +479,7 @@ mod tests {
 
     #[test]
     fn test_webhook_config_serialization() {
+        let _guard = test_guard!();
         let config = WebhookConfig {
             url: Some("https://hooks.example.com/rch".to_string()),
             secret: Some("test-secret".to_string()),
@@ -499,6 +502,7 @@ mod tests {
 
     #[test]
     fn test_webhook_payload_format() {
+        let _guard = test_guard!();
         let payload = WebhookPayload {
             event: "worker_offline".to_string(),
             timestamp: "2026-01-27T10:30:00Z".to_string(),
@@ -518,6 +522,7 @@ mod tests {
 
     #[test]
     fn test_webhook_payload_without_worker_id() {
+        let _guard = test_guard!();
         let payload = WebhookPayload {
             event: "all_workers_offline".to_string(),
             timestamp: "2026-01-27T10:30:00Z".to_string(),
@@ -539,6 +544,7 @@ mod tests {
 
     #[test]
     fn test_alert_config_default() {
+        let _guard = test_guard!();
         let config = AlertConfig::default();
         assert!(config.enabled);
         assert_eq!(config.suppress_duplicates, ChronoDuration::seconds(300));
@@ -547,6 +553,7 @@ mod tests {
 
     #[test]
     fn test_alert_config_with_webhook() {
+        let _guard = test_guard!();
         let webhook = WebhookConfig {
             url: Some("https://example.com/webhook".to_string()),
             secret: None,
@@ -567,6 +574,7 @@ mod tests {
 
     #[test]
     fn test_alert_config_custom() {
+        let _guard = test_guard!();
         let config = AlertConfig {
             enabled: false,
             suppress_duplicates: ChronoDuration::seconds(60),
@@ -580,6 +588,7 @@ mod tests {
 
     #[test]
     fn test_severity_rank_ordering() {
+        let _guard = test_guard!();
         // Critical < Error < Warning < Info (lower rank = higher priority)
         assert!(AlertSeverity::Critical.rank() < AlertSeverity::Error.rank());
         assert!(AlertSeverity::Error.rank() < AlertSeverity::Warning.rank());
@@ -588,6 +597,7 @@ mod tests {
 
     #[test]
     fn test_severity_as_str() {
+        let _guard = test_guard!();
         assert_eq!(AlertSeverity::Info.as_str(), "info");
         assert_eq!(AlertSeverity::Warning.as_str(), "warning");
         assert_eq!(AlertSeverity::Error.as_str(), "error");
@@ -598,6 +608,7 @@ mod tests {
 
     #[test]
     fn test_alert_kind_as_str() {
+        let _guard = test_guard!();
         assert_eq!(AlertKind::WorkerOffline.as_str(), "worker_offline");
         assert_eq!(AlertKind::WorkerDegraded.as_str(), "worker_degraded");
         assert_eq!(AlertKind::CircuitOpen.as_str(), "circuit_open");
@@ -608,6 +619,7 @@ mod tests {
 
     #[test]
     fn test_alert_new() {
+        let _guard = test_guard!();
         let alert = Alert::new(
             AlertKind::WorkerOffline,
             AlertSeverity::Error,
@@ -624,6 +636,7 @@ mod tests {
 
     #[test]
     fn test_alert_to_info() {
+        let _guard = test_guard!();
         let alert = Alert::new(
             AlertKind::CircuitOpen,
             AlertSeverity::Warning,
@@ -642,6 +655,7 @@ mod tests {
 
     #[test]
     fn test_alert_to_info_no_worker_id() {
+        let _guard = test_guard!();
         let alert = Alert::new(
             AlertKind::AllWorkersOffline,
             AlertSeverity::Critical,
@@ -657,12 +671,14 @@ mod tests {
 
     #[test]
     fn test_manager_new_empty() {
+        let _guard = test_guard!();
         let manager = AlertManager::new(AlertConfig::default());
         assert!(manager.active_alerts().is_empty());
     }
 
     #[test]
     fn test_alert_suppression() {
+        let _guard = test_guard!();
         let config = AlertConfig {
             enabled: true,
             suppress_duplicates: ChronoDuration::seconds(300),
@@ -692,6 +708,7 @@ mod tests {
 
     #[test]
     fn test_clear_alert_on_recovery() {
+        let _guard = test_guard!();
         let manager = AlertManager::new(AlertConfig::default());
         manager.handle_worker_status_change(
             "w1",
@@ -712,6 +729,7 @@ mod tests {
 
     #[test]
     fn test_disabled_config_no_alerts() {
+        let _guard = test_guard!();
         let config = AlertConfig {
             enabled: false,
             suppress_duplicates: ChronoDuration::seconds(300),
@@ -731,6 +749,7 @@ mod tests {
 
     #[test]
     fn test_same_status_no_alert() {
+        let _guard = test_guard!();
         let manager = AlertManager::new(AlertConfig::default());
 
         manager.handle_worker_status_change(
@@ -745,6 +764,7 @@ mod tests {
 
     #[test]
     fn test_healthy_to_unreachable() {
+        let _guard = test_guard!();
         let manager = AlertManager::new(AlertConfig::default());
 
         manager.handle_worker_status_change(
@@ -764,6 +784,7 @@ mod tests {
 
     #[test]
     fn test_healthy_to_degraded() {
+        let _guard = test_guard!();
         let manager = AlertManager::new(AlertConfig::default());
 
         manager.handle_worker_status_change(
@@ -781,6 +802,7 @@ mod tests {
 
     #[test]
     fn test_unreachable_to_degraded() {
+        let _guard = test_guard!();
         let manager = AlertManager::new(AlertConfig::default());
 
         // First become unreachable
@@ -807,6 +829,7 @@ mod tests {
 
     #[test]
     fn test_degraded_to_unreachable() {
+        let _guard = test_guard!();
         let manager = AlertManager::new(AlertConfig::default());
 
         // First become degraded
@@ -832,6 +855,7 @@ mod tests {
 
     #[test]
     fn test_draining_no_alert() {
+        let _guard = test_guard!();
         let manager = AlertManager::new(AlertConfig::default());
 
         manager.handle_worker_status_change(
@@ -846,6 +870,7 @@ mod tests {
 
     #[test]
     fn test_disabled_no_alert() {
+        let _guard = test_guard!();
         let manager = AlertManager::new(AlertConfig::default());
 
         manager.handle_worker_status_change(
@@ -860,6 +885,7 @@ mod tests {
 
     #[test]
     fn test_circuit_open() {
+        let _guard = test_guard!();
         let manager = AlertManager::new(AlertConfig::default());
 
         manager.handle_circuit_open("worker-1");
@@ -873,6 +899,7 @@ mod tests {
 
     #[test]
     fn test_circuit_open_disabled() {
+        let _guard = test_guard!();
         let config = AlertConfig {
             enabled: false,
             suppress_duplicates: ChronoDuration::seconds(300),
@@ -887,6 +914,7 @@ mod tests {
 
     #[test]
     fn test_all_workers_offline() {
+        let _guard = test_guard!();
         let manager = AlertManager::new(AlertConfig::default());
 
         manager.handle_all_workers_offline(3, 3); // All 3 workers offline
@@ -899,6 +927,7 @@ mod tests {
 
     #[test]
     fn test_all_workers_offline_clears_on_recovery() {
+        let _guard = test_guard!();
         let manager = AlertManager::new(AlertConfig::default());
 
         manager.handle_all_workers_offline(3, 3); // All offline
@@ -910,6 +939,7 @@ mod tests {
 
     #[test]
     fn test_all_workers_offline_zero_total() {
+        let _guard = test_guard!();
         let manager = AlertManager::new(AlertConfig::default());
 
         manager.handle_all_workers_offline(0, 0); // No workers configured
@@ -919,6 +949,7 @@ mod tests {
 
     #[test]
     fn test_all_workers_offline_disabled() {
+        let _guard = test_guard!();
         let config = AlertConfig {
             enabled: false,
             suppress_duplicates: ChronoDuration::seconds(300),
@@ -933,6 +964,7 @@ mod tests {
 
     #[test]
     fn test_multiple_workers_multiple_alerts() {
+        let _guard = test_guard!();
         let manager = AlertManager::new(AlertConfig::default());
 
         manager.handle_worker_status_change(
@@ -955,6 +987,7 @@ mod tests {
 
     #[test]
     fn test_alerts_sorted_by_severity() {
+        let _guard = test_guard!();
         let manager = AlertManager::new(AlertConfig::default());
 
         // Add in non-priority order: warning, error, critical
@@ -983,6 +1016,7 @@ mod tests {
 
     #[test]
     fn test_unreachable_default_reason() {
+        let _guard = test_guard!();
         let manager = AlertManager::new(AlertConfig::default());
 
         manager.handle_worker_status_change(
@@ -998,6 +1032,7 @@ mod tests {
 
     #[test]
     fn test_alert_unique_ids() {
+        let _guard = test_guard!();
         let manager = AlertManager::new(AlertConfig::default());
 
         manager.handle_worker_status_change(
