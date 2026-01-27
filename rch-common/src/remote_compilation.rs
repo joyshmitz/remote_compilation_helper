@@ -1335,7 +1335,9 @@ mod tests {
         logger.pass();
     }
 
+    /// Test rsync_from_worker fails when artifact retrieval fails.
     #[tokio::test]
+    #[ignore = "uses global mock state - run with --test-threads=1"]
     async fn rsync_from_worker_mock_artifact_failure() {
         init_test_logging();
         let logger = TestLogger::for_test("rsync_from_worker_mock_artifact_failure");
