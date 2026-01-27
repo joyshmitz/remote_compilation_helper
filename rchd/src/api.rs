@@ -2418,7 +2418,7 @@ mod tests {
             ApiRequest::SpeedScore { worker_id } => {
                 assert_eq!(worker_id.as_str(), "css");
             }
-            _ => panic!( "expected speedscore request"),
+            _ => panic!("expected speedscore request"),
         }
     }
 
@@ -2437,7 +2437,7 @@ mod tests {
                 assert_eq!(limit, 25);
                 assert_eq!(offset, 5);
             }
-            _ => panic!( "expected speedscore history request"),
+            _ => panic!("expected speedscore history request"),
         }
     }
 
@@ -2457,7 +2457,7 @@ mod tests {
             ApiRequest::WorkersCapabilities { refresh } => {
                 assert!(!refresh);
             }
-            _ => panic!( "expected workers capabilities request"),
+            _ => panic!("expected workers capabilities request"),
         }
 
         let req = parse_request("GET /workers/capabilities?refresh=true").unwrap();
@@ -2465,7 +2465,7 @@ mod tests {
             ApiRequest::WorkersCapabilities { refresh } => {
                 assert!(refresh);
             }
-            _ => panic!( "expected workers capabilities request"),
+            _ => panic!("expected workers capabilities request"),
         }
     }
 
@@ -2476,7 +2476,7 @@ mod tests {
             ApiRequest::BenchmarkTrigger { worker_id } => {
                 assert_eq!(worker_id.as_str(), "css");
             }
-            _ => panic!( "expected benchmark trigger request"),
+            _ => panic!("expected benchmark trigger request"),
         }
     }
 
@@ -2506,7 +2506,7 @@ mod tests {
             ApiRequest::TelemetryPoll { worker_id } => {
                 assert_eq!(worker_id.as_str(), "css");
             }
-            _ => panic!( "expected telemetry poll request"),
+            _ => panic!("expected telemetry poll request"),
         }
     }
 
@@ -2524,7 +2524,7 @@ mod tests {
         let req = parse_request("GET /self-test/history?limit=5").unwrap();
         match req {
             ApiRequest::SelfTestHistory { limit } => assert_eq!(limit, 5),
-            _ => panic!( "expected self-test history request"),
+            _ => panic!("expected self-test history request"),
         }
     }
 
