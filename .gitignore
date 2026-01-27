@@ -22,6 +22,7 @@ sweep_*.png
 test_screenshot.png
 perf.data
 perf.data.old
+*.profraw
 
 # macOS resource fork files
 ._*
