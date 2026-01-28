@@ -34,6 +34,14 @@ pub enum Action {
     DrainWorker,
     /// Enable/undrain the selected worker.
     EnableWorker,
+    /// Cancel selected build gracefully.
+    CancelBuild,
+    /// Force kill selected build.
+    KillBuild,
+    /// Confirm pending action (y).
+    ConfirmYes,
+    /// Deny pending action (n).
+    ConfirmNo,
     /// Text input character (for filter/search).
     TextInput(char),
     /// Delete last character (backspace in text mode).
@@ -73,6 +81,8 @@ fn handle_key(key: KeyEvent) -> Action {
         KeyCode::Char('y') => Action::Copy,
         KeyCode::Char('d') => Action::DrainWorker,
         KeyCode::Char('e') => Action::EnableWorker,
+        KeyCode::Char('c') => Action::CancelBuild,
+        KeyCode::Char('K') => Action::KillBuild,
         KeyCode::PageUp => Action::PageUp,
         KeyCode::PageDown => Action::PageDown,
         KeyCode::Char('g') => Action::JumpTop,
@@ -103,18 +113,43 @@ fn handle_key_input_mode(key: KeyEvent) -> Action {
     }
 }
 
-/// Poll for events with optional input mode flag.
-pub fn poll_event_with_mode(
-    timeout: Duration,
-    input_mode: bool,
-) -> std::io::Result<Option<Action>> {
+/// Convert key event to action when in confirmation dialog mode.
+fn handle_key_confirm_mode(key: KeyEvent) -> Action {
+    // Check for Ctrl+C to quit even in confirm mode
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        return Action::Quit;
+    }
+
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => Action::ConfirmYes,
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::ConfirmNo,
+        KeyCode::Enter => Action::Select, // Confirm current selection
+        KeyCode::Left | KeyCode::Right | KeyCode::Tab => Action::NextPanel, // Toggle selection
+        _ => Action::Tick,
+    }
+}
+
+/// Input mode for event handling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InputMode {
+    /// Normal navigation mode.
+    #[default]
+    Normal,
+    /// Text input mode (filter/search).
+    TextInput,
+    /// Confirmation dialog mode.
+    Confirm,
+}
+
+/// Poll for events with explicit input mode.
+pub fn poll_event(timeout: Duration, mode: InputMode) -> std::io::Result<Option<Action>> {
     if event::poll(timeout)? {
         match event::read()? {
             Event::Key(key) => {
-                let action = if input_mode {
-                    handle_key_input_mode(key)
-                } else {
-                    handle_key(key)
+                let action = match mode {
+                    InputMode::Normal => handle_key(key),
+                    InputMode::TextInput => handle_key_input_mode(key),
+                    InputMode::Confirm => handle_key_confirm_mode(key),
                 };
                 Ok(Some(action))
             }
@@ -124,6 +159,19 @@ pub fn poll_event_with_mode(
     } else {
         Ok(Some(Action::Tick))
     }
+}
+
+/// Poll for events with optional input mode flag (legacy API, delegates to poll_event).
+pub fn poll_event_with_mode(
+    timeout: Duration,
+    input_mode: bool,
+) -> std::io::Result<Option<Action>> {
+    let mode = if input_mode {
+        InputMode::TextInput
+    } else {
+        InputMode::Normal
+    };
+    poll_event(timeout, mode)
 }
 
 #[cfg(test)]

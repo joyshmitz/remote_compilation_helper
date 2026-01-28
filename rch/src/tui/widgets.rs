@@ -2,7 +2,9 @@
 //!
 //! Custom widgets for workers, builds, and status display.
 
-use crate::tui::state::{BuildStatus, CircuitState, ColorBlindMode, Panel, TuiState, WorkerStatus};
+use crate::tui::state::{
+    BuildStatus, CircuitState, ColorBlindMode, Panel, TuiState, WorkerStatus,
+};
 use crate::ui::theme::{StatusIndicator, Symbols};
 use ratatui::{
     Frame,
@@ -135,6 +137,77 @@ pub fn render(frame: &mut Frame, state: &TuiState) {
     if state.last_copied.is_some() {
         render_copy_feedback(frame, &colors);
     }
+
+    // Render confirmation dialog on top of everything
+    if let Some(ref dialog) = state.confirmation_dialog {
+        render_confirmation_dialog(frame, dialog, &colors);
+    }
+}
+
+/// Render confirmation dialog overlay.
+fn render_confirmation_dialog(
+    frame: &mut Frame,
+    dialog: &super::state::ConfirmationDialog,
+    colors: &ColorScheme,
+) {
+    let area = frame.area();
+
+    // Center the dialog
+    let width = 50.min(area.width.saturating_sub(4));
+    let height = 7;
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let dialog_area = Rect::new(x, y, width, height);
+
+    // Clear the area behind the dialog
+    frame.render_widget(Clear, dialog_area);
+
+    // Build button styles
+    let (yes_style, no_style) = if dialog.yes_selected {
+        (
+            Style::default()
+                .fg(colors.selected_fg)
+                .bg(colors.selected_bg)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(colors.muted),
+        )
+    } else {
+        (
+            Style::default().fg(colors.muted),
+            Style::default()
+                .fg(colors.selected_fg)
+                .bg(colors.selected_bg)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+
+    // Build dialog content
+    let description = dialog.action.description();
+    let context = dialog.action.context();
+
+    let content = Paragraph::new(vec![
+        Line::from(Span::styled(&description, Style::default().fg(colors.fg).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+        Line::from(Span::styled(context, Style::default().fg(colors.muted))),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(" Yes (y) ", yes_style),
+            Span::raw("  "),
+            Span::styled(" No (n) ", no_style),
+            Span::raw("  "),
+        ]),
+    ])
+    .alignment(Alignment::Center)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Confirm Action")
+            .title_alignment(Alignment::Center)
+            .border_style(Style::default().fg(colors.warning)),
+    );
+
+    frame.render_widget(content, dialog_area);
 }
 
 /// Render filter input overlay.

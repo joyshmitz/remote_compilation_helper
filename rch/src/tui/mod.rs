@@ -15,6 +15,7 @@
 mod app;
 mod event;
 mod state;
+pub mod status;
 mod widgets;
 
 // Test infrastructure modules - only compiled for tests

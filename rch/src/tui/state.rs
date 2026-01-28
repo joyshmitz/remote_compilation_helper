@@ -79,6 +79,8 @@ pub struct TuiState {
     pub color_blind: ColorBlindMode,
     /// Last copied text (for feedback).
     pub last_copied: Option<String>,
+    /// Confirmation dialog for destructive actions.
+    pub confirmation_dialog: Option<ConfirmationDialog>,
 }
 
 impl Default for TuiState {
@@ -100,6 +102,7 @@ impl Default for TuiState {
             high_contrast: false,
             color_blind: ColorBlindMode::None,
             last_copied: None,
+            confirmation_dialog: None,
         }
     }
 }
@@ -139,6 +142,15 @@ impl TuiState {
     pub fn selected_worker(&self) -> Option<&WorkerState> {
         if self.selected_panel == Panel::Workers {
             self.workers.get(self.selected_index)
+        } else {
+            None
+        }
+    }
+
+    /// Get the currently selected active build, if ActiveBuilds panel is selected and has items.
+    pub fn selected_active_build(&self) -> Option<&ActiveBuild> {
+        if self.selected_panel == Panel::ActiveBuilds {
+            self.active_builds.get(self.selected_index)
         } else {
             None
         }
@@ -386,6 +398,50 @@ impl Default for LogViewState {
             auto_scroll: true,
         }
     }
+}
+
+/// Actions that require user confirmation before execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfirmAction {
+    /// Drain a worker (stop accepting new builds).
+    DrainWorker(String),
+    /// Enable/undrain a worker.
+    EnableWorker(String),
+    /// Cancel an active build gracefully.
+    CancelBuild(String),
+    /// Force kill an active build.
+    KillBuild(String),
+}
+
+impl ConfirmAction {
+    /// Get a human-readable description of the action.
+    pub fn description(&self) -> String {
+        match self {
+            ConfirmAction::DrainWorker(id) => format!("Drain worker '{}'?", id),
+            ConfirmAction::EnableWorker(id) => format!("Enable worker '{}'?", id),
+            ConfirmAction::CancelBuild(id) => format!("Cancel build '{}'?", id),
+            ConfirmAction::KillBuild(id) => format!("Force kill build '{}'?", id),
+        }
+    }
+
+    /// Get additional context about the action's effect.
+    pub fn context(&self) -> &'static str {
+        match self {
+            ConfirmAction::DrainWorker(_) => "Worker will stop accepting new builds.",
+            ConfirmAction::EnableWorker(_) => "Worker will resume accepting builds.",
+            ConfirmAction::CancelBuild(_) => "Build will be cancelled gracefully.",
+            ConfirmAction::KillBuild(_) => "Build will be terminated immediately!",
+        }
+    }
+}
+
+/// Confirmation dialog state.
+#[derive(Debug, Clone)]
+pub struct ConfirmationDialog {
+    /// The action awaiting confirmation.
+    pub action: ConfirmAction,
+    /// Whether "Yes" is currently selected (true) or "No" (false).
+    pub yes_selected: bool,
 }
 
 #[cfg(test)]
