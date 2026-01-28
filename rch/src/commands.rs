@@ -3931,27 +3931,27 @@ pub async fn daemon_stop(skip_confirm: bool, ctx: &OutputContext) -> Result<()> 
     }
 
     // Check for active builds and prompt for confirmation
-    if !skip_confirm && !ctx.is_json() {
-        if let Ok(response) = send_daemon_command("GET /status\n").await {
-            if let Some(json) = extract_json_body(&response) {
-                if let Ok(status) = serde_json::from_str::<crate::status_types::DaemonFullStatusResponse>(json) {
-                    let active_count = status.active_builds.len();
-                    if active_count > 0 {
-                        println!(
-                            "{} {} active build(s) will be interrupted.",
-                            StatusIndicator::Warning.display(style),
-                            style.highlight(&active_count.to_string())
-                        );
-                        let confirmed = Confirm::new()
-                            .with_prompt("Stop the daemon anyway?")
-                            .default(false)
-                            .interact()?;
-                        if !confirmed {
-                            println!("{} Aborted.", StatusIndicator::Info.display(style));
-                            return Ok(());
-                        }
-                    }
-                }
+    if !skip_confirm
+        && !ctx.is_json()
+        && let Ok(response) = send_daemon_command("GET /status\n").await
+        && let Some(json) = extract_json_body(&response)
+        && let Ok(status) =
+            serde_json::from_str::<crate::status_types::DaemonFullStatusResponse>(json)
+    {
+        let active_count = status.active_builds.len();
+        if active_count > 0 {
+            println!(
+                "{} {} active build(s) will be interrupted.",
+                StatusIndicator::Warning.display(style),
+                style.highlight(&active_count.to_string())
+            );
+            let confirmed = Confirm::new()
+                .with_prompt("Stop the daemon anyway?")
+                .default(false)
+                .interact()?;
+            if !confirmed {
+                println!("{} Aborted.", StatusIndicator::Info.display(style));
+                return Ok(());
             }
         }
     }
@@ -4075,30 +4075,29 @@ pub async fn daemon_restart(skip_confirm: bool, ctx: &OutputContext) -> Result<(
     let style = ctx.theme();
 
     // Check for active builds and prompt for confirmation before restarting
-    if !skip_confirm && !ctx.is_json() {
-        let socket_path = Path::new(DEFAULT_SOCKET_PATH);
-        if socket_path.exists() {
-            if let Ok(response) = send_daemon_command("GET /status\n").await {
-                if let Some(json) = extract_json_body(&response) {
-                    if let Ok(status) = serde_json::from_str::<crate::status_types::DaemonFullStatusResponse>(json) {
-                        let active_count = status.active_builds.len();
-                        if active_count > 0 {
-                            println!(
-                                "{} {} active build(s) will be interrupted.",
-                                StatusIndicator::Warning.display(style),
-                                style.highlight(&active_count.to_string())
-                            );
-                            let confirmed = Confirm::new()
-                                .with_prompt("Restart the daemon anyway?")
-                                .default(false)
-                                .interact()?;
-                            if !confirmed {
-                                println!("{} Aborted.", StatusIndicator::Info.display(style));
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
+    let socket_path = Path::new(DEFAULT_SOCKET_PATH);
+    if !skip_confirm
+        && !ctx.is_json()
+        && socket_path.exists()
+        && let Ok(response) = send_daemon_command("GET /status\n").await
+        && let Some(json) = extract_json_body(&response)
+        && let Ok(status) =
+            serde_json::from_str::<crate::status_types::DaemonFullStatusResponse>(json)
+    {
+        let active_count = status.active_builds.len();
+        if active_count > 0 {
+            println!(
+                "{} {} active build(s) will be interrupted.",
+                StatusIndicator::Warning.display(style),
+                style.highlight(&active_count.to_string())
+            );
+            let confirmed = Confirm::new()
+                .with_prompt("Restart the daemon anyway?")
+                .default(false)
+                .interact()?;
+            if !confirmed {
+                println!("{} Aborted.", StatusIndicator::Info.display(style));
+                return Ok(());
             }
         }
     }
