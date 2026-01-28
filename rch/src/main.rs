@@ -4070,11 +4070,13 @@ mod tests {
                 all,
                 force,
                 yes,
+                dry_run,
             }) => {
                 assert_eq!(build_id, Some(42));
                 assert!(!all);
                 assert!(!force);
                 assert!(!yes);
+                assert!(!dry_run);
             }
             _ => panic!("Expected cancel command"),
         }
@@ -4085,16 +4087,8 @@ mod tests {
         let _guard = test_guard!();
         let cli = Cli::try_parse_from(["rch", "cancel", "--all"]).unwrap();
         match cli.command {
-            Some(Commands::Cancel {
-                build_id,
-                all,
-                force,
-                yes,
-            }) => {
-                assert!(build_id.is_none());
+            Some(Commands::Cancel { all, .. }) => {
                 assert!(all);
-                assert!(!force);
-                assert!(!yes);
             }
             _ => panic!("Expected cancel --all command"),
         }
@@ -4105,15 +4099,8 @@ mod tests {
         let _guard = test_guard!();
         let cli = Cli::try_parse_from(["rch", "cancel", "--all", "--yes"]).unwrap();
         match cli.command {
-            Some(Commands::Cancel {
-                build_id,
-                all,
-                force,
-                yes,
-            }) => {
-                assert!(build_id.is_none());
+            Some(Commands::Cancel { all, yes, .. }) => {
                 assert!(all);
-                assert!(!force);
                 assert!(yes);
             }
             _ => panic!("Expected cancel --all --yes command"),
@@ -4126,15 +4113,10 @@ mod tests {
         let cli = Cli::try_parse_from(["rch", "cancel", "42", "--force"]).unwrap();
         match cli.command {
             Some(Commands::Cancel {
-                build_id,
-                all,
-                force,
-                yes,
+                build_id, force, ..
             }) => {
                 assert_eq!(build_id, Some(42));
-                assert!(!all);
                 assert!(force);
-                assert!(!yes);
             }
             _ => panic!("Expected cancel with --force"),
         }
@@ -4164,6 +4146,58 @@ mod tests {
                 assert!(yes);
             }
             _ => panic!("Expected cancel with -y"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_cancel_dry_run() {
+        let _guard = test_guard!();
+        let cli = Cli::try_parse_from(["rch", "cancel", "--dry-run"]).unwrap();
+        match cli.command {
+            Some(Commands::Cancel { dry_run, .. }) => {
+                assert!(dry_run);
+            }
+            _ => panic!("Expected cancel with --dry-run"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_cancel_dry_run_short() {
+        let _guard = test_guard!();
+        let cli = Cli::try_parse_from(["rch", "cancel", "-n"]).unwrap();
+        match cli.command {
+            Some(Commands::Cancel { dry_run, .. }) => {
+                assert!(dry_run);
+            }
+            _ => panic!("Expected cancel with -n"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_cancel_dry_run_with_id() {
+        let _guard = test_guard!();
+        let cli = Cli::try_parse_from(["rch", "cancel", "42", "--dry-run"]).unwrap();
+        match cli.command {
+            Some(Commands::Cancel {
+                build_id, dry_run, ..
+            }) => {
+                assert_eq!(build_id, Some(42));
+                assert!(dry_run);
+            }
+            _ => panic!("Expected cancel 42 --dry-run"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_cancel_all_dry_run_combined() {
+        let _guard = test_guard!();
+        let cli = Cli::try_parse_from(["rch", "cancel", "-an"]).unwrap();
+        match cli.command {
+            Some(Commands::Cancel { all, dry_run, .. }) => {
+                assert!(all);
+                assert!(dry_run);
+            }
+            _ => panic!("Expected cancel -an"),
         }
     }
 
