@@ -221,7 +221,24 @@ For more control, use the individual commands:
     rch workers probe css     # Probe specific worker
     rch workers benchmark     # Run speed tests on all workers
     rch workers drain css     # Stop sending jobs to worker
-    rch workers enable css    # Resume sending jobs to worker"#)]
+    rch workers enable css    # Resume sending jobs to worker
+    rch workers disable css   # Take worker offline
+
+WORKER STATES:
+    HEALTHY    Normal operation - accepting and running jobs
+    DRAINING   Not accepting new jobs, finishing current ones
+    DISABLED   Completely offline, skipped by job assignment
+
+STATE TRANSITIONS:
+    [HEALTHY] --drain--> [DRAINING] ---(jobs finish)---> [DRAINED]
+                                                              |
+                         <--enable-- [DRAINED]                |
+                                        |                     |
+                         <--enable-- [DISABLED] <--disable----
+
+Use 'drain' to gracefully stop a worker before maintenance.
+Use 'enable' to bring a drained/disabled worker back online.
+Use 'disable' to mark a worker as unavailable (optionally with --reason)."#)]
     Workers {
         #[command(subcommand)]
         action: WorkersAction,
@@ -740,11 +757,47 @@ enum WorkersAction {
     },
     /// Run speed benchmarks
     Benchmark,
-    /// Drain a worker (stop sending new jobs)
-    Drain { worker: String },
-    /// Enable a worker
-    Enable { worker: String },
-    /// Disable a worker (exclude from job assignment)
+
+    /// Drain a worker (stop accepting new jobs, finish current ones)
+    ///
+    /// A drained worker will complete any active builds but won't accept new ones.
+    /// Use this before maintenance or when you want to gracefully stop a worker.
+    /// Use 'rch workers enable' to resume normal operation.
+    #[command(after_help = r#"EXAMPLES:
+    rch workers drain css     # Drain worker 'css' (completes active builds)
+
+The worker will transition: HEALTHY → DRAINING → DRAINED (when jobs finish)
+Use 'rch workers list' to monitor the drain progress."#)]
+    Drain {
+        /// Worker ID to drain
+        worker: String,
+    },
+
+    /// Enable a worker (resume accepting jobs)
+    ///
+    /// Brings a drained or disabled worker back to normal operation.
+    /// The worker will immediately start accepting new compilation jobs.
+    #[command(after_help = r#"EXAMPLES:
+    rch workers enable css    # Resume normal operation for worker 'css'
+
+The worker will transition: DRAINING/DRAINED/DISABLED → HEALTHY"#)]
+    Enable {
+        /// Worker ID to enable
+        worker: String,
+    },
+
+    /// Disable a worker (mark as offline)
+    ///
+    /// A disabled worker is excluded from job assignment entirely.
+    /// Use this when a worker is unavailable (e.g., maintenance, network issues).
+    /// Optionally specify --reason to document why the worker is disabled.
+    /// Use --drain to complete active builds before disabling.
+    #[command(after_help = r#"EXAMPLES:
+    rch workers disable css                    # Disable immediately
+    rch workers disable css --reason "hardware upgrade"
+    rch workers disable css --drain            # Finish builds first
+
+Use 'rch workers enable css' to bring the worker back online."#)]
     Disable {
         /// Worker ID to disable
         worker: String,

@@ -18,6 +18,14 @@ pub struct Symbols {
     pub disabled: &'static str,
     pub arrow_right: &'static str,
     pub spinner_frames: &'static [&'static str],
+    // TUI-specific symbols for build/worker states
+    pub syncing: &'static str,
+    pub downloading: &'static str,
+    pub compiling: &'static str,
+    pub waiting: &'static str,
+    pub draining: &'static str,
+    pub circuit_half_open: &'static str,
+    pub unknown: &'static str,
 }
 
 impl Symbols {
@@ -33,6 +41,14 @@ impl Symbols {
         disabled: "⊘",
         arrow_right: "→",
         spinner_frames: &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+        // TUI-specific symbols
+        syncing: "↑",
+        downloading: "↓",
+        compiling: "⚙",
+        waiting: "◷",
+        draining: "◑",
+        circuit_half_open: "↻",
+        unknown: "?",
     };
 
     /// ASCII fallbacks for terminals without unicode support.
@@ -47,6 +63,14 @@ impl Symbols {
         disabled: "[-]",
         arrow_right: "->",
         spinner_frames: &["|", "/", "-", "\\"],
+        // TUI-specific symbols (ASCII fallbacks)
+        syncing: "[^]",
+        downloading: "[v]",
+        compiling: "[#]",
+        waiting: "[.]",
+        draining: "[>]",
+        circuit_half_open: "[*]",
+        unknown: "[?]",
     };
 
     /// Select symbols based on unicode support.
@@ -92,6 +116,18 @@ impl StatusIndicator {
             StatusIndicator::InProgress => symbols.bullet_half,
             StatusIndicator::Disabled => symbols.disabled,
         }
+    }
+
+    /// Get the default unicode symbol as a static str.
+    ///
+    /// This is useful for TUI rendering where we need &'static str directly.
+    pub fn unicode_symbol(&self) -> &'static str {
+        self.symbol(&Symbols::UNICODE)
+    }
+
+    /// Get the ASCII symbol as a static str.
+    pub fn ascii_symbol(&self) -> &'static str {
+        self.symbol(&Symbols::ASCII)
     }
 
     /// Get the color for this indicator.
