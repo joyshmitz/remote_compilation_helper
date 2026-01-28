@@ -10,6 +10,7 @@ use crate::status_types::{
     extract_json_body,
 };
 use crate::ui::context::OutputContext;
+use crate::ui::progress::MultiProgressManager;
 use crate::ui::theme::StatusIndicator;
 use anyhow::{Context, Result, bail};
 use directories::ProjectDirs;
@@ -1415,21 +1416,32 @@ pub async fn workers_benchmark(ctx: &OutputContext) -> Result<()> {
         );
     }
 
-    for worker in &workers {
-        if !ctx.is_json() {
-            print!(
-                "  {} {}@{}... ",
-                style.highlight(worker.id.as_str()),
-                style.muted(&worker.user),
-                style.info(&worker.host)
-            );
-        }
+    // Create progress manager for all workers
+    let progress = MultiProgressManager::new(ctx);
+
+    // Create spinners for all workers upfront (queued state)
+    let spinners: Vec<_> = workers
+        .iter()
+        .map(|w| {
+            let label = format!("{}@{}", w.id.as_str(), w.host);
+            progress.add_spinner(&label, "queued")
+        })
+        .collect();
+
+    for (i, worker) in workers.iter().enumerate() {
+        let spinner = &spinners[i];
+
+        // Update spinner to show connecting
+        spinner.set_message("connecting...");
 
         let ssh_options = SshOptions::default();
         let mut client = SshClient::new(worker.clone(), ssh_options.clone());
 
         match client.connect().await {
             Ok(()) => {
+                // Update spinner to show benchmarking
+                spinner.set_message("benchmarking...");
+
                 let bench_id = uuid::Uuid::new_v4();
                 let bench_dir = format!("rch_bench_{}", bench_id);
 
@@ -1454,57 +1466,42 @@ pub async fn workers_benchmark(ctx: &OutputContext) -> Result<()> {
                 match result {
                     Ok(r) if r.success() => {
                         let duration_ms = duration.as_millis() as u64;
-                        if ctx.is_json() {
-                            results.push(WorkerBenchmarkResult {
-                                id: worker.id.as_str().to_string(),
-                                host: worker.host.clone(),
-                                status: "ok".to_string(),
-                                duration_ms: Some(duration_ms),
-                                error: None,
-                            });
-                        } else {
-                            println!(
-                                "{} {}ms {}",
-                                StatusIndicator::Success.display(style),
-                                style.highlight(&duration_ms.to_string()),
-                                style.muted("total")
-                            );
+                        results.push(WorkerBenchmarkResult {
+                            id: worker.id.as_str().to_string(),
+                            host: worker.host.clone(),
+                            status: "ok".to_string(),
+                            duration_ms: Some(duration_ms),
+                            error: None,
+                        });
+                        if !ctx.is_json() {
+                            spinner.finish_with_message(format!("✓ {}ms", duration_ms));
                         }
                     }
                     Ok(r) => {
-                        if ctx.is_json() {
-                            results.push(WorkerBenchmarkResult {
-                                id: worker.id.as_str().to_string(),
-                                host: worker.host.clone(),
-                                status: "failed".to_string(),
-                                duration_ms: None,
-                                error: Some(format!("exit code {}", r.exit_code)),
-                            });
-                        } else {
-                            println!(
-                                "{} (exit={})",
-                                StatusIndicator::Error.with_label(style, "Failed"),
-                                style.muted(&r.exit_code.to_string())
-                            );
+                        let error_msg = format!("exit code {}", r.exit_code);
+                        results.push(WorkerBenchmarkResult {
+                            id: worker.id.as_str().to_string(),
+                            host: worker.host.clone(),
+                            status: "failed".to_string(),
+                            duration_ms: None,
+                            error: Some(error_msg.clone()),
+                        });
+                        if !ctx.is_json() {
+                            spinner.finish_with_message(format!("✗ {}", error_msg));
                         }
                     }
                     Err(e) => {
                         let ssh_error = classify_ssh_error(worker, &e, ssh_options.command_timeout);
                         let report = format_ssh_report(ssh_error);
-                        if ctx.is_json() {
-                            results.push(WorkerBenchmarkResult {
-                                id: worker.id.as_str().to_string(),
-                                host: worker.host.clone(),
-                                status: "error".to_string(),
-                                duration_ms: None,
-                                error: Some(report),
-                            });
-                        } else {
-                            println!(
-                                "{}\n{}",
-                                StatusIndicator::Error.display(style),
-                                indent_lines(&report, "    ")
-                            );
+                        results.push(WorkerBenchmarkResult {
+                            id: worker.id.as_str().to_string(),
+                            host: worker.host.clone(),
+                            status: "error".to_string(),
+                            duration_ms: None,
+                            error: Some(report.clone()),
+                        });
+                        if !ctx.is_json() {
+                            spinner.finish_with_message(format!("✗ {}", report.lines().next().unwrap_or("error")));
                         }
                     }
                 }
@@ -1513,20 +1510,15 @@ pub async fn workers_benchmark(ctx: &OutputContext) -> Result<()> {
             Err(e) => {
                 let ssh_error = classify_ssh_error(worker, &e, ssh_options.connect_timeout);
                 let report = format_ssh_report(ssh_error);
-                if ctx.is_json() {
-                    results.push(WorkerBenchmarkResult {
-                        id: worker.id.as_str().to_string(),
-                        host: worker.host.clone(),
-                        status: "connection_failed".to_string(),
-                        duration_ms: None,
-                        error: Some(report),
-                    });
-                } else {
-                    println!(
-                        "{}\n{}",
-                        StatusIndicator::Error.with_label(style, "Connection failed:"),
-                        indent_lines(&report, "    ")
-                    );
+                results.push(WorkerBenchmarkResult {
+                    id: worker.id.as_str().to_string(),
+                    host: worker.host.clone(),
+                    status: "connection_failed".to_string(),
+                    duration_ms: None,
+                    error: Some(report.clone()),
+                });
+                if !ctx.is_json() {
+                    spinner.finish_with_message(format!("✗ connection failed"));
                 }
             }
         }
