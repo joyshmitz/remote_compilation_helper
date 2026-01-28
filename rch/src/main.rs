@@ -112,11 +112,12 @@ struct Cli {
     quiet: bool,
 
     /// Output as JSON for machine parsing
-    #[arg(long, global = true)]
+    #[arg(short = 'j', long, global = true)]
     json: bool,
 
     /// Machine output format: json or toon
     #[arg(
+        short = 'F',
         long,
         global = true,
         value_name = "format",
@@ -252,11 +253,11 @@ Use 'disable' to mark a worker as unavailable (optionally with --reason)."#)]
     rch status --workers --jobs # Full status report"#)]
     Status {
         /// Show worker details
-        #[arg(long)]
+        #[arg(short = 'w', long)]
         workers: bool,
 
         /// Show active jobs
-        #[arg(long)]
+        #[arg(short = 'J', long)]
         jobs: bool,
     },
 
@@ -290,7 +291,7 @@ to clean up. Use --force to immediately terminate with SIGKILL."#)]
         build_id: Option<u64>,
 
         /// Cancel all active builds
-        #[arg(long)]
+        #[arg(short = 'a', long)]
         all: bool,
 
         /// Force termination (SIGKILL instead of SIGTERM)
