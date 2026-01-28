@@ -93,11 +93,18 @@ impl FileValidation {
     }
 
     /// Validate that a path exists and is readable.
+    /// Used by config doctor command (bd-xqxp).
+    #[allow(dead_code)]
     pub fn validate_path_readable(&mut self, key: &str, path: &Path) {
         if !path.exists() {
             self.error(format!("{}: path does not exist: {}", key, path.display()));
         } else if let Err(e) = std::fs::metadata(path) {
-            self.error(format!("{}: cannot read path {}: {}", key, path.display(), e));
+            self.error(format!(
+                "{}: cannot read path {}: {}",
+                key,
+                path.display(),
+                e
+            ));
         }
     }
 
@@ -106,7 +113,11 @@ impl FileValidation {
         let parent = match path.parent() {
             Some(p) if !p.as_os_str().is_empty() => p,
             _ => {
-                self.error(format!("{}: path has no parent directory: {}", key, path.display()));
+                self.error(format!(
+                    "{}: path has no parent directory: {}",
+                    key,
+                    path.display()
+                ));
                 return;
             }
         };
@@ -161,7 +172,9 @@ impl FileValidation {
                 if mode != 0o600 && mode != 0o400 {
                     self.warn(format!(
                         "{}: SSH key has insecure permissions {:o} (should be 600 or 400): {}",
-                        key, mode, path.display()
+                        key,
+                        mode,
+                        path.display()
                     ));
                 }
             }
@@ -539,10 +552,7 @@ pub fn validate_rch_config_file(path: &Path) -> FileValidation {
 
     // Validate exclude patterns (bd-1g3l)
     for (idx, pattern) in config.transfer.exclude_patterns.iter().enumerate() {
-        validation.validate_rsync_pattern(
-            &format!("transfer.exclude_patterns[{}]", idx),
-            pattern,
-        );
+        validation.validate_rsync_pattern(&format!("transfer.exclude_patterns[{}]", idx), pattern);
     }
 
     validation
@@ -3580,7 +3590,10 @@ confidence_threshold = 0.80
         validation.validate_rsync_pattern("test", "[a-z]*.txt");
 
         info!("RESULT: errors={:?}", validation.errors);
-        assert!(validation.errors.is_empty(), "Valid patterns should not produce errors");
+        assert!(
+            validation.errors.is_empty(),
+            "Valid patterns should not produce errors"
+        );
         info!("PASS: Valid rsync patterns accepted");
     }
 
@@ -3594,7 +3607,10 @@ confidence_threshold = 0.80
         // Unclosed bracket
         validation.validate_rsync_pattern("test1", "[invalid");
         assert!(
-            validation.errors.iter().any(|e| e.contains("unclosed '['") && e.contains("test1")),
+            validation
+                .errors
+                .iter()
+                .any(|e| e.contains("unclosed '['") && e.contains("test1")),
             "Should detect unclosed bracket"
         );
 
@@ -3602,7 +3618,10 @@ confidence_threshold = 0.80
         let mut validation2 = FileValidation::new(Path::new("/test"));
         validation2.validate_rsync_pattern("test2", "invalid]");
         assert!(
-            validation2.errors.iter().any(|e| e.contains("unbalanced ']'") && e.contains("test2")),
+            validation2
+                .errors
+                .iter()
+                .any(|e| e.contains("unbalanced ']'") && e.contains("test2")),
             "Should detect unbalanced closing bracket"
         );
 
@@ -3619,7 +3638,10 @@ confidence_threshold = 0.80
 
         info!("RESULT: errors={:?}", validation.errors);
         assert!(
-            validation.errors.iter().any(|e| e.contains("empty pattern")),
+            validation
+                .errors
+                .iter()
+                .any(|e| e.contains("empty pattern")),
             "Empty pattern should be an error"
         );
         info!("PASS: Empty pattern rejected");
@@ -3636,7 +3658,10 @@ confidence_threshold = 0.80
 
         info!("RESULT: warnings={:?}", validation.warnings);
         assert!(
-            validation.warnings.iter().any(|w| w.contains("matches everything")),
+            validation
+                .warnings
+                .iter()
+                .any(|w| w.contains("matches everything")),
             "Catch-all patterns should warn"
         );
         info!("PASS: Catch-all pattern warning issued");
@@ -3658,7 +3683,10 @@ confidence_threshold = 0.80
         info!("RESULT: errors={:?}", result.errors);
 
         assert!(
-            result.errors.iter().any(|e| e.contains("exclude_patterns") && e.contains("unclosed")),
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("exclude_patterns") && e.contains("unclosed")),
             "Should detect invalid exclude pattern"
         );
         info!("PASS: Invalid exclude_patterns detected in config validation");
@@ -3684,7 +3712,10 @@ confidence_threshold = 0.80
 
         info!("RESULT: warnings={:?}", validation.warnings);
         assert!(
-            validation.warnings.iter().any(|w| w.contains("insecure permissions") && w.contains("644")),
+            validation
+                .warnings
+                .iter()
+                .any(|w| w.contains("insecure permissions") && w.contains("644")),
             "Should warn about insecure SSH key permissions"
         );
 
@@ -3716,7 +3747,10 @@ confidence_threshold = 0.80
         let mut validation = FileValidation::new(Path::new("/test"));
         validation.validate_path_parent_writable("socket_path", &test_path);
 
-        info!("RESULT: errors={:?}, warnings={:?}", validation.errors, validation.warnings);
+        info!(
+            "RESULT: errors={:?}, warnings={:?}",
+            validation.errors, validation.warnings
+        );
         // Should not produce errors for valid writable parent
         assert!(
             validation.errors.is_empty(),
@@ -3730,7 +3764,10 @@ confidence_threshold = 0.80
 
         info!("RESULT for invalid: errors={:?}", validation2.errors);
         assert!(
-            validation2.errors.iter().any(|e| e.contains("parent directory does not exist")),
+            validation2
+                .errors
+                .iter()
+                .any(|e| e.contains("parent directory does not exist")),
             "Should error for non-existent parent"
         );
 

@@ -24,8 +24,7 @@ use tracing::debug;
 
 use super::state::{
     ActiveBuild, BuildProgress, BuildStatus, CircuitState, ColorBlindMode, DaemonState,
-    FilterState, HistoricalBuild, LogViewState, Panel, Status, TuiState, WorkerState,
-    WorkerStatus,
+    FilterState, HistoricalBuild, LogViewState, Panel, Status, TuiState, WorkerState, WorkerStatus,
 };
 
 // ============================================================================
@@ -136,7 +135,10 @@ pub fn mock_worker_with_host(id: &str, host: &str) -> WorkerState {
 /// * `id` - Build identifier
 /// * `command` - The command being executed
 pub fn mock_active_build(id: &str, command: &str) -> ActiveBuild {
-    debug!("TEST DATA: creating mock active build '{}' cmd='{}'", id, command);
+    debug!(
+        "TEST DATA: creating mock active build '{}' cmd='{}'",
+        id, command
+    );
     ActiveBuild {
         id: id.to_string(),
         command: command.to_string(),
@@ -396,7 +398,11 @@ pub fn mock_log_view_empty(build_id: &str) -> LogViewState {
 }
 
 /// Create a log view with scroll position.
-pub fn mock_log_view_scrolled(build_id: &str, line_count: usize, scroll_offset: usize) -> LogViewState {
+pub fn mock_log_view_scrolled(
+    build_id: &str,
+    line_count: usize,
+    scroll_offset: usize,
+) -> LogViewState {
     let mut view = mock_log_view(build_id, line_count);
     view.scroll_offset = scroll_offset;
     view.auto_scroll = false;
@@ -539,7 +545,12 @@ pub fn mock_state_complete() -> TuiState {
     ];
 
     state.active_builds = vec![
-        mock_active_build_with_status("b1", "cargo build --release", BuildStatus::Compiling, Some(65)),
+        mock_active_build_with_status(
+            "b1",
+            "cargo build --release",
+            BuildStatus::Compiling,
+            Some(65),
+        ),
         mock_active_build_with_status("b2", "cargo test", BuildStatus::Syncing, Some(20)),
     ];
 

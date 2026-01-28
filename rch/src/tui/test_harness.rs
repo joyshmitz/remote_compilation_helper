@@ -14,11 +14,11 @@
 //! assert_rendered_contains(&content, "RCH Dashboard");
 //! ```
 
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::prelude::*;
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
 use tracing::{debug, info};
 
 /// Create a test terminal with the given dimensions.
@@ -38,10 +38,7 @@ use tracing::{debug, info};
 /// terminal.draw(|f| widgets::render(f, &state)).unwrap();
 /// ```
 pub fn create_test_terminal(width: u16, height: u16) -> Terminal<TestBackend> {
-    debug!(
-        "TEST HARNESS: creating test terminal {}x{}",
-        width, height
-    );
+    debug!("TEST HARNESS: creating test terminal {}x{}", width, height);
     let backend = TestBackend::new(width, height);
     Terminal::new(backend).expect("failed to create test terminal")
 }
@@ -260,9 +257,7 @@ pub fn init_test_logging() {
 ///
 /// String representation of the rendered state.
 pub fn snapshot_state(state: &super::TuiState, width: u16, height: u16) -> String {
-    render_to_string(width, height, |f| {
-        super::widgets::render(f, state)
-    })
+    render_to_string(width, height, |f| super::widgets::render(f, state))
 }
 
 #[cfg(test)]
@@ -373,7 +368,12 @@ mod tests {
                     .borders(ratatui::widgets::Borders::ALL);
                 f.render_widget(block, f.area());
             });
-            info!("VERIFY: render {}x{} produces {} lines", w, h, content.lines().count());
+            info!(
+                "VERIFY: render {}x{} produces {} lines",
+                w,
+                h,
+                content.lines().count()
+            );
             assert!(content.lines().count() >= h as usize);
         }
         info!("TEST PASS: test_render_to_string_at_various_sizes");

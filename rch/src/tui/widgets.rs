@@ -1020,7 +1020,10 @@ mod tests {
         // Need larger height to see all content
         let content = render_to_string(80, 32, |f| render(f, &state));
         // Verify filter shortcut is documented
-        assert!(content.contains("/"), "Filter shortcut (/) must be documented");
+        assert!(
+            content.contains("/"),
+            "Filter shortcut (/) must be documented"
+        );
         assert!(
             content.contains("filter") || content.contains("Filter") || content.contains("Search"),
             "Filter functionality must be described"
@@ -1040,10 +1043,22 @@ mod tests {
 
         // Verify all navigation shortcuts are documented
         info!("VERIFY: checking navigation shortcuts");
-        assert!(content.contains("j") || content.contains("↓"), "Down navigation must be documented");
-        assert!(content.contains("k") || content.contains("↑"), "Up navigation must be documented");
-        assert!(content.contains("Tab"), "Tab for panel switching must be documented");
-        assert!(content.contains("Enter"), "Enter for selection must be documented");
+        assert!(
+            content.contains("j") || content.contains("↓"),
+            "Down navigation must be documented"
+        );
+        assert!(
+            content.contains("k") || content.contains("↑"),
+            "Up navigation must be documented"
+        );
+        assert!(
+            content.contains("Tab"),
+            "Tab for panel switching must be documented"
+        );
+        assert!(
+            content.contains("Enter"),
+            "Enter for selection must be documented"
+        );
         info!("TEST PASS: test_help_overlay_contains_all_navigation_shortcuts");
     }
 
@@ -1083,7 +1098,10 @@ mod tests {
             "Page up must be documented"
         );
         assert!(content.contains("g"), "Jump to top (g) must be documented");
-        assert!(content.contains("G"), "Jump to bottom (G) must be documented");
+        assert!(
+            content.contains("G"),
+            "Jump to bottom (G) must be documented"
+        );
         info!("TEST PASS: test_help_overlay_contains_scrolling_shortcuts");
     }
 
@@ -1101,13 +1119,19 @@ mod tests {
         // Verify general shortcuts are documented
         info!("VERIFY: checking general shortcuts");
         assert!(content.contains("q"), "Quit shortcut must be documented");
-        assert!(content.contains("Esc"), "Escape shortcut must be documented");
+        assert!(
+            content.contains("Esc"),
+            "Escape shortcut must be documented"
+        );
         // The ? character in the help text - check for help toggle description
         assert!(
             content.contains("Toggle") || content.contains("Help") || content.contains("help"),
             "Help toggle shortcut must be documented"
         );
-        assert!(content.contains("F1"), "F1 help shortcut must be documented");
+        assert!(
+            content.contains("F1"),
+            "F1 help shortcut must be documented"
+        );
         assert!(content.contains("Ctrl"), "Ctrl+C must be documented");
         info!("TEST PASS: test_help_overlay_contains_general_shortcuts");
     }
@@ -1449,7 +1473,10 @@ mod tests {
             !content.contains("🔴"),
             "Should not contain red circle emoji"
         );
-        assert!(!content.contains("⚡"), "Should not contain lightning emoji");
+        assert!(
+            !content.contains("⚡"),
+            "Should not contain lightning emoji"
+        );
         assert!(
             !content.contains("🟢"),
             "Should not contain green circle emoji"
