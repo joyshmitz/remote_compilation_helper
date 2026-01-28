@@ -8206,6 +8206,187 @@ pub async fn queue_status(watch: bool, follow: bool, ctx: &OutputContext) -> Res
     Ok(())
 }
 
+/// Stream daemon build events (like `tail -f`).
+///
+/// Connects to the daemon event bus (GET /events) and prints build-related
+/// events as they happen. Runs until the connection drops or the user
+/// interrupts with Ctrl-C.
+#[cfg(not(unix))]
+async fn queue_follow(_ctx: &OutputContext) -> Result<()> {
+    bail!("follow mode is only supported on Unix-like platforms");
+}
+
+#[cfg(unix)]
+async fn queue_follow(ctx: &OutputContext) -> Result<()> {
+    let config = crate::config::load_config()?;
+    let expanded = shellexpand::tilde(&config.general.socket_path);
+    let socket_path = Path::new(expanded.as_ref());
+    if !socket_path.exists() {
+        bail!("Daemon socket not found at {:?}", socket_path);
+    }
+
+    let stream = UnixStream::connect(socket_path).await?;
+    let (reader, mut writer) = stream.into_split();
+
+    writer.write_all(b"GET /events\n").await?;
+    writer.flush().await?;
+
+    let mut reader = BufReader::new(reader);
+
+    // Skip the HTTP header (read until empty line)
+    let mut header_line = String::new();
+    loop {
+        header_line.clear();
+        let n = reader.read_line(&mut header_line).await?;
+        if n == 0 || header_line.trim().is_empty() {
+            break;
+        }
+    }
+
+    let style = ctx.style();
+
+    if ctx.is_json() {
+        // JSON mode: pass through raw event JSON lines
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = reader.read_line(&mut line).await?;
+            if n == 0 {
+                break; // connection closed
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            println!("{trimmed}");
+        }
+    } else {
+        // Human-readable mode: format build events
+        println!(
+            "{} {}",
+            style.highlight("Following build events"),
+            style.muted("(Ctrl-C to stop)")
+        );
+        println!("{}", style.muted(&"─".repeat(60)));
+
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = reader.read_line(&mut line).await?;
+            if n == 0 {
+                break; // connection closed
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if let Ok(event) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if let Some(formatted) = format_build_event(&event, &style) {
+                    println!("{formatted}");
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Format a daemon event into a human-readable line.
+///
+/// Returns `None` for events that are not build-related (e.g. telemetry,
+/// benchmark events) so they are silently skipped.
+fn format_build_event(
+    event: &serde_json::Value,
+    style: &crate::ui::theme::Style,
+) -> Option<String> {
+    let event_name = event.get("event")?.as_str()?;
+    let data = event.get("data")?;
+    let ts = event
+        .get("timestamp")
+        .and_then(|t| t.as_str())
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M:%S").to_string())
+        .unwrap_or_else(|| "??:??:??".to_string());
+
+    let ts_display = style.muted(&format!("[{ts}]"));
+
+    match event_name {
+        "build_queued" => {
+            let cmd = data.get("command").and_then(|v| v.as_str()).unwrap_or("?");
+            let id = data
+                .get("queue_id")
+                .and_then(|v| v.as_u64())
+                .map(|n| format!("q-{n}"))
+                .unwrap_or_else(|| "?".to_string());
+            let pos = data
+                .get("position")
+                .and_then(|v| v.as_u64())
+                .map(|n| format!("pos {n}"))
+                .unwrap_or_default();
+            Some(format!(
+                "{ts_display} {} {id} {cmd} {pos}",
+                style.warning("QUEUED    "),
+            ))
+        }
+        "build_started" => {
+            let cmd = data.get("command").and_then(|v| v.as_str()).unwrap_or("?");
+            let id = data
+                .get("build_id")
+                .and_then(|v| v.as_u64())
+                .map(|n| format!("b-{n}"))
+                .unwrap_or_else(|| "?".to_string());
+            let worker = data.get("worker_id").and_then(|v| v.as_str()).unwrap_or("?");
+            Some(format!(
+                "{ts_display} {} {id} {cmd} {} {worker}",
+                style.success("STARTED   "),
+                style.muted("→"),
+            ))
+        }
+        "build_completed" => {
+            let cmd = data.get("command").and_then(|v| v.as_str()).unwrap_or("?");
+            let id = data
+                .get("build_id")
+                .and_then(|v| v.as_u64())
+                .map(|n| format!("b-{n}"))
+                .unwrap_or_else(|| "?".to_string());
+            let exit_code = data.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(-1);
+            let duration_ms = data
+                .get("duration_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let duration = format_build_duration(duration_ms / 1000);
+
+            if exit_code == 0 {
+                Some(format!(
+                    "{ts_display} {} {id} {cmd} {} ({duration})",
+                    style.success("COMPLETE  "),
+                    style.success("✓"),
+                ))
+            } else {
+                Some(format!(
+                    "{ts_display} {} {id} {cmd} {} ({duration}, exit {exit_code})",
+                    style.error("FAILED    "),
+                    style.error("✗"),
+                ))
+            }
+        }
+        "build_queue_removed" => {
+            let id = data
+                .get("queue_id")
+                .and_then(|v| v.as_u64())
+                .map(|n| format!("q-{n}"))
+                .unwrap_or_else(|| "?".to_string());
+            let reason = data.get("reason").and_then(|v| v.as_str()).unwrap_or("?");
+            Some(format!(
+                "{ts_display} {} {id} {reason}",
+                style.muted("DEQUEUED  "),
+            ))
+        }
+        _ => None,
+    }
+}
+
 /// Cancel an active build (or all builds) via the daemon API.
 pub async fn cancel_build(
     build_id: Option<u64>,
@@ -10729,6 +10910,147 @@ mod tests {
     fn format_build_duration_multiple_hours() {
         let _guard = test_guard!();
         assert_eq!(format_build_duration(7380), "2h 3m"); // 2h 3m
+    }
+
+    // -------------------------------------------------------------------------
+    // format_build_event Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn format_build_event_started() {
+        let _guard = test_guard!();
+        let style = crate::ui::theme::Style::new(false, true, false);
+        let event = serde_json::json!({
+            "event": "build_started",
+            "data": {
+                "build_id": 42,
+                "project_id": "my-project",
+                "worker_id": "css",
+                "command": "cargo build",
+                "slots": 4,
+            },
+            "timestamp": "2026-01-28T14:32:15+00:00",
+        });
+        let formatted = format_build_event(&event, &style).unwrap();
+        assert!(formatted.contains("STARTED"), "should contain STARTED: {formatted}");
+        assert!(formatted.contains("b-42"), "should contain build id: {formatted}");
+        assert!(formatted.contains("cargo build"), "should contain command: {formatted}");
+        assert!(formatted.contains("css"), "should contain worker: {formatted}");
+    }
+
+    #[test]
+    fn format_build_event_completed_success() {
+        let _guard = test_guard!();
+        let style = crate::ui::theme::Style::new(false, true, false);
+        let event = serde_json::json!({
+            "event": "build_completed",
+            "data": {
+                "build_id": 42,
+                "project_id": "my-project",
+                "worker_id": "css",
+                "command": "cargo build",
+                "exit_code": 0,
+                "duration_ms": 90000,
+                "location": "Remote",
+            },
+            "timestamp": "2026-01-28T14:33:45+00:00",
+        });
+        let formatted = format_build_event(&event, &style).unwrap();
+        assert!(formatted.contains("COMPLETE"), "should contain COMPLETE: {formatted}");
+        assert!(formatted.contains("b-42"), "should contain build id: {formatted}");
+        assert!(formatted.contains("1m 30s"), "should contain duration: {formatted}");
+        assert!(formatted.contains("✓"), "should contain check mark: {formatted}");
+    }
+
+    #[test]
+    fn format_build_event_completed_failure() {
+        let _guard = test_guard!();
+        let style = crate::ui::theme::Style::new(false, true, false);
+        let event = serde_json::json!({
+            "event": "build_completed",
+            "data": {
+                "build_id": 43,
+                "project_id": "my-project",
+                "worker_id": "csd",
+                "command": "cargo test",
+                "exit_code": 1,
+                "duration_ms": 104000,
+                "location": "Remote",
+            },
+            "timestamp": "2026-01-28T14:34:02+00:00",
+        });
+        let formatted = format_build_event(&event, &style).unwrap();
+        assert!(formatted.contains("FAILED"), "should contain FAILED: {formatted}");
+        assert!(formatted.contains("b-43"), "should contain build id: {formatted}");
+        assert!(formatted.contains("exit 1"), "should contain exit code: {formatted}");
+        assert!(formatted.contains("✗"), "should contain cross mark: {formatted}");
+    }
+
+    #[test]
+    fn format_build_event_queued() {
+        let _guard = test_guard!();
+        let style = crate::ui::theme::Style::new(false, true, false);
+        let event = serde_json::json!({
+            "event": "build_queued",
+            "data": {
+                "queue_id": 10,
+                "project_id": "my-project",
+                "command": "cargo check",
+                "queued_at": "2026-01-28T14:30:00+00:00",
+                "position": 2,
+                "slots_needed": 2,
+            },
+            "timestamp": "2026-01-28T14:30:00+00:00",
+        });
+        let formatted = format_build_event(&event, &style).unwrap();
+        assert!(formatted.contains("QUEUED"), "should contain QUEUED: {formatted}");
+        assert!(formatted.contains("q-10"), "should contain queue id: {formatted}");
+        assert!(formatted.contains("cargo check"), "should contain command: {formatted}");
+        assert!(formatted.contains("pos 2"), "should contain position: {formatted}");
+    }
+
+    #[test]
+    fn format_build_event_dequeued() {
+        let _guard = test_guard!();
+        let style = crate::ui::theme::Style::new(false, true, false);
+        let event = serde_json::json!({
+            "event": "build_queue_removed",
+            "data": {
+                "queue_id": 10,
+                "project_id": "my-project",
+                "reason": "hook_exited",
+            },
+            "timestamp": "2026-01-28T14:31:00+00:00",
+        });
+        let formatted = format_build_event(&event, &style).unwrap();
+        assert!(formatted.contains("DEQUEUED"), "should contain DEQUEUED: {formatted}");
+        assert!(formatted.contains("q-10"), "should contain queue id: {formatted}");
+        assert!(formatted.contains("hook_exited"), "should contain reason: {formatted}");
+    }
+
+    #[test]
+    fn format_build_event_ignores_unknown_events() {
+        let _guard = test_guard!();
+        let style = crate::ui::theme::Style::new(false, true, false);
+        let event = serde_json::json!({
+            "event": "telemetry:update",
+            "data": {"cpu": 50},
+            "timestamp": "2026-01-28T14:30:00+00:00",
+        });
+        assert!(format_build_event(&event, &style).is_none());
+    }
+
+    #[test]
+    fn format_build_event_missing_fields_graceful() {
+        let _guard = test_guard!();
+        let style = crate::ui::theme::Style::new(false, true, false);
+        // Missing event field entirely
+        let event = serde_json::json!({"data": {}});
+        assert!(format_build_event(&event, &style).is_none());
+
+        // Missing data field
+        let event = serde_json::json!({"event": "build_started"});
+        assert!(format_build_event(&event, &style).is_none());
     }
 
     // -------------------------------------------------------------------------
