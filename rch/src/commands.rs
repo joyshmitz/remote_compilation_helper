@@ -7922,7 +7922,14 @@ pub async fn status_overview(workers: bool, jobs: bool, ctx: &OutputContext) -> 
 }
 
 /// Display build queue - active builds and worker availability.
-pub async fn queue_status(watch: bool, ctx: &OutputContext) -> Result<()> {
+///
+/// When `follow` is true, streams daemon events (like `tail -f`) instead of
+/// showing a periodic snapshot.
+pub async fn queue_status(watch: bool, follow: bool, ctx: &OutputContext) -> Result<()> {
+    if follow {
+        return queue_follow(ctx).await;
+    }
+
     loop {
         // Query daemon for full status
         let response = send_daemon_command("GET /status\n").await?;

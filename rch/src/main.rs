@@ -274,6 +274,10 @@ The queue shows:
         /// Watch mode - continuously update (1s interval)
         #[arg(long, short = 'w')]
         watch: bool,
+
+        /// Follow mode - stream build events as they happen (like tail -f)
+        #[arg(long, short = 'f')]
+        follow: bool,
     },
 
     /// Cancel active builds
@@ -1306,7 +1310,9 @@ async fn main() -> Result<()> {
             Commands::Daemon { action } => handle_daemon(action, &ctx).await,
             Commands::Workers { action } => handle_workers(action, &ctx).await,
             Commands::Status { workers, jobs } => handle_status(workers, jobs, &ctx).await,
-            Commands::Queue { watch } => commands::queue_status(watch, &ctx).await,
+            Commands::Queue { watch, follow } => {
+                commands::queue_status(watch, follow, &ctx).await
+            }
             Commands::Cancel {
                 build_id,
                 all,
@@ -3976,8 +3982,9 @@ mod tests {
         let _guard = test_guard!();
         let cli = Cli::try_parse_from(["rch", "queue"]).unwrap();
         match cli.command {
-            Some(Commands::Queue { watch }) => {
+            Some(Commands::Queue { watch, follow }) => {
                 assert!(!watch);
+                assert!(!follow);
             }
             _ => panic!("Expected queue command"),
         }
@@ -3988,7 +3995,7 @@ mod tests {
         let _guard = test_guard!();
         let cli = Cli::try_parse_from(["rch", "queue", "--watch"]).unwrap();
         match cli.command {
-            Some(Commands::Queue { watch }) => {
+            Some(Commands::Queue { watch, .. }) => {
                 assert!(watch);
             }
             _ => panic!("Expected queue command with watch"),
@@ -4000,10 +4007,47 @@ mod tests {
         let _guard = test_guard!();
         let cli = Cli::try_parse_from(["rch", "queue", "-w"]).unwrap();
         match cli.command {
-            Some(Commands::Queue { watch }) => {
+            Some(Commands::Queue { watch, .. }) => {
                 assert!(watch);
             }
             _ => panic!("Expected queue command with -w"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_queue_follow() {
+        let _guard = test_guard!();
+        let cli = Cli::try_parse_from(["rch", "queue", "--follow"]).unwrap();
+        match cli.command {
+            Some(Commands::Queue { follow, .. }) => {
+                assert!(follow);
+            }
+            _ => panic!("Expected queue command with follow"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_queue_follow_short() {
+        let _guard = test_guard!();
+        let cli = Cli::try_parse_from(["rch", "queue", "-f"]).unwrap();
+        match cli.command {
+            Some(Commands::Queue { follow, .. }) => {
+                assert!(follow);
+            }
+            _ => panic!("Expected queue command with -f"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_queue_watch_and_follow() {
+        let _guard = test_guard!();
+        let cli = Cli::try_parse_from(["rch", "queue", "-wf"]).unwrap();
+        match cli.command {
+            Some(Commands::Queue { watch, follow }) => {
+                assert!(watch);
+                assert!(follow);
+            }
+            _ => panic!("Expected queue command with watch and follow"),
         }
     }
 
