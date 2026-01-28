@@ -126,8 +126,12 @@ impl<'a> WorkerTable<'a> {
             "healthy" | "online" => format!("{} Online", Icons::status_healthy(self.context)),
             "busy" => format!("{} Busy", Icons::worker(self.context)),
             "degraded" => format!("{} Degraded", Icons::warning(self.context)),
-            "offline" | "unhealthy" => format!("{} Offline", Icons::cross(self.context)),
             "draining" => format!("{} Draining", Icons::info(self.context)),
+            "drained" => format!("{} Drained", Icons::info(self.context)),
+            "unreachable" | "offline" | "unhealthy" => {
+                format!("{} Offline", Icons::cross(self.context))
+            }
+            "disabled" => format!("{} Disabled", Icons::cross(self.context)),
             other => other.to_string(),
         }
     }

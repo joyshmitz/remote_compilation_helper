@@ -953,6 +953,7 @@ pub async fn workers_list(show_speedscore: bool, ctx: &OutputContext) -> Result<
                         "degraded" => style.warning("Degraded"),
                         "unreachable" => style.error("Unreachable"),
                         "draining" => style.warning("Draining"),
+                        "drained" => style.info("Drained"),
                         "disabled" => style.muted("Disabled"),
                         other => style.muted(other),
                     };
@@ -7910,7 +7911,7 @@ pub async fn queue_status(watch: bool, follow: bool, ctx: &OutputContext) -> Res
                             workers_available += 1;
                         }
                     }
-                    "unreachable" | "disabled" => workers_offline += 1,
+                    "unreachable" | "drained" | "disabled" => workers_offline += 1,
                     _ => {}
                 }
             }
@@ -8098,7 +8099,7 @@ pub async fn queue_status(watch: bool, follow: bool, ctx: &OutputContext) -> Res
                         healthy_count += 1;
                     }
                 }
-                "unreachable" | "disabled" => offline_count += 1,
+                "unreachable" | "drained" | "disabled" => offline_count += 1,
                 _ => {}
             }
         }
@@ -8121,8 +8122,9 @@ pub async fn queue_status(watch: bool, follow: bool, ctx: &OutputContext) -> Res
                     "healthy" => style.success("●"),
                     "degraded" => style.warning("●"),
                     "draining" => style.warning("◐"),
+                    "drained" => style.info("○"),
                     "unreachable" => style.error("○"),
-                    "disabled" => style.muted("○"),
+                    "disabled" => style.muted("⊘"),
                     _ => style.muted("?"),
                 };
                 let slots_display = format!("{}/{}", worker.used_slots, worker.total_slots);

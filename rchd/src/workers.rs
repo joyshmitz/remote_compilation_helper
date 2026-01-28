@@ -101,6 +101,9 @@ impl WorkerState {
     }
 
     /// Release slots after a job completes.
+    ///
+    /// If the worker is in `Draining` state and all slots are now free,
+    /// automatically transitions to `Drained` state.
     pub async fn release_slots(&self, count: u32) {
         let mut current = self.used_slots.load(Ordering::Relaxed);
         loop {
@@ -126,6 +129,9 @@ impl WorkerState {
                 Err(actual) => current = actual,
             }
         }
+
+        // Check if draining worker should transition to drained
+        self.check_drain_complete().await;
     }
 
     /// Check if this worker has a cached copy of a project.
@@ -683,17 +689,17 @@ mod tests {
         state.drain().await;
         assert!(state.is_draining().await);
 
-        // With active jobs, check_drain_complete() should NOT transition to Drained
+        // With active jobs, calling check_drain_complete() should NOT transition to Drained
         state.check_drain_complete().await;
         assert!(state.is_draining().await);
         assert!(!state.is_drained().await);
 
-        // Release the slot (job completes)
+        // Release the slot (job completes) - this automatically calls check_drain_complete()
+        // and should transition to Drained since no jobs remain
         state.release_slots(1).await;
         assert_eq!(state.used_slots(), 0);
 
-        // Now check_drain_complete() should transition to Drained
-        state.check_drain_complete().await;
+        // Worker should now be Drained (automatic transition via release_slots)
         assert!(!state.is_draining().await);
         assert!(state.is_drained().await);
         assert_eq!(state.status().await, WorkerStatus::Drained);

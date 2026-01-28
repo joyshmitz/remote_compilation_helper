@@ -36,6 +36,8 @@ pub fn worker_indicator(status: &WorkerStatus) -> StatusIndicator {
         WorkerStatus::Degraded => StatusIndicator::Warning,
         WorkerStatus::Unreachable => StatusIndicator::Error,
         WorkerStatus::Draining => StatusIndicator::InProgress,
+        WorkerStatus::Drained => StatusIndicator::Info,
+        WorkerStatus::Disabled => StatusIndicator::Pending,
     }
 }
 
@@ -46,6 +48,8 @@ pub fn worker_symbol(status: &WorkerStatus) -> &'static str {
         WorkerStatus::Degraded => StatusIndicator::InProgress.unicode_symbol(), // ◐
         WorkerStatus::Unreachable => StatusIndicator::Pending.unicode_symbol(), // ○
         WorkerStatus::Draining => Symbols::UNICODE.draining, // ◑
+        WorkerStatus::Drained => StatusIndicator::Pending.unicode_symbol(), // ○ (empty)
+        WorkerStatus::Disabled => StatusIndicator::Disabled.unicode_symbol(), // ⊘ (disabled)
     }
 }
 

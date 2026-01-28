@@ -1443,11 +1443,14 @@ async fn handle_telemetry_poll(ctx: &DaemonContext, worker_id: &WorkerId) -> Tel
     };
 
     let status = worker.status().await;
-    if matches!(status, WorkerStatus::Unreachable | WorkerStatus::Disabled) {
+    if matches!(
+        status,
+        WorkerStatus::Unreachable | WorkerStatus::Drained | WorkerStatus::Disabled
+    ) {
         return TelemetryPollResponse {
             status: "error".to_string(),
             telemetry: None,
-            error: Some("worker unreachable".to_string()),
+            error: Some("worker unavailable".to_string()),
             worker_id: Some(worker_id.to_string()),
         };
     }

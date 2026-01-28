@@ -318,6 +318,8 @@ pub enum WorkerStatus {
     Degraded,
     Unreachable,
     Draining,
+    Drained,
+    Disabled,
 }
 
 /// Circuit breaker state.

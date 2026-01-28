@@ -319,6 +319,8 @@ fn update_state_from_daemon(state: &mut TuiState, response: DaemonFullStatusResp
                 "healthy" => WorkerStatus::Healthy,
                 "degraded" => WorkerStatus::Degraded,
                 "draining" => WorkerStatus::Draining,
+                "drained" => WorkerStatus::Drained,
+                "disabled" => WorkerStatus::Disabled,
                 _ => WorkerStatus::Unreachable,
             };
             let circuit = match w.circuit_state.as_str() {

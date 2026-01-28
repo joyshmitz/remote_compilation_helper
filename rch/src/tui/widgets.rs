@@ -343,6 +343,14 @@ fn render_workers_panel(frame: &mut Frame, area: Rect, state: &TuiState, colors:
                     SYMBOLS.bullet_half,
                     indicator_color(StatusIndicator::Info, colors),
                 ),
+                WorkerStatus::Drained => (
+                    SYMBOLS.bullet_empty,
+                    indicator_color(StatusIndicator::Info, colors),
+                ),
+                WorkerStatus::Disabled => (
+                    SYMBOLS.bullet_empty,
+                    indicator_color(StatusIndicator::Pending, colors),
+                ),
             };
             // Use unicode symbols instead of emoji for terminal compatibility
             let circuit_icon = match w.circuit {

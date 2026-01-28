@@ -486,8 +486,11 @@ fn render_workers_table_to<W: Write>(
     for worker in &status.workers {
         let status_display = match worker.status.as_str() {
             "healthy" => style.success("healthy"),
-            "unhealthy" => style.error("unhealthy"),
+            "degraded" => style.warning("degraded"),
             "draining" => style.warning("draining"),
+            "drained" => style.info("drained"),
+            "unreachable" | "unhealthy" => style.error("unreachable"),
+            "disabled" => style.muted("disabled"),
             _ => style.muted(&worker.status),
         };
 
@@ -1022,7 +1025,8 @@ mod tests {
         assert!(output.contains("worker-a"));
         assert!(output.contains("healthy"));
         assert!(output.contains("worker-b"));
-        assert!(output.contains("unhealthy"));
+        // "unhealthy" status displays as "unreachable" (canonical name)
+        assert!(output.contains("unreachable"));
         assert!(output.contains("open (30s)"));
         info!("PASS: workers and circuit states rendered");
     }
