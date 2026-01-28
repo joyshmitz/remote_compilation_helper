@@ -530,9 +530,6 @@ Ratings:
         /// Show SpeedScores for all workers
         #[arg(long)]
         all: bool,
-        /// Show detailed component breakdown
-        #[arg(short, long)]
-        verbose: bool,
         /// Show SpeedScore history
         #[arg(long)]
         history: bool,
@@ -1314,11 +1311,10 @@ async fn main() -> Result<()> {
             Commands::SpeedScore {
                 worker,
                 all,
-                verbose,
                 history,
                 days,
                 limit,
-            } => commands::speedscore(worker, all, verbose, history, days, limit, &ctx).await,
+            } => commands::speedscore(worker, all, history, days, limit, &ctx).await,
             Commands::Dashboard {
                 refresh,
                 no_mouse,
@@ -3392,18 +3388,18 @@ mod tests {
     fn cli_parses_speedscore_single_worker() {
         let _guard = test_guard!();
         let cli = Cli::try_parse_from(["rch", "speedscore", "css"]).unwrap();
+        // verbose is now a global flag on Cli, not on SpeedScore
+        assert!(!cli.verbose);
         match cli.command {
             Some(Commands::SpeedScore {
                 worker,
                 all,
-                verbose,
                 history,
                 days,
                 limit,
             }) => {
                 assert_eq!(worker, Some("css".to_string()));
                 assert!(!all);
-                assert!(!verbose);
                 assert!(!history);
                 assert_eq!(days, 30);
                 assert_eq!(limit, 20);
@@ -3428,13 +3424,12 @@ mod tests {
     #[test]
     fn cli_parses_speedscore_verbose() {
         let _guard = test_guard!();
+        // --verbose is a global flag, so we check cli.verbose
         let cli = Cli::try_parse_from(["rch", "speedscore", "css", "--verbose"]).unwrap();
+        assert!(cli.verbose, "Global verbose flag should be set");
         match cli.command {
-            Some(Commands::SpeedScore {
-                worker, verbose, ..
-            }) => {
+            Some(Commands::SpeedScore { worker, .. }) => {
                 assert_eq!(worker, Some("css".to_string()));
-                assert!(verbose);
             }
             _ => panic!("Expected speedscore --verbose command"),
         }
@@ -3463,11 +3458,11 @@ mod tests {
     #[test]
     fn cli_parses_speedscore_short_verbose() {
         let _guard = test_guard!();
+        // -v is the global short verbose flag
         let cli = Cli::try_parse_from(["rch", "speedscore", "css", "-v"]).unwrap();
+        assert!(cli.verbose, "Global verbose flag should be set with -v");
         match cli.command {
-            Some(Commands::SpeedScore { verbose, .. }) => {
-                assert!(verbose);
-            }
+            Some(Commands::SpeedScore { .. }) => {}
             _ => panic!("Expected speedscore -v command"),
         }
     }

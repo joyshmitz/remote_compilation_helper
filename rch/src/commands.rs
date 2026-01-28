@@ -8290,16 +8290,15 @@ fn display_speedscore_verbose(score: &SpeedScoreViewFromApi, style: &crate::ui::
 }
 
 /// SpeedScore CLI command entry point.
-#[allow(clippy::too_many_arguments)]
 pub async fn speedscore(
     worker: Option<String>,
     all: bool,
-    verbose: bool,
     history: bool,
     days: u32,
     limit: usize,
     ctx: &OutputContext,
 ) -> Result<()> {
+    let verbose = ctx.is_verbose();
     let style = ctx.theme();
 
     // Validate arguments
