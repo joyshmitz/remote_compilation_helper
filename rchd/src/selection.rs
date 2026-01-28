@@ -1050,7 +1050,12 @@ impl WorkerSelector {
                 {
                     all_circuits_open = false;
                 }
-                if worker.status().await != rch_common::WorkerStatus::Unreachable {
+                if !matches!(
+                    worker.status().await,
+                    rch_common::WorkerStatus::Unreachable
+                        | rch_common::WorkerStatus::Drained
+                        | rch_common::WorkerStatus::Disabled
+                ) {
                     all_unreachable = false;
                 }
             }
@@ -1587,7 +1592,12 @@ pub async fn select_worker_with_config(
             {
                 all_circuits_open = false;
             }
-            if worker.status().await != rch_common::WorkerStatus::Unreachable {
+            if !matches!(
+                    worker.status().await,
+                    rch_common::WorkerStatus::Unreachable
+                        | rch_common::WorkerStatus::Drained
+                        | rch_common::WorkerStatus::Disabled
+                ) {
                 all_unreachable = false;
             }
         }

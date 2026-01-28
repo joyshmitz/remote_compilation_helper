@@ -73,6 +73,9 @@ impl RchTheme {
     /// Worker is draining (no new work) - Purple.
     pub const STATUS_DRAINING: &'static str = "#8B5CF6";
 
+    /// Worker is drained (drain complete, idle) - Indigo.
+    pub const STATUS_DRAINED: &'static str = "#6366F1";
+
     /// Worker is disabled (admin disabled) - Gray.
     pub const STATUS_DISABLED: &'static str = "#737B8A";
 
@@ -184,6 +187,7 @@ impl RchTheme {
             WorkerStatus::Degraded => Self::STATUS_DEGRADED,
             WorkerStatus::Unreachable => Self::STATUS_UNREACHABLE,
             WorkerStatus::Draining => Self::STATUS_DRAINING,
+            WorkerStatus::Drained => Self::STATUS_DRAINED,
             WorkerStatus::Disabled => Self::STATUS_DISABLED,
         };
         Style::new().color(Color::parse(color).unwrap_or_default())
@@ -253,6 +257,7 @@ impl RchTheme {
             WorkerStatus::Degraded => Self::STATUS_DEGRADED,
             WorkerStatus::Unreachable => Self::STATUS_UNREACHABLE,
             WorkerStatus::Draining => Self::STATUS_DRAINING,
+            WorkerStatus::Drained => Self::STATUS_DRAINED,
             WorkerStatus::Disabled => Self::STATUS_DISABLED,
         }
     }
@@ -265,6 +270,7 @@ impl RchTheme {
             "degraded" => Self::STATUS_DEGRADED,
             "unreachable" => Self::STATUS_UNREACHABLE,
             "draining" => Self::STATUS_DRAINING,
+            "drained" => Self::STATUS_DRAINED,
             "disabled" => Self::STATUS_DISABLED,
             "success" | "ok" => Self::SUCCESS,
             "warning" | "warn" => Self::WARNING,
@@ -402,6 +408,10 @@ mod tests {
             RchTheme::STATUS_DRAINING
         );
         assert_eq!(
+            RchTheme::color_for_worker_status(WorkerStatus::Drained),
+            RchTheme::STATUS_DRAINED
+        );
+        assert_eq!(
             RchTheme::color_for_worker_status(WorkerStatus::Disabled),
             RchTheme::STATUS_DISABLED
         );
@@ -442,6 +452,7 @@ mod tests {
             RchTheme::STATUS_DEGRADED,
             RchTheme::STATUS_UNREACHABLE,
             RchTheme::STATUS_DRAINING,
+            RchTheme::STATUS_DRAINED,
             RchTheme::STATUS_DISABLED,
         ];
 
@@ -515,6 +526,7 @@ mod tests {
             assert!(Color::parse(RchTheme::STATUS_DEGRADED).is_ok());
             assert!(Color::parse(RchTheme::STATUS_UNREACHABLE).is_ok());
             assert!(Color::parse(RchTheme::STATUS_DRAINING).is_ok());
+            assert!(Color::parse(RchTheme::STATUS_DRAINED).is_ok());
             assert!(Color::parse(RchTheme::STATUS_DISABLED).is_ok());
             assert!(Color::parse(RchTheme::MUTED).is_ok());
             assert!(Color::parse(RchTheme::DIM).is_ok());
@@ -552,6 +564,7 @@ mod tests {
             let _ = RchTheme::for_worker_status(WorkerStatus::Degraded);
             let _ = RchTheme::for_worker_status(WorkerStatus::Unreachable);
             let _ = RchTheme::for_worker_status(WorkerStatus::Draining);
+            let _ = RchTheme::for_worker_status(WorkerStatus::Drained);
             let _ = RchTheme::for_worker_status(WorkerStatus::Disabled);
         }
     }

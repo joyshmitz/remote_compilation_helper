@@ -27,6 +27,21 @@ impl std::fmt::Display for WorkerId {
 }
 
 /// Status of a worker in the fleet.
+///
+/// State transitions:
+/// ```text
+/// HEALTHY ←→ DEGRADED (automatic based on response times)
+///    ↓           ↓
+///    ↓       UNREACHABLE (automatic on heartbeat failure)
+///    ↓
+/// DRAINING (via `rch workers drain`) - finishing current jobs
+///    ↓
+/// DRAINED (automatic when all jobs complete) - idle, ready to disable
+///    ↓
+/// DISABLED (via `rch workers disable`) - completely offline
+///
+/// Use `rch workers enable` to return from DRAINING/DRAINED/DISABLED → HEALTHY
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerStatus {
@@ -39,6 +54,8 @@ pub enum WorkerStatus {
     Unreachable,
     /// Worker is not accepting new jobs (finishing current).
     Draining,
+    /// Worker has finished draining (no active jobs, idle).
+    Drained,
     /// Worker is manually disabled.
     Disabled,
 }

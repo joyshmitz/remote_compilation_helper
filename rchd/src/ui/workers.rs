@@ -464,6 +464,7 @@ fn status_label(status: WorkerStatus) -> &'static str {
         WorkerStatus::Degraded => "DEGRADED",
         WorkerStatus::Unreachable => "DOWN",
         WorkerStatus::Draining => "DRAINING",
+        WorkerStatus::Drained => "DRAINED",
         WorkerStatus::Disabled => "DISABLED",
     }
 }
@@ -485,6 +486,7 @@ fn format_status_rich(ctx: OutputContext, status: WorkerStatus) -> String {
         WorkerStatus::Degraded => format!("{} Degraded", Icons::warning(ctx)),
         WorkerStatus::Unreachable => format!("{} Down", Icons::cross(ctx)),
         WorkerStatus::Draining => format!("{} Draining", Icons::info(ctx)),
+        WorkerStatus::Drained => format!("{} Drained", Icons::check(ctx)),
         WorkerStatus::Disabled => format!("{} Disabled", Icons::lock(ctx)),
     }
 }
@@ -663,6 +665,12 @@ mod tests {
     }
 
     #[test]
+    fn test_status_label_drained() {
+        let _guard = test_guard!();
+        assert_eq!(status_label(WorkerStatus::Drained), "DRAINED");
+    }
+
+    #[test]
     fn test_status_label_disabled() {
         let _guard = test_guard!();
         assert_eq!(status_label(WorkerStatus::Disabled), "DISABLED");
@@ -691,6 +699,13 @@ mod tests {
     fn test_is_online_unreachable() {
         let _guard = test_guard!();
         assert!(!is_online(WorkerStatus::Unreachable));
+    }
+
+    #[test]
+    fn test_is_online_drained() {
+        let _guard = test_guard!();
+        // Drained workers are not online - they're idle and not accepting jobs
+        assert!(!is_online(WorkerStatus::Drained));
     }
 
     #[test]
@@ -1200,6 +1215,13 @@ mod tests {
         let _guard = test_guard!();
         let result = format_status_rich(OutputContext::Plain, WorkerStatus::Draining);
         assert!(result.contains("Draining"));
+    }
+
+    #[test]
+    fn test_format_status_rich_drained() {
+        let _guard = test_guard!();
+        let result = format_status_rich(OutputContext::Plain, WorkerStatus::Drained);
+        assert!(result.contains("Drained"));
     }
 
     #[test]

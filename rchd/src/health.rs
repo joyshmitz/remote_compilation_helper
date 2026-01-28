@@ -407,6 +407,7 @@ impl HealthMonitor {
                         WorkerStatus::Healthy => 1.0,
                         WorkerStatus::Degraded => 2.0,
                         WorkerStatus::Draining => 2.0,
+                        WorkerStatus::Drained => 0.0,
                         WorkerStatus::Unreachable => 0.0,
                         WorkerStatus::Disabled => 0.0,
                     };

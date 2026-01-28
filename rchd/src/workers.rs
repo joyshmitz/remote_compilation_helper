@@ -304,6 +304,22 @@ impl WorkerState {
         *self.status.read().await == WorkerStatus::Draining
     }
 
+    /// Check if worker is drained (drain complete, no active jobs).
+    pub async fn is_drained(&self) -> bool {
+        *self.status.read().await == WorkerStatus::Drained
+    }
+
+    /// Check if draining worker has completed all jobs and should transition to Drained.
+    /// Called when a job completes; auto-transitions Draining → Drained when no jobs remain.
+    pub async fn check_drain_complete(&self) {
+        if *self.status.read().await == WorkerStatus::Draining {
+            let used = self.used_slots.load(Ordering::Relaxed);
+            if used == 0 {
+                *self.status.write().await = WorkerStatus::Drained;
+            }
+        }
+    }
+
     /// Get the reason this worker was disabled (if any).
     pub async fn disabled_reason(&self) -> Option<String> {
         self.disabled_reason.read().await.clone()
@@ -633,6 +649,54 @@ mod tests {
         state.enable().await;
         assert!(!state.is_draining().await);
         assert_eq!(state.status().await, WorkerStatus::Healthy);
+    }
+
+    #[tokio::test]
+    async fn test_drained_state() {
+        let state = WorkerState::new(test_config("test"));
+
+        // Drained is set automatically via check_drain_complete()
+        state.drain().await;
+        assert!(state.is_draining().await);
+        assert!(!state.is_drained().await);
+
+        // When no slots are used, draining should auto-transition to drained
+        state.check_drain_complete().await;
+        assert!(!state.is_draining().await);
+        assert!(state.is_drained().await);
+        assert_eq!(state.status().await, WorkerStatus::Drained);
+
+        // Enable clears drained
+        state.enable().await;
+        assert!(!state.is_drained().await);
+        assert_eq!(state.status().await, WorkerStatus::Healthy);
+    }
+
+    #[tokio::test]
+    async fn test_drain_complete_with_active_jobs() {
+        let state = WorkerState::new(test_config("test"));
+
+        // Reserve a slot to simulate an active job
+        assert!(state.reserve_slots(1).await);
+        assert_eq!(state.used_slots(), 1);
+
+        state.drain().await;
+        assert!(state.is_draining().await);
+
+        // With active jobs, check_drain_complete() should NOT transition to Drained
+        state.check_drain_complete().await;
+        assert!(state.is_draining().await);
+        assert!(!state.is_drained().await);
+
+        // Release the slot (job completes)
+        state.release_slots(1).await;
+        assert_eq!(state.used_slots(), 0);
+
+        // Now check_drain_complete() should transition to Drained
+        state.check_drain_complete().await;
+        assert!(!state.is_draining().await);
+        assert!(state.is_drained().await);
+        assert_eq!(state.status().await, WorkerStatus::Drained);
     }
 
     #[tokio::test]

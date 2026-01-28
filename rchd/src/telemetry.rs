@@ -301,7 +301,10 @@ impl TelemetryPoller {
 
     async fn should_poll_worker(&self, worker: &WorkerState) -> bool {
         let status = worker.status().await;
-        if matches!(status, WorkerStatus::Unreachable | WorkerStatus::Disabled) {
+        if matches!(
+            status,
+            WorkerStatus::Unreachable | WorkerStatus::Drained | WorkerStatus::Disabled
+        ) {
             return false;
         }
 

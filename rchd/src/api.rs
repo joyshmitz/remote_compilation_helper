@@ -2426,6 +2426,7 @@ async fn handle_status(ctx: &DaemonContext) -> Result<DaemonFullStatus> {
             WorkerStatus::Degraded => "degraded",
             WorkerStatus::Unreachable => "unreachable",
             WorkerStatus::Draining => "draining",
+            WorkerStatus::Drained => "drained",
             WorkerStatus::Disabled => "disabled",
         };
 

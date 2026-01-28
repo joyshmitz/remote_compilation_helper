@@ -242,7 +242,7 @@ impl AlertManager {
                 );
                 self.upsert_alert(degraded_key, alert);
             }
-            WorkerStatus::Draining | WorkerStatus::Disabled => {}
+            WorkerStatus::Draining | WorkerStatus::Drained | WorkerStatus::Disabled => {}
         }
     }
 
