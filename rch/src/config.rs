@@ -91,6 +91,146 @@ impl FileValidation {
     pub fn warn(&mut self, message: impl Into<String>) {
         self.warnings.push(message.into());
     }
+
+    /// Validate that a path exists and is readable.
+    pub fn validate_path_readable(&mut self, key: &str, path: &Path) {
+        if !path.exists() {
+            self.error(format!("{}: path does not exist: {}", key, path.display()));
+        } else if let Err(e) = std::fs::metadata(path) {
+            self.error(format!("{}: cannot read path {}: {}", key, path.display(), e));
+        }
+    }
+
+    /// Validate that the parent directory of a path exists and is writable.
+    pub fn validate_path_parent_writable(&mut self, key: &str, path: &Path) {
+        let parent = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => {
+                self.error(format!("{}: path has no parent directory: {}", key, path.display()));
+                return;
+            }
+        };
+
+        if !parent.exists() {
+            self.error(format!(
+                "{}: parent directory does not exist: {}",
+                key,
+                parent.display()
+            ));
+            return;
+        }
+
+        // Check if parent directory is writable
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = parent.metadata() {
+                let mode = meta.permissions().mode();
+                // Check if directory is writable by owner (bit 7) or group/other if applicable
+                // A simple heuristic: if we can't write, warn (actual check would need uid/gid)
+                if mode & 0o200 == 0 && mode & 0o020 == 0 && mode & 0o002 == 0 {
+                    self.warn(format!(
+                        "{}: parent directory may not be writable: {}",
+                        key,
+                        parent.display()
+                    ));
+                }
+            }
+        }
+
+        // On non-Unix, just check that parent exists (already done above)
+        #[cfg(not(unix))]
+        {
+            let _ = parent; // Avoid unused variable warning
+        }
+    }
+
+    /// Validate SSH key file permissions (Unix: should be 600 or 400).
+    #[cfg(unix)]
+    pub fn validate_ssh_key_permissions(&mut self, key: &str, path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        if !path.exists() {
+            // Existence is checked elsewhere; don't duplicate the error
+            return;
+        }
+
+        match path.metadata() {
+            Ok(meta) => {
+                let mode = meta.permissions().mode() & 0o777;
+                if mode != 0o600 && mode != 0o400 {
+                    self.warn(format!(
+                        "{}: SSH key has insecure permissions {:o} (should be 600 or 400): {}",
+                        key, mode, path.display()
+                    ));
+                }
+            }
+            Err(e) => {
+                self.warn(format!(
+                    "{}: cannot check permissions for {}: {}",
+                    key,
+                    path.display(),
+                    e
+                ));
+            }
+        }
+    }
+
+    /// Validate SSH key file permissions (no-op on non-Unix platforms).
+    #[cfg(not(unix))]
+    pub fn validate_ssh_key_permissions(&mut self, _key: &str, _path: &Path) {
+        // SSH key permission checks only apply to Unix systems
+    }
+
+    /// Validate rsync exclude/include pattern syntax.
+    ///
+    /// rsync patterns support:
+    /// - `*` matches any path component (excluding slashes)
+    /// - `**` matches any path (including slashes)
+    /// - `?` matches any single character except slash
+    /// - `[...]` character class
+    /// - Leading `/` anchors to transfer root
+    /// - Trailing `/` matches directories only
+    pub fn validate_rsync_pattern(&mut self, key: &str, pattern: &str) {
+        if pattern.is_empty() {
+            self.error(format!("{}: empty pattern is not allowed", key));
+            return;
+        }
+
+        // Check for unbalanced brackets
+        let mut bracket_depth = 0i32;
+        let mut prev_char = '\0';
+        for ch in pattern.chars() {
+            match ch {
+                '[' if prev_char != '\\' => bracket_depth += 1,
+                ']' if prev_char != '\\' => bracket_depth -= 1,
+                _ => {}
+            }
+            if bracket_depth < 0 {
+                self.error(format!("{}: unbalanced ']' in pattern: {}", key, pattern));
+                return;
+            }
+            prev_char = ch;
+        }
+        if bracket_depth != 0 {
+            self.error(format!("{}: unclosed '[' in pattern: {}", key, pattern));
+            return;
+        }
+
+        // Warn about potentially problematic patterns
+        if pattern == "*" || pattern == "**" {
+            self.warn(format!(
+                "{}: pattern '{}' matches everything - is this intentional?",
+                key, pattern
+            ));
+        }
+
+        // Warn about patterns that might accidentally exclude too much
+        if pattern.starts_with('/') && !pattern.contains('*') && !pattern.contains('?') {
+            // Absolute path without wildcards - might be overly specific
+            // This is fine, just informational
+        }
+    }
 }
 
 /// Mapping of config keys to their value sources.
@@ -376,10 +516,8 @@ pub fn validate_rch_config_file(path: &Path) -> FileValidation {
         let expanded = shellexpand::tilde(&config.general.socket_path);
         let socket_path = Path::new(expanded.as_ref());
         if !socket_path.exists() {
-            validation.warn(format!(
-                "general.socket_path does not exist: {}",
-                socket_path.display()
-            ));
+            // Socket doesn't exist yet - check if parent directory is writable (bd-1g3l)
+            validation.validate_path_parent_writable("general.socket_path", socket_path);
         }
     }
 
@@ -396,6 +534,14 @@ pub fn validate_rch_config_file(path: &Path) -> FileValidation {
     if !is_valid_log_level(&config.general.log_level) {
         validation.error(
             "general.log_level must be one of: trace, debug, info, warn, error, off".to_string(),
+        );
+    }
+
+    // Validate exclude patterns (bd-1g3l)
+    for (idx, pattern) in config.transfer.exclude_patterns.iter().enumerate() {
+        validation.validate_rsync_pattern(
+            &format!("transfer.exclude_patterns[{}]", idx),
+            pattern,
         );
     }
 
@@ -538,6 +684,16 @@ pub fn validate_workers_config_file(path: &Path) -> FileValidation {
                 if id.is_empty() { "(unknown id)" } else { &id },
                 identity_path.display()
             ));
+        } else {
+            // SSH key exists - validate permissions (bd-1g3l)
+            validation.validate_ssh_key_permissions(
+                &format!(
+                    "workers[{}] {} identity_file",
+                    index,
+                    if id.is_empty() { "(unknown id)" } else { &id }
+                ),
+                identity_path,
+            );
         }
 
         if let Some(total_slots) = table.get("total_slots") {
@@ -3401,5 +3557,183 @@ confidence_threshold = 0.80
         // Cleanup
         let _ = std::fs::remove_dir_all(&temp_dir);
         info!("PASS: Project config source tracked correctly");
+    }
+
+    // =========================================================================
+    // New validation tests (bd-1g3l)
+    // =========================================================================
+
+    #[test]
+    fn test_validate_rsync_pattern_valid() {
+        let _guard = test_guard!();
+        info!("TEST: test_validate_rsync_pattern_valid");
+
+        let mut validation = FileValidation::new(Path::new("/test"));
+
+        // Valid patterns
+        validation.validate_rsync_pattern("test", "target/");
+        validation.validate_rsync_pattern("test", "*.o");
+        validation.validate_rsync_pattern("test", "**/*.rs");
+        validation.validate_rsync_pattern("test", "/absolute/path");
+        validation.validate_rsync_pattern("test", "dir/");
+        validation.validate_rsync_pattern("test", "[abc]");
+        validation.validate_rsync_pattern("test", "[a-z]*.txt");
+
+        info!("RESULT: errors={:?}", validation.errors);
+        assert!(validation.errors.is_empty(), "Valid patterns should not produce errors");
+        info!("PASS: Valid rsync patterns accepted");
+    }
+
+    #[test]
+    fn test_validate_rsync_pattern_unbalanced_brackets() {
+        let _guard = test_guard!();
+        info!("TEST: test_validate_rsync_pattern_unbalanced_brackets");
+
+        let mut validation = FileValidation::new(Path::new("/test"));
+
+        // Unclosed bracket
+        validation.validate_rsync_pattern("test1", "[invalid");
+        assert!(
+            validation.errors.iter().any(|e| e.contains("unclosed '['") && e.contains("test1")),
+            "Should detect unclosed bracket"
+        );
+
+        // Unmatched closing bracket
+        let mut validation2 = FileValidation::new(Path::new("/test"));
+        validation2.validate_rsync_pattern("test2", "invalid]");
+        assert!(
+            validation2.errors.iter().any(|e| e.contains("unbalanced ']'") && e.contains("test2")),
+            "Should detect unbalanced closing bracket"
+        );
+
+        info!("PASS: Unbalanced brackets detected");
+    }
+
+    #[test]
+    fn test_validate_rsync_pattern_empty() {
+        let _guard = test_guard!();
+        info!("TEST: test_validate_rsync_pattern_empty");
+
+        let mut validation = FileValidation::new(Path::new("/test"));
+        validation.validate_rsync_pattern("empty_pattern", "");
+
+        info!("RESULT: errors={:?}", validation.errors);
+        assert!(
+            validation.errors.iter().any(|e| e.contains("empty pattern")),
+            "Empty pattern should be an error"
+        );
+        info!("PASS: Empty pattern rejected");
+    }
+
+    #[test]
+    fn test_validate_rsync_pattern_catch_all_warning() {
+        let _guard = test_guard!();
+        info!("TEST: test_validate_rsync_pattern_catch_all_warning");
+
+        let mut validation = FileValidation::new(Path::new("/test"));
+        validation.validate_rsync_pattern("star", "*");
+        validation.validate_rsync_pattern("double_star", "**");
+
+        info!("RESULT: warnings={:?}", validation.warnings);
+        assert!(
+            validation.warnings.iter().any(|w| w.contains("matches everything")),
+            "Catch-all patterns should warn"
+        );
+        info!("PASS: Catch-all pattern warning issued");
+    }
+
+    #[test]
+    fn test_validate_exclude_patterns_integration() {
+        let _guard = test_guard!();
+        info!("TEST: test_validate_exclude_patterns_integration");
+
+        let mut file = NamedTempFile::new().expect("create temp file");
+        std::io::Write::write_all(
+            file.as_file_mut(),
+            b"[transfer]\nexclude_patterns = [\"target/\", \"[invalid\"]\n",
+        )
+        .expect("write config");
+
+        let result = validate_rch_config_file(file.path());
+        info!("RESULT: errors={:?}", result.errors);
+
+        assert!(
+            result.errors.iter().any(|e| e.contains("exclude_patterns") && e.contains("unclosed")),
+            "Should detect invalid exclude pattern"
+        );
+        info!("PASS: Invalid exclude_patterns detected in config validation");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_validate_ssh_key_permissions() {
+        let _guard = test_guard!();
+        info!("TEST: test_validate_ssh_key_permissions");
+
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_file = NamedTempFile::new().expect("create temp file");
+        let path = temp_file.path();
+
+        // Set insecure permissions (644)
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))
+            .expect("set permissions");
+
+        let mut validation = FileValidation::new(Path::new("/test"));
+        validation.validate_ssh_key_permissions("test_key", path);
+
+        info!("RESULT: warnings={:?}", validation.warnings);
+        assert!(
+            validation.warnings.iter().any(|w| w.contains("insecure permissions") && w.contains("644")),
+            "Should warn about insecure SSH key permissions"
+        );
+
+        // Now set secure permissions (600)
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .expect("set permissions");
+
+        let mut validation2 = FileValidation::new(Path::new("/test"));
+        validation2.validate_ssh_key_permissions("test_key", path);
+
+        info!("RESULT with 600: warnings={:?}", validation2.warnings);
+        assert!(
+            validation2.warnings.is_empty(),
+            "Secure permissions (600) should not warn"
+        );
+
+        info!("PASS: SSH key permission validation works correctly");
+    }
+
+    #[test]
+    fn test_validate_path_parent_writable() {
+        let _guard = test_guard!();
+        info!("TEST: test_validate_path_parent_writable");
+
+        // Test with existing parent directory
+        let temp_dir = std::env::temp_dir();
+        let test_path = temp_dir.join("rch_test_socket.sock");
+
+        let mut validation = FileValidation::new(Path::new("/test"));
+        validation.validate_path_parent_writable("socket_path", &test_path);
+
+        info!("RESULT: errors={:?}, warnings={:?}", validation.errors, validation.warnings);
+        // Should not produce errors for valid writable parent
+        assert!(
+            validation.errors.is_empty(),
+            "Valid parent directory should not produce errors"
+        );
+
+        // Test with non-existent parent
+        let invalid_path = Path::new("/nonexistent_dir_12345/socket.sock");
+        let mut validation2 = FileValidation::new(Path::new("/test"));
+        validation2.validate_path_parent_writable("socket_path", invalid_path);
+
+        info!("RESULT for invalid: errors={:?}", validation2.errors);
+        assert!(
+            validation2.errors.iter().any(|e| e.contains("parent directory does not exist")),
+            "Should error for non-existent parent"
+        );
+
+        info!("PASS: Parent directory validation works correctly");
     }
 }
