@@ -19,6 +19,7 @@ pub use download::download_release;
 pub use install::{install_update, rollback};
 pub use types::{Channel, UpdateCheck};
 
+use crate::commands;
 use crate::ui::OutputContext;
 use anyhow::Result;
 
@@ -174,19 +175,18 @@ async fn update_fleet(ctx: &OutputContext, _info: &UpdateCheck, dry_run: bool) -
     }
 
     if dry_run {
-        println!("Dry run: would update all configured workers");
+        if !ctx.is_json() {
+            println!("Dry run: would update all configured workers");
+        }
+        commands::workers_deploy_binary(None, true, false, true, ctx).await?;
         return Ok(());
     }
 
-    // TODO: Implement fleet update
-    // 1. Load worker configurations
-    // 2. Check versions on all workers
-    // 3. Upload new binaries via rsync
-    // 4. Restart worker agents
-    // 5. Verify health
+    // Deploy rch-wkr to all configured workers (version-aware, skips if already up-to-date).
+    commands::workers_deploy_binary(None, true, false, false, ctx).await?;
 
     if !ctx.is_json() {
-        println!("Fleet update not yet implemented");
+        println!("Fleet update complete.");
     }
 
     Ok(())
