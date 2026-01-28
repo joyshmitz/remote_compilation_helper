@@ -79,8 +79,8 @@ pub struct TuiState {
     pub color_blind: ColorBlindMode,
     /// Last copied text (for feedback).
     pub last_copied: Option<String>,
-    /// Confirmation dialog for destructive actions.
-    pub confirmation_dialog: Option<ConfirmationDialog>,
+    /// Pending confirmation dialog for destructive actions.
+    pub confirm_dialog: Option<ConfirmDialog>,
 }
 
 impl Default for TuiState {
@@ -102,7 +102,7 @@ impl Default for TuiState {
             high_contrast: false,
             color_blind: ColorBlindMode::None,
             last_copied: None,
-            confirmation_dialog: None,
+            confirm_dialog: None,
         }
     }
 }
@@ -147,7 +147,7 @@ impl TuiState {
         }
     }
 
-    /// Get the currently selected active build, if ActiveBuilds panel is selected and has items.
+    /// Get the currently selected active build, if ActiveBuilds panel is selected.
     pub fn selected_active_build(&self) -> Option<&ActiveBuild> {
         if self.selected_panel == Panel::ActiveBuilds {
             self.active_builds.get(self.selected_index)
@@ -380,6 +380,30 @@ pub struct FilterState {
     pub failed_only: bool,
 }
 
+/// A pending confirmation dialog for destructive TUI actions.
+#[derive(Debug, Clone)]
+pub struct ConfirmDialog {
+    /// Title shown in the modal header.
+    pub title: String,
+    /// Description of the action and its consequences.
+    pub message: String,
+    /// The action to execute on confirmation.
+    pub action: ConfirmAction,
+}
+
+/// Actions that can be confirmed via the dialog.
+#[derive(Debug, Clone)]
+pub enum ConfirmAction {
+    /// Drain a single worker by ID.
+    DrainWorker(String),
+    /// Drain all workers.
+    DrainAllWorkers,
+    /// Cancel a build (SIGTERM) by ID.
+    CancelBuild(String),
+    /// Force kill a build (SIGKILL) by ID.
+    ForceKillBuild(String),
+}
+
 /// Log view state for active build logs.
 #[derive(Debug, Clone)]
 pub struct LogViewState {
@@ -398,50 +422,6 @@ impl Default for LogViewState {
             auto_scroll: true,
         }
     }
-}
-
-/// Actions that require user confirmation before execution.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfirmAction {
-    /// Drain a worker (stop accepting new builds).
-    DrainWorker(String),
-    /// Enable/undrain a worker.
-    EnableWorker(String),
-    /// Cancel an active build gracefully.
-    CancelBuild(String),
-    /// Force kill an active build.
-    KillBuild(String),
-}
-
-impl ConfirmAction {
-    /// Get a human-readable description of the action.
-    pub fn description(&self) -> String {
-        match self {
-            ConfirmAction::DrainWorker(id) => format!("Drain worker '{}'?", id),
-            ConfirmAction::EnableWorker(id) => format!("Enable worker '{}'?", id),
-            ConfirmAction::CancelBuild(id) => format!("Cancel build '{}'?", id),
-            ConfirmAction::KillBuild(id) => format!("Force kill build '{}'?", id),
-        }
-    }
-
-    /// Get additional context about the action's effect.
-    pub fn context(&self) -> &'static str {
-        match self {
-            ConfirmAction::DrainWorker(_) => "Worker will stop accepting new builds.",
-            ConfirmAction::EnableWorker(_) => "Worker will resume accepting builds.",
-            ConfirmAction::CancelBuild(_) => "Build will be cancelled gracefully.",
-            ConfirmAction::KillBuild(_) => "Build will be terminated immediately!",
-        }
-    }
-}
-
-/// Confirmation dialog state.
-#[derive(Debug, Clone)]
-pub struct ConfirmationDialog {
-    /// The action awaiting confirmation.
-    pub action: ConfirmAction,
-    /// Whether "Yes" is currently selected (true) or "No" (false).
-    pub yes_selected: bool,
 }
 
 #[cfg(test)]
@@ -1271,5 +1251,89 @@ mod tests {
         state.select_first();
         assert_eq!(state.selected_index, 0);
         info!("TEST PASS: test_select_first_already_at_first");
+    }
+
+    // ==================== Selected active build tests ====================
+
+    #[test]
+    fn test_selected_active_build_returns_build_when_panel_selected() {
+        init_test_logging();
+        let state = TuiState {
+            active_builds: vec![
+                make_active_build("b1", "cargo build"),
+                make_active_build("b2", "cargo test"),
+            ],
+            selected_panel: Panel::ActiveBuilds,
+            selected_index: 1,
+            ..Default::default()
+        };
+        let build = state.selected_active_build();
+        assert!(build.is_some());
+        assert_eq!(build.unwrap().id, "b2");
+    }
+
+    #[test]
+    fn test_selected_active_build_returns_none_when_wrong_panel() {
+        init_test_logging();
+        let state = TuiState {
+            active_builds: vec![make_active_build("b1", "cargo build")],
+            selected_panel: Panel::Workers,
+            selected_index: 0,
+            ..Default::default()
+        };
+        assert!(state.selected_active_build().is_none());
+    }
+
+    #[test]
+    fn test_selected_active_build_returns_none_when_empty() {
+        init_test_logging();
+        let state = TuiState {
+            active_builds: vec![],
+            selected_panel: Panel::ActiveBuilds,
+            selected_index: 0,
+            ..Default::default()
+        };
+        assert!(state.selected_active_build().is_none());
+    }
+
+    // ==================== Confirm dialog state tests ====================
+
+    #[test]
+    fn test_confirm_dialog_default_is_none() {
+        init_test_logging();
+        let state = TuiState::default();
+        assert!(state.confirm_dialog.is_none());
+    }
+
+    #[test]
+    fn test_confirm_dialog_can_be_set() {
+        init_test_logging();
+        let mut state = TuiState::default();
+        state.confirm_dialog = Some(ConfirmDialog {
+            title: "Drain worker 'css'?".into(),
+            message: "This will stop routing new\njobs to this worker.".into(),
+            action: ConfirmAction::DrainWorker("css".into()),
+        });
+        assert!(state.confirm_dialog.is_some());
+        let dialog = state.confirm_dialog.as_ref().unwrap();
+        assert_eq!(dialog.title, "Drain worker 'css'?");
+        match &dialog.action {
+            ConfirmAction::DrainWorker(id) => assert_eq!(id, "css"),
+            _ => panic!("Expected DrainWorker action"),
+        }
+    }
+
+    #[test]
+    fn test_confirm_dialog_take_clears() {
+        init_test_logging();
+        let mut state = TuiState::default();
+        state.confirm_dialog = Some(ConfirmDialog {
+            title: "Test".into(),
+            message: "Test message".into(),
+            action: ConfirmAction::DrainAllWorkers,
+        });
+        let dialog = state.confirm_dialog.take();
+        assert!(dialog.is_some());
+        assert!(state.confirm_dialog.is_none());
     }
 }

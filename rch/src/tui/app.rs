@@ -2,13 +2,15 @@
 //!
 //! Main entry point for the interactive dashboard.
 
-use crate::status_display::{drain_worker, enable_worker, query_daemon_full_status};
+use crate::status_display::{
+    cancel_build, drain_worker, enable_worker, force_kill_build, query_daemon_full_status,
+};
 use crate::status_types::DaemonFullStatusResponse;
 use crate::tui::{
-    event::{Action, InputMode, poll_event},
+    event::{Action, poll_event_with_flags},
     state::{
         ActiveBuild, BuildProgress, BuildStatus, CircuitState, ColorBlindMode, ConfirmAction,
-        ConfirmationDialog, DaemonState, HistoricalBuild, Panel, Status, TuiState, WorkerState,
+        ConfirmDialog, DaemonState, HistoricalBuild, Panel, Status, TuiState, WorkerState,
         WorkerStatus,
     },
     widgets,
@@ -383,49 +385,6 @@ fn update_state_from_daemon(state: &mut TuiState, response: DaemonFullStatusResp
     }
 }
 
-/// Determine the current input mode based on state.
-fn get_input_mode(state: &TuiState) -> InputMode {
-    if state.confirmation_dialog.is_some() {
-        InputMode::Confirm
-    } else if state.filter_mode {
-        InputMode::TextInput
-    } else {
-        InputMode::Normal
-    }
-}
-
-/// Execute a confirmed action.
-async fn execute_confirmed_action(
-    action: &ConfirmAction,
-    state: &mut TuiState,
-    config: &TuiConfig,
-) {
-    match action {
-        ConfirmAction::DrainWorker(worker_id) => {
-            if let Err(e) = drain_worker(worker_id).await {
-                state.error = Some(format!("Drain failed: {}", e));
-            } else {
-                refresh_state(state, config).await;
-            }
-        }
-        ConfirmAction::EnableWorker(worker_id) => {
-            if let Err(e) = enable_worker(worker_id).await {
-                state.error = Some(format!("Enable failed: {}", e));
-            } else {
-                refresh_state(state, config).await;
-            }
-        }
-        ConfirmAction::CancelBuild(_build_id) => {
-            // TODO: Implement build cancellation when daemon supports it
-            state.error = Some("Build cancellation not yet implemented".to_string());
-        }
-        ConfirmAction::KillBuild(_build_id) => {
-            // TODO: Implement build kill when daemon supports it
-            state.error = Some("Build kill not yet implemented".to_string());
-        }
-    }
-}
-
 /// Main application loop.
 async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
@@ -439,31 +398,19 @@ async fn run_app(
         // Draw UI
         terminal.draw(|f| widgets::render(f, state))?;
 
-        // Handle events - use appropriate input mode
-        let input_mode = get_input_mode(state);
-        if let Some(action) = poll_event(tick_rate, input_mode)? {
+        // Handle events - use confirm mode when dialog is showing, input mode for filters
+        let confirm_mode = state.confirm_dialog.is_some();
+        if let Some(action) = poll_event_with_flags(tick_rate, state.filter_mode, confirm_mode)? {
             match action {
                 Action::Quit => {
-                    // Close overlays in order of priority
-                    if state.confirmation_dialog.is_some() {
-                        state.confirmation_dialog = None;
-                    } else if state.show_help {
+                    // If help overlay is open, close it; otherwise quit
+                    if state.show_help {
                         state.show_help = false;
                     } else if state.filter_mode {
                         state.filter_mode = false;
                     } else {
                         state.should_quit = true;
                     }
-                }
-                Action::ConfirmYes => {
-                    // Execute the pending action
-                    if let Some(dialog) = state.confirmation_dialog.take() {
-                        execute_confirmed_action(&dialog.action, state, config).await;
-                    }
-                }
-                Action::ConfirmNo => {
-                    // Cancel the confirmation dialog
-                    state.confirmation_dialog = None;
                 }
                 Action::Up => {
                     if !state.show_help && !state.filter_mode {
@@ -520,22 +467,12 @@ async fn run_app(
                     }
                 }
                 Action::NextPanel => {
-                    if state.confirmation_dialog.is_some() {
-                        // Toggle yes/no selection in confirmation dialog
-                        if let Some(ref mut dialog) = state.confirmation_dialog {
-                            dialog.yes_selected = !dialog.yes_selected;
-                        }
-                    } else if !state.show_help && !state.filter_mode {
+                    if !state.show_help && !state.filter_mode {
                         state.next_panel();
                     }
                 }
                 Action::PrevPanel => {
-                    if state.confirmation_dialog.is_some() {
-                        // Toggle yes/no selection in confirmation dialog
-                        if let Some(ref mut dialog) = state.confirmation_dialog {
-                            dialog.yes_selected = !dialog.yes_selected;
-                        }
-                    } else if !state.show_help && !state.filter_mode {
+                    if !state.show_help && !state.filter_mode {
                         state.prev_panel();
                     }
                 }
@@ -544,15 +481,7 @@ async fn run_app(
                     refresh_state(state, config).await;
                 }
                 Action::Select => {
-                    if state.confirmation_dialog.is_some() {
-                        // Execute based on yes/no selection
-                        if let Some(dialog) = state.confirmation_dialog.take() {
-                            if dialog.yes_selected {
-                                execute_confirmed_action(&dialog.action, state, config).await;
-                            }
-                            // If no was selected, dialog is already cleared
-                        }
-                    } else if state.filter_mode {
+                    if state.filter_mode {
                         // Apply filter and exit filter mode
                         state.filter_mode = false;
                         state.selected_index = 0; // Reset selection after filtering
@@ -562,9 +491,7 @@ async fn run_app(
                 }
                 Action::Back => {
                     // Handle back action - close overlays or go back
-                    if state.confirmation_dialog.is_some() {
-                        state.confirmation_dialog = None;
-                    } else if state.show_help {
+                    if state.show_help {
                         state.show_help = false;
                     } else if state.filter_mode {
                         state.filter_mode = false;
@@ -575,14 +502,12 @@ async fn run_app(
                     }
                 }
                 Action::Help => {
-                    // Toggle help overlay (not when confirmation dialog is open)
-                    if state.confirmation_dialog.is_none() {
-                        state.show_help = !state.show_help;
-                    }
+                    // Toggle help overlay
+                    state.show_help = !state.show_help;
                 }
                 Action::Filter => {
-                    // Toggle filter mode (not when confirmation dialog is open)
-                    if state.confirmation_dialog.is_none() && !state.show_help {
+                    // Toggle filter mode
+                    if !state.show_help {
                         state.filter_mode = !state.filter_mode;
                     }
                 }
@@ -591,60 +516,144 @@ async fn run_app(
                     state.copy_selected();
                 }
                 Action::DrainWorker => {
-                    // Show confirmation dialog for draining worker
+                    // Show confirmation dialog before draining
                     if !state.show_help
                         && !state.filter_mode
-                        && state.confirmation_dialog.is_none()
                         && state.selected_panel == Panel::Workers
                         && let Some(worker) = state.selected_worker()
                     {
-                        state.confirmation_dialog = Some(ConfirmationDialog {
-                            action: ConfirmAction::DrainWorker(worker.id.clone()),
-                            yes_selected: false, // Default to "No" for safety
+                        let worker_id = worker.id.clone();
+                        state.confirm_dialog = Some(ConfirmDialog {
+                            title: format!("Drain worker '{}'?", worker_id),
+                            message: "This will stop routing new\njobs to this worker.".into(),
+                            action: ConfirmAction::DrainWorker(worker_id),
                         });
                     }
                 }
                 Action::EnableWorker => {
-                    // Show confirmation dialog for enabling worker
+                    // Enable is non-destructive, no confirmation needed
                     if !state.show_help
                         && !state.filter_mode
-                        && state.confirmation_dialog.is_none()
                         && state.selected_panel == Panel::Workers
                         && let Some(worker) = state.selected_worker()
                     {
-                        state.confirmation_dialog = Some(ConfirmationDialog {
-                            action: ConfirmAction::EnableWorker(worker.id.clone()),
-                            yes_selected: false, // Default to "No" for safety
+                        let worker_id = worker.id.clone();
+                        if let Err(e) = enable_worker(&worker_id).await {
+                            state.error = Some(format!("Enable failed: {}", e));
+                        } else {
+                            refresh_state(state, config).await;
+                        }
+                    }
+                }
+                Action::DrainAllWorkers => {
+                    if !state.show_help
+                        && !state.filter_mode
+                        && state.selected_panel == Panel::Workers
+                        && !state.workers.is_empty()
+                    {
+                        state.confirm_dialog = Some(ConfirmDialog {
+                            title: "Drain ALL workers?".into(),
+                            message: "This will stop routing new\njobs to every worker.".into(),
+                            action: ConfirmAction::DrainAllWorkers,
                         });
+                    }
+                }
+                Action::EnableAllWorkers => {
+                    // Enable all is non-destructive, no confirmation needed
+                    if !state.show_help
+                        && !state.filter_mode
+                        && state.selected_panel == Panel::Workers
+                    {
+                        let worker_ids: Vec<String> =
+                            state.workers.iter().map(|w| w.id.clone()).collect();
+                        let mut had_error = false;
+                        for wid in &worker_ids {
+                            if let Err(e) = enable_worker(wid).await {
+                                state.error = Some(format!("Enable {} failed: {}", wid, e));
+                                had_error = true;
+                                break;
+                            }
+                        }
+                        if !had_error {
+                            refresh_state(state, config).await;
+                        }
                     }
                 }
                 Action::CancelBuild => {
-                    // Show confirmation dialog for cancelling build
                     if !state.show_help
                         && !state.filter_mode
-                        && state.confirmation_dialog.is_none()
                         && state.selected_panel == Panel::ActiveBuilds
                         && let Some(build) = state.selected_active_build()
                     {
-                        state.confirmation_dialog = Some(ConfirmationDialog {
-                            action: ConfirmAction::CancelBuild(build.id.clone()),
-                            yes_selected: false,
+                        let build_id = build.id.clone();
+                        state.confirm_dialog = Some(ConfirmDialog {
+                            title: format!("Cancel build '{}'?", build_id),
+                            message: "This will send SIGTERM to\nthe build process.".into(),
+                            action: ConfirmAction::CancelBuild(build_id),
                         });
                     }
                 }
-                Action::KillBuild => {
-                    // Show confirmation dialog for killing build
+                Action::ForceKillBuild => {
                     if !state.show_help
                         && !state.filter_mode
-                        && state.confirmation_dialog.is_none()
                         && state.selected_panel == Panel::ActiveBuilds
                         && let Some(build) = state.selected_active_build()
                     {
-                        state.confirmation_dialog = Some(ConfirmationDialog {
-                            action: ConfirmAction::KillBuild(build.id.clone()),
-                            yes_selected: false,
+                        let build_id = build.id.clone();
+                        state.confirm_dialog = Some(ConfirmDialog {
+                            title: format!("FORCE KILL build '{}'?", build_id),
+                            message: "This will send SIGKILL.\nThe process cannot clean up.".into(),
+                            action: ConfirmAction::ForceKillBuild(build_id),
                         });
                     }
+                }
+                Action::Confirm => {
+                    // Execute the confirmed action
+                    if let Some(dialog) = state.confirm_dialog.take() {
+                        match dialog.action {
+                            ConfirmAction::DrainWorker(ref wid) => {
+                                if let Err(e) = drain_worker(wid).await {
+                                    state.error = Some(format!("Drain failed: {}", e));
+                                } else {
+                                    refresh_state(state, config).await;
+                                }
+                            }
+                            ConfirmAction::DrainAllWorkers => {
+                                let worker_ids: Vec<String> =
+                                    state.workers.iter().map(|w| w.id.clone()).collect();
+                                let mut had_error = false;
+                                for wid in &worker_ids {
+                                    if let Err(e) = drain_worker(wid).await {
+                                        state.error =
+                                            Some(format!("Drain {} failed: {}", wid, e));
+                                        had_error = true;
+                                        break;
+                                    }
+                                }
+                                if !had_error {
+                                    refresh_state(state, config).await;
+                                }
+                            }
+                            ConfirmAction::CancelBuild(ref bid) => {
+                                if let Err(e) = cancel_build(bid).await {
+                                    state.error = Some(format!("Cancel failed: {}", e));
+                                } else {
+                                    refresh_state(state, config).await;
+                                }
+                            }
+                            ConfirmAction::ForceKillBuild(ref bid) => {
+                                if let Err(e) = force_kill_build(bid).await {
+                                    state.error = Some(format!("Force kill failed: {}", e));
+                                } else {
+                                    refresh_state(state, config).await;
+                                }
+                            }
+                        }
+                    }
+                }
+                Action::Dismiss => {
+                    // Dismiss the confirmation dialog
+                    state.confirm_dialog = None;
                 }
                 Action::TextInput(c) => {
                     // Append character to filter query (only active in filter_mode)

@@ -3,7 +3,7 @@
 //! Custom widgets for workers, builds, and status display.
 
 use crate::tui::state::{
-    BuildStatus, CircuitState, ColorBlindMode, Panel, TuiState, WorkerStatus,
+    BuildStatus, CircuitState, ColorBlindMode, ConfirmDialog, Panel, TuiState, WorkerStatus,
 };
 use crate::ui::theme::{StatusIndicator, Symbols};
 use ratatui::{
@@ -139,75 +139,9 @@ pub fn render(frame: &mut Frame, state: &TuiState) {
     }
 
     // Render confirmation dialog on top of everything
-    if let Some(ref dialog) = state.confirmation_dialog {
-        render_confirmation_dialog(frame, dialog, &colors);
+    if let Some(ref dialog) = state.confirm_dialog {
+        render_confirm_dialog(frame, dialog, &colors);
     }
-}
-
-/// Render confirmation dialog overlay.
-fn render_confirmation_dialog(
-    frame: &mut Frame,
-    dialog: &super::state::ConfirmationDialog,
-    colors: &ColorScheme,
-) {
-    let area = frame.area();
-
-    // Center the dialog
-    let width = 50.min(area.width.saturating_sub(4));
-    let height = 7;
-    let x = (area.width.saturating_sub(width)) / 2;
-    let y = (area.height.saturating_sub(height)) / 2;
-    let dialog_area = Rect::new(x, y, width, height);
-
-    // Clear the area behind the dialog
-    frame.render_widget(Clear, dialog_area);
-
-    // Build button styles
-    let (yes_style, no_style) = if dialog.yes_selected {
-        (
-            Style::default()
-                .fg(colors.selected_fg)
-                .bg(colors.selected_bg)
-                .add_modifier(Modifier::BOLD),
-            Style::default().fg(colors.muted),
-        )
-    } else {
-        (
-            Style::default().fg(colors.muted),
-            Style::default()
-                .fg(colors.selected_fg)
-                .bg(colors.selected_bg)
-                .add_modifier(Modifier::BOLD),
-        )
-    };
-
-    // Build dialog content
-    let description = dialog.action.description();
-    let context = dialog.action.context();
-
-    let content = Paragraph::new(vec![
-        Line::from(Span::styled(&description, Style::default().fg(colors.fg).add_modifier(Modifier::BOLD))),
-        Line::from(""),
-        Line::from(Span::styled(context, Style::default().fg(colors.muted))),
-        Line::from(""),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(" Yes (y) ", yes_style),
-            Span::raw("  "),
-            Span::styled(" No (n) ", no_style),
-            Span::raw("  "),
-        ]),
-    ])
-    .alignment(Alignment::Center)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Confirm Action")
-            .title_alignment(Alignment::Center)
-            .border_style(Style::default().fg(colors.warning)),
-    );
-
-    frame.render_widget(content, dialog_area);
 }
 
 /// Render filter input overlay.
@@ -237,6 +171,69 @@ fn render_filter_input(frame: &mut Frame, state: &TuiState, colors: &ColorScheme
     );
 
     frame.render_widget(input, input_area);
+}
+
+/// Render a centered confirmation dialog for destructive actions.
+fn render_confirm_dialog(frame: &mut Frame, dialog: &ConfirmDialog, colors: &ColorScheme) {
+    let area = frame.area();
+    // Calculate dialog dimensions based on content
+    let msg_lines: Vec<&str> = dialog.message.lines().collect();
+    let content_width = dialog
+        .title
+        .len()
+        .max(msg_lines.iter().map(|l| l.len()).max().unwrap_or(0))
+        .max(20) as u16
+        + 4; // padding
+    let width = content_width.min(area.width.saturating_sub(4));
+    // borders (2) + title (1) + blank (1) + message lines + blank (1) + prompt (1)
+    let height = (msg_lines.len() as u16 + 6).min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let dialog_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, dialog_area);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            &dialog.title,
+            Style::default()
+                .fg(colors.warning)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+    for msg_line in &msg_lines {
+        lines.push(Line::from(Span::styled(
+            *msg_line,
+            Style::default().fg(colors.fg),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("      [", Style::default().fg(colors.muted)),
+        Span::styled(
+            "Y",
+            Style::default()
+                .fg(colors.success)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("]es    [", Style::default().fg(colors.muted)),
+        Span::styled(
+            "N",
+            Style::default()
+                .fg(colors.error)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("]o", Style::default().fg(colors.muted)),
+    ]));
+
+    let confirm_widget = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(colors.warning)),
+    );
+
+    frame.render_widget(confirm_widget, dialog_area);
 }
 
 /// Render the header with daemon status.
@@ -660,9 +657,9 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &TuiState, colors: &Color
 fn render_help_overlay(frame: &mut Frame, colors: &ColorScheme) {
     let area = frame.area();
     // Center the help box - increased height to accommodate more content
-    // Content is ~34 lines, plus 2 for borders = 36 minimum for full content
+    // Content is ~42 lines, plus 2 for borders = 44 minimum for full content
     let width = 60.min(area.width.saturating_sub(4));
-    let height = 38.min(area.height.saturating_sub(4));
+    let height = 46.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let help_area = Rect::new(x, y, width, height);
@@ -705,8 +702,22 @@ fn render_help_overlay(frame: &mut Frame, colors: &ColorScheme) {
         )]),
         Line::from("  r           Refresh data from daemon"),
         Line::from("  y           Copy selected item"),
-        Line::from("  d           Drain selected worker (Workers panel)"),
-        Line::from("  e           Enable selected worker (Workers panel)"),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Worker Actions (Workers panel)",
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
+        Line::from("  d           Drain selected worker"),
+        Line::from("  e           Enable selected worker"),
+        Line::from("  D           Drain ALL workers"),
+        Line::from("  E           Enable ALL workers"),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Build Actions (Active Builds panel)",
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
+        Line::from("  x           Cancel selected build (SIGTERM)"),
+        Line::from("  X           Force kill selected build (SIGKILL)"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Search & Filter",
@@ -1128,8 +1139,8 @@ mod tests {
             show_help: true,
             ..Default::default()
         };
-        // Need larger height to see all content
-        let content = render_to_string(80, 32, |f| render(f, &state));
+        // Need larger height to see all content (expanded for worker/build action sections)
+        let content = render_to_string(80, 50, |f| render(f, &state));
         // Verify filter shortcut is documented
         assert!(
             content.contains("/"),
@@ -1224,8 +1235,8 @@ mod tests {
             show_help: true,
             ..Default::default()
         };
-        // Need taller terminal to see all content (expanded for vim keybindings)
-        let content = render_to_string(80, 42, |f| render(f, &state));
+        // Need taller terminal to see all content (expanded for worker/build action sections)
+        let content = render_to_string(80, 50, |f| render(f, &state));
 
         // Verify general shortcuts are documented
         info!("VERIFY: checking general shortcuts");
@@ -1255,7 +1266,7 @@ mod tests {
             show_help: true,
             ..Default::default()
         };
-        let content = render_to_string(80, 42, |f| render(f, &state));
+        let content = render_to_string(80, 50, |f| render(f, &state));
 
         // Verify sections are in logical order
         info!("VERIFY: checking section order");
@@ -1342,7 +1353,7 @@ mod tests {
             show_help: true,
             ..Default::default()
         };
-        let content = render_to_string(80, 32, |f| render(f, &state));
+        let content = render_to_string(80, 50, |f| render(f, &state));
 
         // Verify filter mentions Build History panel
         info!("VERIFY: filter should mention Build History panel");
@@ -2234,5 +2245,203 @@ mod tests {
         let result = truncate_command(cmd, 30);
         assert!(result.len() <= 30);
         assert!(result.ends_with("..."));
+    }
+
+    // ==================== StatusIndicator integration tests ====================
+
+    #[test]
+    fn test_indicator_color_maps_all_variants() {
+        init_test_logging();
+        info!("TEST START: test_indicator_color_maps_all_variants");
+        let colors = get_colors(false, ColorBlindMode::None);
+        assert_eq!(indicator_color(StatusIndicator::Success, &colors), colors.success);
+        assert_eq!(indicator_color(StatusIndicator::Error, &colors), colors.error);
+        assert_eq!(indicator_color(StatusIndicator::Warning, &colors), colors.warning);
+        assert_eq!(indicator_color(StatusIndicator::Info, &colors), colors.info);
+        assert_eq!(indicator_color(StatusIndicator::Pending, &colors), colors.muted);
+        assert_eq!(indicator_color(StatusIndicator::InProgress, &colors), colors.info);
+        assert_eq!(indicator_color(StatusIndicator::Disabled, &colors), colors.muted);
+        info!("TEST PASS: test_indicator_color_maps_all_variants");
+    }
+
+    #[test]
+    fn test_indicator_color_respects_color_blind_mode() {
+        init_test_logging();
+        info!("TEST START: test_indicator_color_respects_color_blind_mode");
+        let normal = get_colors(false, ColorBlindMode::None);
+        let deuter = get_colors(false, ColorBlindMode::Deuteranopia);
+        // Color blind mode should change success color (green -> cyan)
+        assert_ne!(
+            indicator_color(StatusIndicator::Success, &normal),
+            indicator_color(StatusIndicator::Success, &deuter),
+        );
+        info!("TEST PASS: test_indicator_color_respects_color_blind_mode");
+    }
+
+    #[test]
+    fn test_indicator_color_respects_high_contrast() {
+        init_test_logging();
+        info!("TEST START: test_indicator_color_respects_high_contrast");
+        let normal = get_colors(false, ColorBlindMode::None);
+        let high = get_colors(true, ColorBlindMode::None);
+        // High contrast should use LightGreen for success instead of Green
+        assert_ne!(
+            indicator_color(StatusIndicator::Success, &normal),
+            indicator_color(StatusIndicator::Success, &high),
+        );
+        info!("TEST PASS: test_indicator_color_respects_high_contrast");
+    }
+
+    #[test]
+    fn test_symbols_match_status_indicator() {
+        init_test_logging();
+        info!("TEST START: test_symbols_match_status_indicator");
+        // Verify TUI uses the same SYMBOLS source as StatusIndicator
+        assert_eq!(SYMBOLS.success, StatusIndicator::Success.symbol(&SYMBOLS));
+        assert_eq!(SYMBOLS.failure, StatusIndicator::Error.symbol(&SYMBOLS));
+        assert_eq!(SYMBOLS.warning, StatusIndicator::Warning.symbol(&SYMBOLS));
+        assert_eq!(SYMBOLS.bullet_filled, StatusIndicator::Info.symbol(&SYMBOLS));
+        assert_eq!(SYMBOLS.bullet_empty, StatusIndicator::Pending.symbol(&SYMBOLS));
+        assert_eq!(SYMBOLS.bullet_half, StatusIndicator::InProgress.symbol(&SYMBOLS));
+        assert_eq!(SYMBOLS.disabled, StatusIndicator::Disabled.symbol(&SYMBOLS));
+        info!("TEST PASS: test_symbols_match_status_indicator");
+    }
+
+    #[test]
+    fn test_build_history_uses_status_indicator_symbols() {
+        init_test_logging();
+        info!("TEST START: test_build_history_uses_status_indicator_symbols");
+        let mut state = TuiState {
+            selected_panel: Panel::BuildHistory,
+            ..Default::default()
+        };
+        state.build_history.push_back(crate::tui::state::HistoricalBuild {
+            id: "b1".to_string(),
+            command: "cargo build".to_string(),
+            worker: Some("w1".to_string()),
+            started_at: Utc::now(),
+            completed_at: Utc::now(),
+            duration_ms: 1000,
+            success: true,
+            exit_code: Some(0),
+        });
+        state.build_history.push_back(crate::tui::state::HistoricalBuild {
+            id: "b2".to_string(),
+            command: "cargo test".to_string(),
+            worker: Some("w1".to_string()),
+            started_at: Utc::now(),
+            completed_at: Utc::now(),
+            duration_ms: 2000,
+            success: false,
+            exit_code: Some(1),
+        });
+        let content = render_to_string(80, 12, |f| {
+            let colors = get_colors(false, ColorBlindMode::None);
+            render_build_history_panel(f, Rect::new(0, 0, 80, 12), &state, &colors);
+        });
+        // Verify StatusIndicator symbols are used
+        assert!(
+            content.contains(StatusIndicator::Success.symbol(&SYMBOLS)),
+            "Success builds should use StatusIndicator success symbol"
+        );
+        assert!(
+            content.contains(StatusIndicator::Error.symbol(&SYMBOLS)),
+            "Failed builds should use StatusIndicator error symbol"
+        );
+        info!("TEST PASS: test_build_history_uses_status_indicator_symbols");
+    }
+
+    // ==================== Confirm dialog rendering tests ====================
+
+    #[test]
+    fn test_confirm_dialog_renders() {
+        init_test_logging();
+        info!("TEST START: test_confirm_dialog_renders");
+        use crate::tui::state::{ConfirmAction, ConfirmDialog};
+        let state = TuiState {
+            confirm_dialog: Some(ConfirmDialog {
+                title: "Drain worker 'css'?".into(),
+                message: "This will stop routing new\njobs to this worker.".into(),
+                action: ConfirmAction::DrainWorker("css".into()),
+            }),
+            ..Default::default()
+        };
+        let content = render_to_string(80, 24, |f| render(f, &state));
+        assert!(
+            content.contains("Drain worker"),
+            "Dialog title must be visible"
+        );
+        assert!(
+            content.contains("stop routing"),
+            "Dialog message must be visible"
+        );
+        assert!(content.contains("Y"), "Yes option must be visible");
+        assert!(content.contains("N"), "No option must be visible");
+        info!("TEST PASS: test_confirm_dialog_renders");
+    }
+
+    #[test]
+    fn test_confirm_dialog_drain_all_renders() {
+        init_test_logging();
+        info!("TEST START: test_confirm_dialog_drain_all_renders");
+        use crate::tui::state::{ConfirmAction, ConfirmDialog};
+        let state = TuiState {
+            confirm_dialog: Some(ConfirmDialog {
+                title: "Drain ALL workers?".into(),
+                message: "This will stop routing new\njobs to every worker.".into(),
+                action: ConfirmAction::DrainAllWorkers,
+            }),
+            ..Default::default()
+        };
+        let content = render_to_string(80, 24, |f| render(f, &state));
+        assert!(
+            content.contains("Drain ALL"),
+            "Dialog title must be visible"
+        );
+        info!("TEST PASS: test_confirm_dialog_drain_all_renders");
+    }
+
+    #[test]
+    fn test_help_overlay_documents_worker_actions() {
+        init_test_logging();
+        let state = TuiState {
+            show_help: true,
+            ..Default::default()
+        };
+        let content = render_to_string(80, 50, |f| render(f, &state));
+        assert!(
+            content.contains("Worker Actions"),
+            "Worker Actions section must exist"
+        );
+        assert!(
+            content.contains("Drain ALL"),
+            "Drain ALL shortcut must be documented"
+        );
+        assert!(
+            content.contains("Enable ALL"),
+            "Enable ALL shortcut must be documented"
+        );
+    }
+
+    #[test]
+    fn test_help_overlay_documents_build_actions() {
+        init_test_logging();
+        let state = TuiState {
+            show_help: true,
+            ..Default::default()
+        };
+        let content = render_to_string(80, 50, |f| render(f, &state));
+        assert!(
+            content.contains("Build Actions"),
+            "Build Actions section must exist"
+        );
+        assert!(
+            content.contains("Cancel selected"),
+            "Cancel build shortcut must be documented"
+        );
+        assert!(
+            content.contains("Force kill"),
+            "Force kill shortcut must be documented"
+        );
     }
 }

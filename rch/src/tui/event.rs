@@ -34,14 +34,18 @@ pub enum Action {
     DrainWorker,
     /// Enable/undrain the selected worker.
     EnableWorker,
-    /// Cancel selected build gracefully.
+    /// Drain all workers (with confirmation).
+    DrainAllWorkers,
+    /// Enable all workers.
+    EnableAllWorkers,
+    /// Cancel the selected build (SIGTERM, with confirmation).
     CancelBuild,
-    /// Force kill selected build.
-    KillBuild,
-    /// Confirm pending action (y).
-    ConfirmYes,
-    /// Deny pending action (n).
-    ConfirmNo,
+    /// Force kill the selected build (SIGKILL, with confirmation).
+    ForceKillBuild,
+    /// Confirm a pending action in the confirmation dialog.
+    Confirm,
+    /// Dismiss a pending confirmation dialog.
+    Dismiss,
     /// Text input character (for filter/search).
     TextInput(char),
     /// Delete last character (backspace in text mode).
@@ -81,8 +85,10 @@ fn handle_key(key: KeyEvent) -> Action {
         KeyCode::Char('y') => Action::Copy,
         KeyCode::Char('d') => Action::DrainWorker,
         KeyCode::Char('e') => Action::EnableWorker,
-        KeyCode::Char('c') => Action::CancelBuild,
-        KeyCode::Char('K') => Action::KillBuild,
+        KeyCode::Char('D') => Action::DrainAllWorkers,
+        KeyCode::Char('E') => Action::EnableAllWorkers,
+        KeyCode::Char('x') => Action::CancelBuild,
+        KeyCode::Char('X') => Action::ForceKillBuild,
         KeyCode::PageUp => Action::PageUp,
         KeyCode::PageDown => Action::PageDown,
         KeyCode::Char('g') => Action::JumpTop,
@@ -93,6 +99,18 @@ fn handle_key(key: KeyEvent) -> Action {
         KeyCode::Char('2') => Action::JumpToPanel(1),
         KeyCode::Char('3') => Action::JumpToPanel(2),
         KeyCode::Char('4') => Action::JumpToPanel(3),
+        _ => Action::Tick,
+    }
+}
+
+/// Convert key event to action when a confirmation dialog is showing.
+fn handle_confirm_key(key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        return Action::Quit;
+    }
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => Action::Confirm,
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::Dismiss,
         _ => Action::Tick,
     }
 }
@@ -113,43 +131,21 @@ fn handle_key_input_mode(key: KeyEvent) -> Action {
     }
 }
 
-/// Convert key event to action when in confirmation dialog mode.
-fn handle_key_confirm_mode(key: KeyEvent) -> Action {
-    // Check for Ctrl+C to quit even in confirm mode
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-        return Action::Quit;
-    }
-
-    match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => Action::ConfirmYes,
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::ConfirmNo,
-        KeyCode::Enter => Action::Select, // Confirm current selection
-        KeyCode::Left | KeyCode::Right | KeyCode::Tab => Action::NextPanel, // Toggle selection
-        _ => Action::Tick,
-    }
-}
-
-/// Input mode for event handling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum InputMode {
-    /// Normal navigation mode.
-    #[default]
-    Normal,
-    /// Text input mode (filter/search).
-    TextInput,
-    /// Confirmation dialog mode.
-    Confirm,
-}
-
-/// Poll for events with explicit input mode.
-pub fn poll_event(timeout: Duration, mode: InputMode) -> std::io::Result<Option<Action>> {
+/// Poll for events with input mode and confirm dialog flags.
+pub fn poll_event_with_flags(
+    timeout: Duration,
+    input_mode: bool,
+    confirm_mode: bool,
+) -> std::io::Result<Option<Action>> {
     if event::poll(timeout)? {
         match event::read()? {
             Event::Key(key) => {
-                let action = match mode {
-                    InputMode::Normal => handle_key(key),
-                    InputMode::TextInput => handle_key_input_mode(key),
-                    InputMode::Confirm => handle_key_confirm_mode(key),
+                let action = if confirm_mode {
+                    handle_confirm_key(key)
+                } else if input_mode {
+                    handle_key_input_mode(key)
+                } else {
+                    handle_key(key)
                 };
                 Ok(Some(action))
             }
@@ -159,19 +155,6 @@ pub fn poll_event(timeout: Duration, mode: InputMode) -> std::io::Result<Option<
     } else {
         Ok(Some(Action::Tick))
     }
-}
-
-/// Poll for events with optional input mode flag (legacy API, delegates to poll_event).
-pub fn poll_event_with_mode(
-    timeout: Duration,
-    input_mode: bool,
-) -> std::io::Result<Option<Action>> {
-    let mode = if input_mode {
-        InputMode::TextInput
-    } else {
-        InputMode::Normal
-    };
-    poll_event(timeout, mode)
 }
 
 #[cfg(test)]
@@ -282,7 +265,19 @@ mod tests {
         );
         assert_eq!(
             handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
-            Action::Tick
+            Action::CancelBuild
+        );
+        assert_eq!(
+            handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE)),
+            Action::ForceKillBuild
+        );
+        assert_eq!(
+            handle_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::NONE)),
+            Action::DrainAllWorkers
+        );
+        assert_eq!(
+            handle_key(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::NONE)),
+            Action::EnableAllWorkers
         );
         info!("TEST PASS: test_handle_key_actions");
     }
@@ -627,8 +622,9 @@ mod tests {
         // Characters that aren't mapped should return Tick
         let z = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE);
         assert_eq!(handle_key(z), Action::Tick);
-        let x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
-        assert_eq!(handle_key(x), Action::Tick);
+        // 'x' is now mapped to CancelBuild, so test a truly unmapped char
+        let m = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE);
+        assert_eq!(handle_key(m), Action::Tick);
         info!("TEST PASS: test_handle_key_unknown_char_tick");
     }
 
@@ -673,6 +669,80 @@ mod tests {
         assert_ne!(Action::DrainWorker, Action::EnableWorker);
         assert_ne!(Action::DrainWorker, Action::Tick);
         info!("TEST PASS: test_drain_enable_action_equality");
+    }
+
+    // ==================== Worker/Build action key tests ====================
+
+    #[test]
+    fn test_handle_key_drain_all_workers() {
+        init_test_logging();
+        let key = KeyEvent::new(KeyCode::Char('D'), KeyModifiers::NONE);
+        assert_eq!(handle_key(key), Action::DrainAllWorkers);
+    }
+
+    #[test]
+    fn test_handle_key_enable_all_workers() {
+        init_test_logging();
+        let key = KeyEvent::new(KeyCode::Char('E'), KeyModifiers::NONE);
+        assert_eq!(handle_key(key), Action::EnableAllWorkers);
+    }
+
+    #[test]
+    fn test_handle_key_cancel_build() {
+        init_test_logging();
+        let key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        assert_eq!(handle_key(key), Action::CancelBuild);
+    }
+
+    #[test]
+    fn test_handle_key_force_kill_build() {
+        init_test_logging();
+        let key = KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE);
+        assert_eq!(handle_key(key), Action::ForceKillBuild);
+    }
+
+    // ==================== Confirm dialog key tests ====================
+
+    #[test]
+    fn test_confirm_key_y_confirms() {
+        init_test_logging();
+        let key = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert_eq!(handle_confirm_key(key), Action::Confirm);
+    }
+
+    #[test]
+    fn test_confirm_key_enter_confirms() {
+        init_test_logging();
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(handle_confirm_key(key), Action::Confirm);
+    }
+
+    #[test]
+    fn test_confirm_key_n_dismisses() {
+        init_test_logging();
+        let key = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert_eq!(handle_confirm_key(key), Action::Dismiss);
+    }
+
+    #[test]
+    fn test_confirm_key_esc_dismisses() {
+        init_test_logging();
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(handle_confirm_key(key), Action::Dismiss);
+    }
+
+    #[test]
+    fn test_confirm_key_other_is_tick() {
+        init_test_logging();
+        let key = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE);
+        assert_eq!(handle_confirm_key(key), Action::Tick);
+    }
+
+    #[test]
+    fn test_confirm_key_ctrl_c_quits() {
+        init_test_logging();
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(handle_confirm_key(key), Action::Quit);
     }
 
     // ==================== Vim panel navigation tests ====================

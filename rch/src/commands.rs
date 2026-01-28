@@ -4,10 +4,10 @@
 
 use crate::error::{ConfigError, SshError};
 use crate::status_types::{
-    DaemonFullStatusResponse, SelfTestHistoryResponse, SelfTestRunResponse, SelfTestStatusResponse,
-    SpeedScoreHistoryResponseFromApi, SpeedScoreListResponseFromApi, SpeedScoreResponseFromApi,
-    SpeedScoreViewFromApi, WorkerCapabilitiesFromApi, WorkerCapabilitiesResponseFromApi,
-    extract_json_body,
+    ActiveBuildFromApi, DaemonFullStatusResponse, SelfTestHistoryResponse, SelfTestRunResponse,
+    SelfTestStatusResponse, SpeedScoreHistoryResponseFromApi, SpeedScoreListResponseFromApi,
+    SpeedScoreResponseFromApi, SpeedScoreViewFromApi, WorkerCapabilitiesFromApi,
+    WorkerCapabilitiesResponseFromApi, extract_json_body,
 };
 use crate::ui::context::OutputContext;
 use crate::ui::progress::{MultiProgressManager, Spinner};
@@ -8205,12 +8205,18 @@ pub async fn cancel_build(
     all: bool,
     force: bool,
     yes: bool,
+    dry_run: bool,
     ctx: &OutputContext,
 ) -> Result<()> {
     use dialoguer::Confirm;
 
     if all && build_id.is_some() {
         tracing::debug!("Ignoring build_id since --all was provided");
+    }
+
+    // Dry-run mode: preview what would be cancelled
+    if dry_run {
+        return cancel_build_dry_run(build_id, all, ctx).await;
     }
 
     if all && !yes && !ctx.is_json() {
@@ -8300,6 +8306,90 @@ pub async fn cancel_build(
             }
         }
     }
+
+    Ok(())
+}
+
+/// Dry-run mode: preview what builds would be cancelled.
+async fn cancel_build_dry_run(
+    build_id: Option<u64>,
+    all: bool,
+    ctx: &OutputContext,
+) -> Result<()> {
+    let style = ctx.style();
+
+    // Query daemon for current active builds
+    let response = send_daemon_command("GET /status\n").await?;
+    let json = extract_json_body(&response)
+        .ok_or_else(|| anyhow::anyhow!("Invalid response format from daemon"))?;
+    let status: DaemonFullStatusResponse =
+        serde_json::from_str(json).context("Failed to parse daemon status")?;
+
+    let builds: Vec<&ActiveBuildFromApi> = if all {
+        status.active_builds.iter().collect()
+    } else {
+        let target_id =
+            build_id.ok_or_else(|| anyhow::anyhow!("Missing build id (or use --all)"))?;
+        status
+            .active_builds
+            .iter()
+            .filter(|b| b.id == target_id)
+            .collect()
+    };
+
+    if ctx.is_json() {
+        let json_builds: Vec<serde_json::Value> = builds
+            .iter()
+            .map(|b| {
+                serde_json::json!({
+                    "id": b.id,
+                    "command": b.command,
+                    "worker": b.worker_id,
+                    "started_at": b.started_at,
+                })
+            })
+            .collect();
+        let _ = ctx.json(&serde_json::json!({
+            "dry_run": true,
+            "would_cancel": json_builds.len(),
+            "builds": json_builds,
+        }));
+        return Ok(());
+    }
+
+    if builds.is_empty() {
+        println!("{}", style.muted("No active builds to cancel."));
+        return Ok(());
+    }
+
+    println!(
+        "Would cancel {} build{}:",
+        style.value(&builds.len().to_string()),
+        if builds.len() == 1 { "" } else { "s" }
+    );
+    let now = chrono::Utc::now();
+    for build in &builds {
+        let elapsed = if let Ok(started) = chrono::DateTime::parse_from_rfc3339(&build.started_at)
+        {
+            let secs = (now - started.with_timezone(&chrono::Utc))
+                .num_seconds()
+                .max(0) as u64;
+            format_build_duration(secs)
+        } else {
+            "?".to_string()
+        };
+        println!(
+            "  {}  {}  [worker: {}, {}]",
+            style.value(&build.id.to_string()),
+            style.muted(&build.command),
+            style.key(&build.worker_id),
+            style.muted(&elapsed),
+        );
+    }
+    println!(
+        "\n{}",
+        style.muted("Run without --dry-run to cancel.")
+    );
 
     Ok(())
 }
