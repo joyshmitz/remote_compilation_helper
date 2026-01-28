@@ -675,10 +675,18 @@ enum SelfTestAction {
 enum DaemonAction {
     /// Start the daemon
     Start,
-    /// Stop the daemon
-    Stop,
-    /// Restart the daemon
-    Restart,
+    /// Stop the daemon (prompts for confirmation if builds are active)
+    Stop {
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// Restart the daemon (prompts for confirmation if builds are active)
+    Restart {
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
     /// Show daemon status
     Status,
     /// Tail daemon logs
@@ -696,8 +704,8 @@ impl DaemonAction {
     fn as_str(&self) -> &'static str {
         match self {
             DaemonAction::Start => "start",
-            DaemonAction::Stop => "stop",
-            DaemonAction::Restart => "restart",
+            DaemonAction::Stop { .. } => "stop",
+            DaemonAction::Restart { .. } => "restart",
             DaemonAction::Status => "status",
             DaemonAction::Logs { .. } => "logs",
             DaemonAction::Reload => "reload",
@@ -1882,11 +1890,11 @@ async fn handle_daemon(action: DaemonAction, ctx: &OutputContext) -> Result<()> 
         DaemonAction::Start => {
             commands::daemon_start(ctx).await?;
         }
-        DaemonAction::Stop => {
-            commands::daemon_stop(ctx).await?;
+        DaemonAction::Stop { yes } => {
+            commands::daemon_stop(yes, ctx).await?;
         }
-        DaemonAction::Restart => {
-            commands::daemon_restart(ctx).await?;
+        DaemonAction::Restart { yes } => {
+            commands::daemon_restart(yes, ctx).await?;
         }
         DaemonAction::Status => {
             commands::daemon_status(ctx)?;
@@ -2446,9 +2454,25 @@ mod tests {
         let cli = Cli::try_parse_from(["rch", "daemon", "stop"]).unwrap();
         match cli.command {
             Some(Commands::Daemon {
-                action: DaemonAction::Stop,
-            }) => {}
+                action: DaemonAction::Stop { yes },
+            }) => {
+                assert!(!yes, "yes should default to false");
+            }
             _ => panic!("Expected daemon stop command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_daemon_stop_with_yes() {
+        let _guard = test_guard!();
+        let cli = Cli::try_parse_from(["rch", "daemon", "stop", "--yes"]).unwrap();
+        match cli.command {
+            Some(Commands::Daemon {
+                action: DaemonAction::Stop { yes },
+            }) => {
+                assert!(yes, "yes should be true");
+            }
+            _ => panic!("Expected daemon stop --yes command"),
         }
     }
 
@@ -2458,9 +2482,25 @@ mod tests {
         let cli = Cli::try_parse_from(["rch", "daemon", "restart"]).unwrap();
         match cli.command {
             Some(Commands::Daemon {
-                action: DaemonAction::Restart,
-            }) => {}
+                action: DaemonAction::Restart { yes },
+            }) => {
+                assert!(!yes, "yes should default to false");
+            }
             _ => panic!("Expected daemon restart command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_daemon_restart_with_yes() {
+        let _guard = test_guard!();
+        let cli = Cli::try_parse_from(["rch", "daemon", "restart", "-y"]).unwrap();
+        match cli.command {
+            Some(Commands::Daemon {
+                action: DaemonAction::Restart { yes },
+            }) => {
+                assert!(yes, "yes should be true with -y flag");
+            }
+            _ => panic!("Expected daemon restart -y command"),
         }
     }
 

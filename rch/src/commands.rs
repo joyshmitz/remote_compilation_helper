@@ -3901,7 +3901,11 @@ pub async fn daemon_start(ctx: &OutputContext) -> Result<()> {
 }
 
 /// Stop the daemon.
-pub async fn daemon_stop(ctx: &OutputContext) -> Result<()> {
+///
+/// If `skip_confirm` is false and there are active builds, prompts for confirmation.
+pub async fn daemon_stop(skip_confirm: bool, ctx: &OutputContext) -> Result<()> {
+    use dialoguer::Confirm;
+
     let style = ctx.theme();
     let socket_path = Path::new(DEFAULT_SOCKET_PATH);
 
@@ -3924,6 +3928,32 @@ pub async fn daemon_stop(ctx: &OutputContext) -> Result<()> {
             );
         }
         return Ok(());
+    }
+
+    // Check for active builds and prompt for confirmation
+    if !skip_confirm && !ctx.is_json() {
+        if let Ok(response) = send_daemon_command("GET /status\n").await {
+            if let Some(json) = extract_json_body(&response) {
+                if let Ok(status) = serde_json::from_str::<crate::status_types::DaemonFullStatusResponse>(json) {
+                    let active_count = status.active_builds.len();
+                    if active_count > 0 {
+                        println!(
+                            "{} {} active build(s) will be interrupted.",
+                            StatusIndicator::Warning.display(style),
+                            style.highlight(&active_count.to_string())
+                        );
+                        let confirmed = Confirm::new()
+                            .with_prompt("Stop the daemon anyway?")
+                            .default(false)
+                            .interact()?;
+                        if !confirmed {
+                            println!("{} Aborted.", StatusIndicator::Info.display(style));
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if !ctx.is_json() {
@@ -4037,15 +4067,50 @@ pub async fn daemon_stop(ctx: &OutputContext) -> Result<()> {
 }
 
 /// Restart the daemon.
-pub async fn daemon_restart(ctx: &OutputContext) -> Result<()> {
+///
+/// If `skip_confirm` is false and there are active builds, prompts for confirmation.
+pub async fn daemon_restart(skip_confirm: bool, ctx: &OutputContext) -> Result<()> {
+    use dialoguer::Confirm;
+
     let style = ctx.theme();
+
+    // Check for active builds and prompt for confirmation before restarting
+    if !skip_confirm && !ctx.is_json() {
+        let socket_path = Path::new(DEFAULT_SOCKET_PATH);
+        if socket_path.exists() {
+            if let Ok(response) = send_daemon_command("GET /status\n").await {
+                if let Some(json) = extract_json_body(&response) {
+                    if let Ok(status) = serde_json::from_str::<crate::status_types::DaemonFullStatusResponse>(json) {
+                        let active_count = status.active_builds.len();
+                        if active_count > 0 {
+                            println!(
+                                "{} {} active build(s) will be interrupted.",
+                                StatusIndicator::Warning.display(style),
+                                style.highlight(&active_count.to_string())
+                            );
+                            let confirmed = Confirm::new()
+                                .with_prompt("Restart the daemon anyway?")
+                                .default(false)
+                                .interact()?;
+                            if !confirmed {
+                                println!("{} Aborted.", StatusIndicator::Info.display(style));
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if !ctx.is_json() {
         println!(
             "{} Restarting RCH daemon...\n",
             StatusIndicator::Info.display(style)
         );
     }
-    daemon_stop(ctx).await?;
+    // Pass true for skip_confirm since we already prompted above
+    daemon_stop(true, ctx).await?;
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     daemon_start(ctx).await?;
     Ok(())
