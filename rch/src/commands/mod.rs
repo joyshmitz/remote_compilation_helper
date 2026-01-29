@@ -7492,6 +7492,334 @@ pub async fn status_overview(workers: bool, jobs: bool, ctx: &OutputContext) -> 
     Ok(())
 }
 
+/// Quick health check: "Is RCH working right now?"
+///
+/// Returns exit codes:
+/// - 0: Ready (daemon running, all workers healthy)
+/// - 1: Degraded (daemon running, some workers unreachable)
+/// - 2: Not ready (daemon not running or fatal issues)
+pub async fn check(ctx: &OutputContext) -> Result<()> {
+    #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+    struct CheckResponse {
+        status: String,
+        exit_code: i32,
+        daemon: Option<DaemonCheckInfo>,
+        workers: WorkersCheckInfo,
+        hook: HookCheckInfo,
+        issues: Vec<String>,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+    struct DaemonCheckInfo {
+        running: bool,
+        pid: Option<u32>,
+        uptime_secs: Option<u64>,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+    struct WorkersCheckInfo {
+        total: usize,
+        healthy: usize,
+        unhealthy: Vec<String>,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+    struct HookCheckInfo {
+        installed: bool,
+    }
+
+    // Try to query daemon status
+    let daemon_result = send_daemon_command("GET /status\n").await;
+
+    let (status, exit_code, daemon_info, workers_info, issues) = match daemon_result {
+        Ok(response) => {
+            match extract_json_body(&response) {
+                Some(json) => {
+                    match serde_json::from_str::<DaemonFullStatusResponse>(json) {
+                        Ok(status) => {
+                            // Daemon is running - determine health
+                            let healthy_count = status.daemon.workers_healthy;
+                            let total_count = status.daemon.workers_total;
+                            let unhealthy: Vec<String> = status
+                                .workers
+                                .iter()
+                                .filter(|w| {
+                                    w.status != "healthy"
+                                        && w.status != "draining"
+                                        && w.status != "drained"
+                                })
+                                .map(|w| w.id.clone())
+                                .collect();
+
+                            let daemon_info = DaemonCheckInfo {
+                                running: true,
+                                pid: Some(status.daemon.pid),
+                                uptime_secs: Some(status.daemon.uptime_secs),
+                            };
+
+                            let workers_info = WorkersCheckInfo {
+                                total: total_count,
+                                healthy: healthy_count,
+                                unhealthy: unhealthy.clone(),
+                            };
+
+                            let mut issues_list: Vec<String> = unhealthy
+                                .iter()
+                                .map(|w| format!("Worker {} is unreachable", w))
+                                .collect();
+
+                            // Add daemon-reported issues
+                            for issue in &status.issues {
+                                issues_list.push(issue.summary.clone());
+                            }
+
+                            if total_count == 0 {
+                                (
+                                    "not_ready".to_string(),
+                                    2,
+                                    daemon_info,
+                                    workers_info,
+                                    vec!["No workers configured".to_string()],
+                                )
+                            } else if healthy_count == total_count {
+                                ("ready".to_string(), 0, daemon_info, workers_info, issues_list)
+                            } else if healthy_count > 0 {
+                                (
+                                    "degraded".to_string(),
+                                    1,
+                                    daemon_info,
+                                    workers_info,
+                                    issues_list,
+                                )
+                            } else {
+                                issues_list
+                                    .insert(0, "All workers are unreachable".to_string());
+                                (
+                                    "not_ready".to_string(),
+                                    2,
+                                    daemon_info,
+                                    workers_info,
+                                    issues_list,
+                                )
+                            }
+                        }
+                        Err(_) => {
+                            let daemon_info = DaemonCheckInfo {
+                                running: true,
+                                pid: None,
+                                uptime_secs: None,
+                            };
+                            let workers_info = WorkersCheckInfo {
+                                total: 0,
+                                healthy: 0,
+                                unhealthy: vec![],
+                            };
+                            (
+                                "not_ready".to_string(),
+                                2,
+                                daemon_info,
+                                workers_info,
+                                vec!["Daemon returned invalid response".to_string()],
+                            )
+                        }
+                    }
+                }
+                None => {
+                    let daemon_info = DaemonCheckInfo {
+                        running: true,
+                        pid: None,
+                        uptime_secs: None,
+                    };
+                    let workers_info = WorkersCheckInfo {
+                        total: 0,
+                        healthy: 0,
+                        unhealthy: vec![],
+                    };
+                    (
+                        "not_ready".to_string(),
+                        2,
+                        daemon_info,
+                        workers_info,
+                        vec!["Daemon returned invalid response format".to_string()],
+                    )
+                }
+            }
+        }
+        Err(_) => {
+            // Daemon not running or socket not found
+            let daemon_info = DaemonCheckInfo {
+                running: false,
+                pid: None,
+                uptime_secs: None,
+            };
+            let workers_info = WorkersCheckInfo {
+                total: 0,
+                healthy: 0,
+                unhealthy: vec![],
+            };
+            (
+                "not_ready".to_string(),
+                2,
+                daemon_info,
+                workers_info,
+                vec!["Daemon not running".to_string()],
+            )
+        }
+    };
+
+    // Check if hook is installed
+    let hook_installed = {
+        use crate::agent::{AgentKind, check_hook_status, HookStatus};
+        matches!(check_hook_status(AgentKind::ClaudeCode), Ok(HookStatus::Installed))
+    };
+
+    let hook_info = HookCheckInfo {
+        installed: hook_installed,
+    };
+
+    let response = CheckResponse {
+        status: status.clone(),
+        exit_code,
+        daemon: Some(daemon_info),
+        workers: workers_info.clone(),
+        hook: hook_info.clone(),
+        issues: issues.clone(),
+    };
+
+    // JSON output
+    if ctx.is_json() {
+        let _ = ctx.json(&ApiResponse::ok("check", &response));
+        if exit_code != 0 {
+            std::process::exit(exit_code);
+        }
+        return Ok(());
+    }
+
+    // Human-readable output
+    let style = ctx.style();
+
+    match status.as_str() {
+        "ready" => {
+            println!(
+                "{} RCH is ready ({}/{} workers healthy)",
+                style.success("\u{2713}"),
+                workers_info.healthy,
+                workers_info.total
+            );
+        }
+        "degraded" => {
+            println!(
+                "{} RCH degraded: {}/{} workers unreachable ({})",
+                style.warning("\u{26A0}"),
+                workers_info.unhealthy.len(),
+                workers_info.total,
+                workers_info.unhealthy.join(", ")
+            );
+        }
+        "not_ready" => {
+            let issue = issues.first().map(|s| s.as_str()).unwrap_or("unknown error");
+            println!("{} RCH not ready: {}", style.error("\u{2717}"), issue);
+        }
+        _ => {}
+    }
+
+    // Verbose mode: show detailed breakdown
+    if ctx.is_verbose() {
+        println!();
+        println!("{}", style.format_header("Health Check Details"));
+        println!();
+
+        // Daemon status
+        if let Some(ref d) = response.daemon {
+            let daemon_status = if d.running {
+                format!(
+                    "{} running (pid {}, uptime {})",
+                    style.success("\u{2713}"),
+                    d.pid.unwrap_or(0),
+                    humanize_duration(d.uptime_secs.unwrap_or(0))
+                )
+            } else {
+                format!("{} not running", style.error("\u{2717}"))
+            };
+            println!("  {} {} {}", style.key("Daemon"), style.muted(":"), daemon_status);
+        }
+
+        // Workers status
+        let workers_status = if workers_info.total == 0 {
+            format!("{} no workers configured", style.warning("\u{26A0}"))
+        } else if workers_info.healthy == workers_info.total {
+            format!(
+                "{} all healthy ({}/{})",
+                style.success("\u{2713}"),
+                workers_info.healthy,
+                workers_info.total
+            )
+        } else {
+            format!(
+                "{} {}/{} healthy",
+                style.warning("\u{26A0}"),
+                workers_info.healthy,
+                workers_info.total
+            )
+        };
+        println!(
+            "  {} {} {}",
+            style.key("Workers"),
+            style.muted(":"),
+            workers_status
+        );
+
+        // Hook status
+        let hook_status = if hook_info.installed {
+            format!("{} installed", style.success("\u{2713}"))
+        } else {
+            format!("{} not installed", style.warning("\u{26A0}"))
+        };
+        println!("  {} {} {}", style.key("Hook"), style.muted(":"), hook_status);
+
+        // Issues
+        if !issues.is_empty() {
+            println!();
+            println!("  {}", style.key("Issues:"));
+            for issue in &issues {
+                println!("    {} {}", style.warning("\u{26A0}"), issue);
+            }
+        }
+
+        println!();
+        println!(
+            "  {} {} {}",
+            style.key("Overall"),
+            style.muted(":"),
+            match status.as_str() {
+                "ready" => style.success("RCH is ready").to_string(),
+                "degraded" => style.warning("RCH is degraded").to_string(),
+                _ => style.error("RCH is not ready").to_string(),
+            }
+        );
+    }
+
+    // Exit with appropriate code
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
+
+    Ok(())
+}
+
+/// Format a duration in seconds as a human-readable string.
+fn humanize_duration(secs: u64) -> String {
+    if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else if secs < 86400 {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    } else {
+        format!("{}d {}h", secs / 86400, (secs % 86400) / 3600)
+    }
+}
+
 /// Display build queue - active builds and worker availability.
 ///
 /// When `follow` is true, streams daemon events (like `tail -f`) instead of
