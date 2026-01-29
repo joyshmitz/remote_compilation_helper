@@ -86,15 +86,15 @@ impl BuildHistorySort {
         }
     }
 
-    /// Cycle to next sort option.
+    /// Cycle to next sort option. All variants are reachable from the main cycle.
     pub fn next(self) -> Self {
         match self {
             BuildHistorySort::TimeDesc => BuildHistorySort::DurationDesc,
+            BuildHistorySort::TimeAsc => BuildHistorySort::DurationDesc,
             BuildHistorySort::DurationDesc => BuildHistorySort::WorkerAsc,
+            BuildHistorySort::DurationAsc => BuildHistorySort::WorkerAsc,
             BuildHistorySort::WorkerAsc => BuildHistorySort::StatusFailFirst,
             BuildHistorySort::StatusFailFirst => BuildHistorySort::TimeDesc,
-            BuildHistorySort::TimeAsc => BuildHistorySort::DurationAsc,
-            BuildHistorySort::DurationAsc => BuildHistorySort::TimeAsc,
         }
     }
 

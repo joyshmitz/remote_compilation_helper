@@ -1966,6 +1966,15 @@ fn default_excludes() -> Vec<String> {
         // Coverage reports (generated during tests)
         "coverage/".to_string(),
         ".nyc_output/".to_string(),
+        // Credentials and secrets (must never be transferred to workers)
+        ".cargo/credentials".to_string(),
+        ".cargo/credentials.toml".to_string(),
+        ".env".to_string(),
+        ".env.*".to_string(),
+        "*.pem".to_string(),
+        "*.key".to_string(),
+        "credentials.json".to_string(),
+        "secrets.*".to_string(),
     ]
 }
 

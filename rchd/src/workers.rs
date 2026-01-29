@@ -317,11 +317,13 @@ impl WorkerState {
 
     /// Check if draining worker has completed all jobs and should transition to Drained.
     /// Called when a job completes; auto-transitions Draining → Drained when no jobs remain.
+    /// Uses a single write lock to avoid TOCTOU race between read and write.
     pub async fn check_drain_complete(&self) {
-        if *self.status.read().await == WorkerStatus::Draining {
+        let mut status = self.status.write().await;
+        if *status == WorkerStatus::Draining {
             let used = self.used_slots.load(Ordering::Relaxed);
             if used == 0 {
-                *self.status.write().await = WorkerStatus::Drained;
+                *status = WorkerStatus::Drained;
             }
         }
     }

@@ -849,8 +849,8 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
                 match key {
                     "worker" => worker_id = Some(urlencoding_decode(value)),
                     "days" => days = value.parse().unwrap_or(days),
-                    "limit" => limit = value.parse().unwrap_or(limit),
-                    "offset" => offset = value.parse().unwrap_or(offset),
+                    "limit" => limit = value.parse().unwrap_or(limit).min(10_000),
+                    "offset" => offset = value.parse().unwrap_or(offset).min(1_000_000),
                     _ => {}
                 }
             }
@@ -886,8 +886,8 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
                     let value = kv.next().unwrap_or("");
                     match key {
                         "days" => days = value.parse().unwrap_or(days),
-                        "limit" => limit = value.parse().unwrap_or(limit),
-                        "offset" => offset = value.parse().unwrap_or(offset),
+                        "limit" => limit = value.parse().unwrap_or(limit).min(10_000),
+                        "offset" => offset = value.parse().unwrap_or(offset).min(1_000_000),
                         _ => {}
                     }
                 }
@@ -1026,7 +1026,7 @@ fn parse_request(line: &str) -> Result<ApiRequest> {
             let key = kv.next().unwrap_or("");
             let value = kv.next().unwrap_or("");
             if key == "limit" {
-                limit = value.parse().unwrap_or(limit);
+                limit = value.parse().unwrap_or(limit).min(10_000);
             }
         }
         return Ok(ApiRequest::SelfTestHistory { limit });

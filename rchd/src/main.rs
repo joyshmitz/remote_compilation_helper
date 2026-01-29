@@ -417,7 +417,7 @@ async fn main() -> Result<()> {
     let metrics_history = context.history.clone();
     let metrics_selector = worker_selector.clone();
     let metrics_dashboard_handle = metrics_dashboard.clone();
-    let _metrics_handle = tokio::spawn(async move {
+    let metrics_handle = tokio::spawn(async move {
         let mut ticker = interval(metrics_interval);
         loop {
             ticker.tick().await;
@@ -430,7 +430,7 @@ async fn main() -> Result<()> {
 
     // Start background cleanup for drained workers
     let cleanup_pool = worker_pool.clone();
-    let _cleanup_handle = tokio::spawn(async move {
+    let cleanup_handle = tokio::spawn(async move {
         // Check every minute
         let mut ticker = interval(Duration::from_secs(60));
         loop {
@@ -598,6 +598,11 @@ async fn main() -> Result<()> {
     info!("Stopping health monitor...");
     health_monitor.stop().await;
     let _ = health_handle.await;
+
+    // Abort background tasks that have no cancellation mechanism
+    info!("Stopping background tasks...");
+    metrics_handle.abort();
+    cleanup_handle.abort();
 
     // Clean up socket
     if std::path::Path::new(&context.socket_path).exists() {

@@ -1325,11 +1325,15 @@ impl WorkerSelector {
         min_priority: u32,
         max_priority: u32,
     ) -> f64 {
-        // SpeedScore component (0-1)
-        let speed_score = worker.get_speed_score().await / 100.0;
+        // SpeedScore component (0-1), clamped to valid range
+        let speed_score = (worker.get_speed_score().await / 100.0).clamp(0.0, 1.0);
 
         let config = worker.config.read().await;
-        let total_slots = config.total_slots.max(1) as f64;
+        let total_slots = if config.total_slots == 0 {
+            return 0.0; // Workers with 0 slots should never be selected
+        } else {
+            config.total_slots as f64
+        };
 
         // Load factor: penalize heavily loaded workers (0.5-1.0)
         let load_factor = {
