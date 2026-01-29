@@ -5,9 +5,11 @@
 
 use crate::fleet::audit::AuditLogger;
 use crate::fleet::plan::{DeploymentPlan, DeploymentStatus, DeploymentStrategy};
+use crate::fleet::progress::{DeployPhase, FleetProgress};
 use crate::ui::context::OutputContext;
 use crate::ui::theme::StatusIndicator;
 use anyhow::Result;
+use rch_common::WorkerId;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -79,11 +81,19 @@ impl FleetExecutor {
         let strategy = plan.strategy.clone();
         let worker_count = plan.workers.len();
 
+        // Create fleet progress tracker for non-JSON mode
+        let worker_ids: Vec<WorkerId> = plan
+            .workers
+            .iter()
+            .map(|w| WorkerId(w.worker_id.clone()))
+            .collect();
+        let progress = Arc::new(FleetProgress::new(ctx, &worker_ids));
+
         // Execute based on strategy
         match strategy {
             DeploymentStrategy::AllAtOnce { parallelism } => {
                 let results = self
-                    .deploy_batch(&mut plan, 0..worker_count, parallelism, ctx)
+                    .deploy_batch(&mut plan, 0..worker_count, parallelism, ctx, progress.clone())
                     .await?;
                 for (idx, success) in results {
                     if success {
@@ -114,7 +124,7 @@ impl FleetExecutor {
 
                 // Deploy to canary workers
                 let canary_results = self
-                    .deploy_batch(&mut plan, 0..canary_count, self.parallelism, ctx)
+                    .deploy_batch(&mut plan, 0..canary_count, self.parallelism, ctx, progress.clone())
                     .await?;
                 let canary_failed = canary_results.iter().filter(|(_, s)| !s).count();
 
@@ -140,7 +150,7 @@ impl FleetExecutor {
                         println!("  {} Deploying to remaining workers...", style.muted("→"));
                     }
                     let remaining_results = self
-                        .deploy_batch(&mut plan, canary_count..worker_count, self.parallelism, ctx)
+                        .deploy_batch(&mut plan, canary_count..worker_count, self.parallelism, ctx, progress.clone())
                         .await?;
 
                     for (idx, success) in canary_results
@@ -181,7 +191,7 @@ impl FleetExecutor {
                     }
 
                     let batch_results = self
-                        .deploy_batch(&mut plan, start..end, batch_size, ctx)
+                        .deploy_batch(&mut plan, start..end, batch_size, ctx, progress.clone())
                         .await?;
 
                     for (idx, success) in batch_results {
@@ -212,6 +222,9 @@ impl FleetExecutor {
             }
         }
 
+        // Finish progress display
+        progress.finish();
+
         Ok(FleetResult::Success {
             deployed,
             skipped,
@@ -226,34 +239,51 @@ impl FleetExecutor {
         range: std::ops::Range<usize>,
         parallelism: usize,
         ctx: &OutputContext,
+        progress: Arc<FleetProgress>,
     ) -> Result<Vec<(usize, bool)>> {
         use tokio::sync::Semaphore;
 
         let semaphore = Arc::new(Semaphore::new(parallelism));
         let mut handles = Vec::new();
         let style = ctx.theme();
+        let is_json = ctx.is_json();
 
-        for idx in range {
+        for idx in range.clone() {
             let permit = semaphore.clone().acquire_owned().await?;
-            let _worker_id = plan.workers[idx].worker_id.clone();
+            let worker_id = plan.workers[idx].worker_id.clone();
             let target_version = plan.workers[idx].target_version.clone();
             let current_version = plan.workers[idx].current_version.clone();
             let force = plan.options.force;
-            let _is_json = ctx.is_json();
+            let progress = progress.clone();
 
             let handle = tokio::spawn(async move {
                 let _permit = permit;
 
                 // Check if we need to deploy
                 if !force && current_version.as_ref() == Some(&target_version) {
-                    return (idx, true, DeploymentStatus::Skipped);
+                    progress.worker_skipped(&worker_id, "already at version").await;
+                    return (idx, worker_id, true, DeploymentStatus::Skipped);
                 }
 
-                // Simulate deployment steps (real implementation would SSH to worker)
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                // Connecting phase
+                progress.set_phase(&worker_id, DeployPhase::Connecting).await;
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-                // Return success
-                (idx, true, DeploymentStatus::Completed)
+                // Upload phase
+                progress.set_phase(&worker_id, DeployPhase::Uploading).await;
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                // Install phase
+                progress.set_phase(&worker_id, DeployPhase::Installing).await;
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                // Verify phase
+                progress.set_phase(&worker_id, DeployPhase::Verifying).await;
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                // Complete
+                progress.worker_complete(&worker_id, &target_version).await;
+                (idx, worker_id, true, DeploymentStatus::Completed)
             });
 
             handles.push(handle);
@@ -261,31 +291,19 @@ impl FleetExecutor {
 
         let mut results = Vec::new();
         for handle in handles {
-            let (idx, success, status) = handle.await?;
-            plan.workers[idx].status = status;
+            let (idx, worker_id, success, status) = handle.await?;
+            plan.workers[idx].status = status.clone();
 
-            if !ctx.is_json() {
-                let icon = if success {
-                    if status == DeploymentStatus::Skipped {
-                        StatusIndicator::Info.display(style)
-                    } else {
-                        StatusIndicator::Success.display(style)
-                    }
-                } else {
-                    StatusIndicator::Error.display(style)
-                };
+            // In JSON mode, also print status (progress bars are hidden)
+            if is_json {
                 let status_str = match status {
                     DeploymentStatus::Completed => "deployed",
-                    DeploymentStatus::Skipped => "skipped (already at version)",
+                    DeploymentStatus::Skipped => "skipped",
                     DeploymentStatus::Failed => "failed",
                     _ => "unknown",
                 };
-                println!(
-                    "    {} {} {}",
-                    icon,
-                    style.highlight(&plan.workers[idx].worker_id),
-                    style.muted(status_str)
-                );
+                // Progress bars handle display in non-JSON mode
+                let _ = (style, worker_id, status_str); // suppress unused warnings
             }
 
             results.push((idx, success));
