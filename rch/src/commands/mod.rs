@@ -27,9 +27,9 @@ use anyhow::{Context, Result, bail};
 use directories::ProjectDirs;
 use rch_common::{
     ApiError, ApiResponse, Classification, ClassificationDetails, CommandPriority,
-    ConfigValueSource, DiscoveredHost, ErrorCode, RchConfig, RequiredRuntime, SshClient,
-    SshOptions, WorkerCapabilities, WorkerConfig, WorkerId, classify_command_detailed,
-    discover_all,
+    ConfigValueSource, DiscoveredHost, ErrorCode, RchConfig, RequiredRuntime, SelectedWorker,
+    SelectionReason, SshClient, SshOptions, WorkerCapabilities, WorkerConfig, WorkerId,
+    classify_command_detailed, discover_all,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
