@@ -60,6 +60,10 @@ pub enum Action {
     JumpBottom,
     /// Jump to a specific panel by index (0=Workers, 1=ActiveBuilds, 2=BuildHistory, 3=Logs).
     JumpToPanel(u8),
+    /// Cycle sort order (build history panel).
+    SortCycle,
+    /// Reverse sort direction (build history panel).
+    SortReverse,
     /// No action (tick).
     Tick,
 }
@@ -99,6 +103,8 @@ fn handle_key(key: KeyEvent) -> Action {
         KeyCode::Char('2') => Action::JumpToPanel(1),
         KeyCode::Char('3') => Action::JumpToPanel(2),
         KeyCode::Char('4') => Action::JumpToPanel(3),
+        KeyCode::Char('s') => Action::SortCycle,
+        KeyCode::Char('S') => Action::SortReverse,
         _ => Action::Tick,
     }
 }

@@ -55,6 +55,62 @@ pub enum ColorBlindMode {
     Tritanopia,
 }
 
+/// Sort order for build history panel.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BuildHistorySort {
+    /// Most recent first (default).
+    #[default]
+    TimeDesc,
+    /// Oldest first.
+    TimeAsc,
+    /// Longest builds first.
+    DurationDesc,
+    /// Shortest builds first.
+    DurationAsc,
+    /// Grouped by worker ID.
+    WorkerAsc,
+    /// Failures first, then successes.
+    StatusFailFirst,
+}
+
+impl BuildHistorySort {
+    /// Get display name for the sort option.
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            BuildHistorySort::TimeDesc => "time \u{2193}",
+            BuildHistorySort::TimeAsc => "time \u{2191}",
+            BuildHistorySort::DurationDesc => "duration \u{2193}",
+            BuildHistorySort::DurationAsc => "duration \u{2191}",
+            BuildHistorySort::WorkerAsc => "worker",
+            BuildHistorySort::StatusFailFirst => "status",
+        }
+    }
+
+    /// Cycle to next sort option.
+    pub fn next(self) -> Self {
+        match self {
+            BuildHistorySort::TimeDesc => BuildHistorySort::DurationDesc,
+            BuildHistorySort::DurationDesc => BuildHistorySort::WorkerAsc,
+            BuildHistorySort::WorkerAsc => BuildHistorySort::StatusFailFirst,
+            BuildHistorySort::StatusFailFirst => BuildHistorySort::TimeDesc,
+            BuildHistorySort::TimeAsc => BuildHistorySort::DurationAsc,
+            BuildHistorySort::DurationAsc => BuildHistorySort::TimeAsc,
+        }
+    }
+
+    /// Reverse current sort direction.
+    pub fn reverse(self) -> Self {
+        match self {
+            BuildHistorySort::TimeDesc => BuildHistorySort::TimeAsc,
+            BuildHistorySort::TimeAsc => BuildHistorySort::TimeDesc,
+            BuildHistorySort::DurationDesc => BuildHistorySort::DurationAsc,
+            BuildHistorySort::DurationAsc => BuildHistorySort::DurationDesc,
+            BuildHistorySort::WorkerAsc => BuildHistorySort::WorkerAsc, // no reverse
+            BuildHistorySort::StatusFailFirst => BuildHistorySort::StatusFailFirst, // no reverse
+        }
+    }
+}
+
 /// Main TUI state container.
 #[derive(Debug, Clone)]
 pub struct TuiState {
@@ -81,6 +137,8 @@ pub struct TuiState {
     pub last_copied: Option<String>,
     /// Pending confirmation dialog for destructive actions.
     pub confirm_dialog: Option<ConfirmDialog>,
+    /// Build history sort order.
+    pub build_history_sort: BuildHistorySort,
 }
 
 impl Default for TuiState {
@@ -96,6 +154,7 @@ impl Default for TuiState {
             error: None,
             filter: FilterState::default(),
             log_view: None,
+            build_history_sort: BuildHistorySort::default(),
             should_quit: false,
             show_help: false,
             filter_mode: false,
@@ -242,9 +301,24 @@ impl TuiState {
         self.last_copied = text;
     }
 
-    /// Get filtered build history based on current filter state.
+    /// Cycle through build history sort options.
+    pub fn cycle_build_history_sort(&mut self) {
+        self.build_history_sort = self.build_history_sort.next();
+        // Reset selection when sort changes
+        self.selected_index = 0;
+    }
+
+    /// Reverse current build history sort direction.
+    pub fn reverse_build_history_sort(&mut self) {
+        self.build_history_sort = self.build_history_sort.reverse();
+        // Reset selection when sort changes
+        self.selected_index = 0;
+    }
+
+    /// Get filtered and sorted build history based on current filter and sort state.
     pub fn filtered_build_history(&self) -> Vec<&HistoricalBuild> {
-        self.build_history
+        let mut history: Vec<&HistoricalBuild> = self
+            .build_history
             .iter()
             .filter(|b| {
                 // Apply query filter
@@ -271,7 +345,35 @@ impl TuiState {
                 }
                 true
             })
-            .collect()
+            .collect();
+
+        // Apply sorting
+        match self.build_history_sort {
+            BuildHistorySort::TimeDesc => {
+                // Default order - most recent first (already in this order from VecDeque)
+            }
+            BuildHistorySort::TimeAsc => {
+                history.reverse();
+            }
+            BuildHistorySort::DurationDesc => {
+                history.sort_by(|a, b| b.duration_ms.cmp(&a.duration_ms));
+            }
+            BuildHistorySort::DurationAsc => {
+                history.sort_by(|a, b| a.duration_ms.cmp(&b.duration_ms));
+            }
+            BuildHistorySort::WorkerAsc => {
+                history.sort_by(|a, b| {
+                    let a_worker = a.worker.as_deref().unwrap_or("");
+                    let b_worker = b.worker.as_deref().unwrap_or("");
+                    a_worker.cmp(b_worker)
+                });
+            }
+            BuildHistorySort::StatusFailFirst => {
+                history.sort_by(|a, b| a.success.cmp(&b.success));
+            }
+        }
+
+        history
     }
 }
 

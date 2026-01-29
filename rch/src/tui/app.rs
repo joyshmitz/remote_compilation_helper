@@ -517,6 +517,24 @@ async fn run_app(
                     // Copy selected item to clipboard
                     state.copy_selected();
                 }
+                Action::SortCycle => {
+                    // Cycle sort order (only in build history panel)
+                    if !state.show_help
+                        && !state.filter_mode
+                        && state.selected_panel == Panel::BuildHistory
+                    {
+                        state.cycle_build_history_sort();
+                    }
+                }
+                Action::SortReverse => {
+                    // Reverse sort direction (only in build history panel)
+                    if !state.show_help
+                        && !state.filter_mode
+                        && state.selected_panel == Panel::BuildHistory
+                    {
+                        state.reverse_build_history_sort();
+                    }
+                }
                 Action::DrainWorker => {
                     // Show confirmation dialog before draining
                     if !state.show_help

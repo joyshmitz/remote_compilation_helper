@@ -534,14 +534,21 @@ fn render_build_history_panel(
         })
         .collect();
 
+    // Build title with sort indicator
+    let sort_indicator = state.build_history_sort.display_name();
     let title = if state.filter_mode || !state.filter.query.is_empty() {
         format!(
-            "Build History [{}/{}] (/ to filter)",
+            "Build History [{}/{}] (sorted: {}) (/ to filter)",
             filtered.len(),
-            state.build_history.len()
+            state.build_history.len(),
+            sort_indicator
         )
     } else {
-        format!("Build History [{}]", state.build_history.len())
+        format!(
+            "Build History [{}] (sorted: {})",
+            state.build_history.len(),
+            sort_indicator
+        )
     };
 
     let list = List::new(items).block(
