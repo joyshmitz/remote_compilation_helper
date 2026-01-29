@@ -495,20 +495,20 @@ pub struct ClassificationTestResult {
 }
 
 // =============================================================================
-// Config Doctor Response Types
+// Doctor Command Response Types
 // =============================================================================
 
-/// Status of a health check.
+/// Status of a diagnostic check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum DoctorCheckStatus {
     Pass,
     Warning,
-    Error,
+    Fail,
     Skipped,
 }
 
-/// A single health check result.
+/// Result of a single diagnostic check.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct DoctorCheck {
     pub category: String,
@@ -519,13 +519,42 @@ pub struct DoctorCheck {
     pub details: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggestion: Option<String>,
+    /// Whether this issue can be auto-fixed.
+    #[serde(default)]
+    pub fixable: bool,
+    /// Whether a fix was applied during this run.
+    #[serde(default)]
+    pub fix_applied: bool,
+    /// Message about the fix that was applied (if any).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fix_message: Option<String>,
 }
 
-/// Response for config doctor command.
+/// Summary of all doctor checks.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct ConfigDoctorResponse {
+pub struct DoctorSummary {
+    pub total: usize,
+    pub passed: usize,
+    pub warnings: usize,
+    pub failed: usize,
+    pub fixed: usize,
+    pub would_fix: usize,
+}
+
+/// A fix that was applied during doctor run.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct DoctorFixApplied {
+    pub check_name: String,
+    pub action: String,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Overall doctor command response for JSON output.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct DoctorResponse {
     pub checks: Vec<DoctorCheck>,
-    pub pass_count: usize,
-    pub warning_count: usize,
-    pub error_count: usize,
+    pub summary: DoctorSummary,
+    pub fixes_applied: Vec<DoctorFixApplied>,
 }
