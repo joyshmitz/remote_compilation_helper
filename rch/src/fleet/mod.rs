@@ -9,6 +9,7 @@ mod executor;
 mod history;
 mod plan;
 mod preflight;
+mod progress;
 mod rollback;
 
 use crate::commands::load_workers_from_config;
@@ -27,6 +28,7 @@ pub use plan::{
     WorkerDeployment,
 };
 pub use preflight::{PreflightIssue, PreflightResult, Severity};
+pub use progress::{DeployPhase, FleetProgress};
 pub use rollback::{RollbackManager, WorkerBackup};
 
 /// Deploy rch-wkr to workers.
