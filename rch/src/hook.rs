@@ -876,9 +876,24 @@ struct TimingHistory {
     pub entries: HashMap<String, ProjectTimingData>,
 }
 
+/// Process-global in-memory cache for TimingHistory.
+///
+/// After first load from disk, all reads come from memory (zero disk I/O).
+/// Writes update the cache first, then persist to disk asynchronously.
+/// This eliminates disk I/O from the estimate_timing_for_build hot path.
+static TIMING_CACHE: std::sync::OnceLock<std::sync::RwLock<TimingHistory>> =
+    std::sync::OnceLock::new();
+
+/// Get or initialize the global TimingHistory cache.
+///
+/// First call loads from disk (blocking); subsequent calls return the cached copy.
+fn timing_cache() -> &'static std::sync::RwLock<TimingHistory> {
+    TIMING_CACHE.get_or_init(|| std::sync::RwLock::new(TimingHistory::load_from_disk()))
+}
+
 impl TimingHistory {
     /// Load timing history from disk. Returns empty history on error.
-    fn load() -> Self {
+    fn load_from_disk() -> Self {
         let Some(path) = timing_history_path() else {
             return Self::default();
         };
@@ -890,7 +905,7 @@ impl TimingHistory {
     }
 
     /// Save timing history to disk. Silently fails on error.
-    fn save(&self) {
+    fn save_to_disk(&self) {
         let Some(path) = timing_history_path() else {
             return;
         };
@@ -943,6 +958,7 @@ fn timing_history_path() -> Option<PathBuf> {
 
 /// Record a build timing to the history store.
 ///
+/// Updates the in-memory cache immediately, then persists to disk.
 /// Called after a build completes to update the timing history.
 /// This is used by `estimate_timing_for_build` for future predictions.
 pub fn record_build_timing(
@@ -951,9 +967,12 @@ pub fn record_build_timing(
     duration_ms: u64,
     remote: bool,
 ) {
-    let mut history = TimingHistory::load();
-    history.record(project, kind, duration_ms, remote);
-    history.save();
+    let cache = timing_cache();
+    // Update in-memory cache, then write-through to disk
+    if let Ok(mut history) = cache.write() {
+        history.record(project, kind, duration_ms, remote);
+        history.save_to_disk();
+    }
 }
 
 /// Timing estimate for offload gating decisions.
@@ -985,8 +1004,9 @@ fn estimate_timing_for_build(
     kind: Option<CompilationKind>,
     config: &rch_common::RchConfig,
 ) -> Option<TimingEstimate> {
-    // Load timing history from disk
-    let history = TimingHistory::load();
+    // Read from in-memory cache (zero disk I/O after first load)
+    let cache = timing_cache();
+    let history = cache.read().ok()?;
 
     // Look up timing data for this project+kind
     let data = history.get(project, kind)?;
