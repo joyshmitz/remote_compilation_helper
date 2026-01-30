@@ -2630,6 +2630,49 @@ mod tests {
         ENV_MUTEX.get_or_init(|| Mutex::new(()))
     }
 
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static ENV_MUTEX: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+        ENV_MUTEX
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .expect("env lock poisoned")
+    }
+
+    #[allow(unsafe_code)]
+    fn set_env(key: &str, value: &str) {
+        // SAFETY: Tests are serialized via env_lock().
+        unsafe { std::env::set_var(key, value) };
+    }
+
+    #[allow(unsafe_code)]
+    fn remove_env(key: &str) {
+        // SAFETY: Tests are serialized via env_lock().
+        unsafe { std::env::remove_var(key) };
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        old: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn remove(key: &'static str) -> Self {
+            let old = std::env::var(key).ok();
+            remove_env(key);
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(old) = &self.old {
+                set_env(self.key, old);
+            } else {
+                remove_env(self.key);
+            }
+        }
+    }
+
     struct TestOverridesGuard;
 
     impl TestOverridesGuard {
@@ -2837,6 +2880,9 @@ mod tests {
     #[test]
     fn test_estimate_cores_for_command() {
         let _guard = test_guard!();
+        let _env_guard = env_lock();
+        let _build_jobs = EnvVarGuard::remove("CARGO_BUILD_JOBS");
+        let _test_threads = EnvVarGuard::remove("RUST_TEST_THREADS");
         let config = rch_common::CompilationConfig {
             build_slots: 6,
             test_slots: 10,
