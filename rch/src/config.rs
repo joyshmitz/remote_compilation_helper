@@ -1,5 +1,6 @@
 //! Configuration loading for RCH.
 
+use crate::error::ConfigError;
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use rch_common::types::validate_remote_base;
@@ -1901,7 +1902,12 @@ pub fn validate_config(path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    anyhow::bail!("Config file is not valid RCH or workers configuration")
+    Err(ConfigError::InvalidValue {
+        field: "config file".to_string(),
+        reason: "Not a valid RCH or workers configuration".to_string(),
+        suggestion: "Check TOML syntax or run 'rch init' to create a valid config".to_string(),
+    }
+    .into())
 }
 
 #[cfg(test)]
