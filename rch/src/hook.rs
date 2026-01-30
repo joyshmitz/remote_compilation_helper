@@ -466,6 +466,13 @@ fn parse_env_u32(command: &str, key: &str) -> Option<u32> {
         .find_map(|token| token.strip_prefix(&needle).and_then(parse_u32))
 }
 
+fn read_env_u32(key: &str) -> Option<u32> {
+    if cfg!(test) {
+        return None;
+    }
+    std::env::var(key).ok().and_then(|v| parse_u32(&v))
+}
+
 fn parse_jobs_flag(command: &str) -> Option<u32> {
     let tokens: Vec<&str> = command.split_whitespace().collect();
     for (idx, token) in tokens.iter().enumerate() {
@@ -1128,9 +1135,7 @@ fn estimate_cores_for_command(
                 return threads.max(1);
             }
             if let Some(threads) = parse_env_u32(command, "RUST_TEST_THREADS").or_else(|| {
-                std::env::var("RUST_TEST_THREADS")
-                    .ok()
-                    .and_then(|v| parse_u32(&v))
+                read_env_u32("RUST_TEST_THREADS")
             }) {
                 return threads.max(1);
             }
@@ -1154,20 +1159,12 @@ fn estimate_cores_for_command(
             | CompilationKind::BunTypecheck,
         ) => parse_jobs_flag(command)
             .or_else(|| parse_env_u32(command, "CARGO_BUILD_JOBS"))
-            .or_else(|| {
-                std::env::var("CARGO_BUILD_JOBS")
-                    .ok()
-                    .and_then(|v| parse_u32(&v))
-            })
+            .or_else(|| read_env_u32("CARGO_BUILD_JOBS"))
             .unwrap_or(check_default)
             .max(1),
         Some(_) => parse_jobs_flag(command)
             .or_else(|| parse_env_u32(command, "CARGO_BUILD_JOBS"))
-            .or_else(|| {
-                std::env::var("CARGO_BUILD_JOBS")
-                    .ok()
-                    .and_then(|v| parse_u32(&v))
-            })
+            .or_else(|| read_env_u32("CARGO_BUILD_JOBS"))
             .unwrap_or(build_default)
             .max(1),
         None => build_default,
@@ -2628,49 +2625,6 @@ mod tests {
     fn test_lock() -> &'static Mutex<()> {
         static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
         ENV_MUTEX.get_or_init(|| Mutex::new(()))
-    }
-
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static ENV_MUTEX: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
-        ENV_MUTEX
-            .get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .expect("env lock poisoned")
-    }
-
-    #[allow(unsafe_code)]
-    fn set_env(key: &str, value: &str) {
-        // SAFETY: Tests are serialized via env_lock().
-        unsafe { std::env::set_var(key, value) };
-    }
-
-    #[allow(unsafe_code)]
-    fn remove_env(key: &str) {
-        // SAFETY: Tests are serialized via env_lock().
-        unsafe { std::env::remove_var(key) };
-    }
-
-    struct EnvVarGuard {
-        key: &'static str,
-        old: Option<String>,
-    }
-
-    impl EnvVarGuard {
-        fn remove(key: &'static str) -> Self {
-            let old = std::env::var(key).ok();
-            remove_env(key);
-            Self { key, old }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(old) = &self.old {
-                set_env(self.key, old);
-            } else {
-                remove_env(self.key);
-            }
-        }
     }
 
     struct TestOverridesGuard;

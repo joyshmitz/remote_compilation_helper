@@ -709,9 +709,9 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &TuiState, colors: &Color
 fn render_help_overlay(frame: &mut Frame, colors: &ColorScheme) {
     let area = frame.area();
     // Center the help box - increased height to accommodate more content
-    // Content is ~42 lines, plus 2 for borders = 44 minimum for full content
+    // Content is ~46 lines, plus 2 for borders = 48 minimum for full content
     let width = 60.min(area.width.saturating_sub(4));
-    let height = 46.min(area.height.saturating_sub(4));
+    let height = 50.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let help_area = Rect::new(x, y, width, height);
@@ -778,6 +778,13 @@ fn render_help_overlay(frame: &mut Frame, colors: &ColorScheme) {
         Line::from("  /           Open filter (Build History panel)"),
         Line::from("  Enter       Apply filter"),
         Line::from("  Esc         Cancel filter"),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Sort (Build History panel)",
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
+        Line::from("  s           Cycle sort order"),
+        Line::from("  S           Reverse sort direction"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "General",

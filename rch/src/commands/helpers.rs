@@ -6,6 +6,16 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 // ============================================================================
+// Path helpers
+// ============================================================================
+
+/// Get the default socket path.
+/// Uses XDG_RUNTIME_DIR if available, falls back to ~/.cache/rch/rch.sock, then /tmp/rch.sock.
+pub fn default_socket_path() -> String {
+    rch_common::default_socket_path()
+}
+
+// ============================================================================
 // Version extraction helpers
 // ============================================================================
 

@@ -27,7 +27,12 @@ use crate::ui::progress::{MultiProgressManager, Spinner};
 use crate::ui::theme::StatusIndicator;
 use anyhow::{Context, Result, bail};
 use directories::ProjectDirs;
-use helpers::{humanize_duration, indent_lines, urlencoding_encode};
+use helpers::{
+    classify_ssh_error, classify_ssh_error_message, default_socket_path, extract_version_numbers,
+    format_ssh_report, humanize_duration, indent_lines, major_version, major_version_mismatch,
+    major_minor_version, runtime_label, rust_version_mismatch, ssh_key_path,
+    ssh_key_path_from_identity, urlencoding_encode,
+};
 use rch_common::{
     ApiError, ApiResponse, Classification, ClassificationDetails, CommandPriority,
     ConfigValueSource, DiscoveredHost, ErrorCode, RchConfig, RequiredRuntime, SshClient,
@@ -109,15 +114,7 @@ fn print_file_validation(
 
 // Note: Response types (WorkerInfo, WorkersListResponse, etc.) are now in types.rs
 // and re-exported via `pub use types::*` at the top of this module.
-
-fn runtime_label(runtime: &RequiredRuntime) -> &'static str {
-    match runtime {
-        RequiredRuntime::Rust => "rust",
-        RequiredRuntime::Bun => "bun",
-        RequiredRuntime::Node => "node",
-        RequiredRuntime::None => "none",
-    }
-}
+// Helper functions (runtime_label, version helpers, SSH helpers, etc.) are in helpers.rs.
 
 fn has_any_capabilities(capabilities: &WorkerCapabilities) -> bool {
     capabilities.rustc_version.is_some()
@@ -162,53 +159,6 @@ async fn probe_local_capabilities() -> WorkerCapabilities {
     caps.node_version = node;
     caps.npm_version = npm;
     caps
-}
-
-fn extract_version_numbers(version: &str) -> Vec<u64> {
-    let mut numbers = Vec::new();
-    let mut current: Option<u64> = None;
-    for ch in version.chars() {
-        if let Some(digit) = ch.to_digit(10) {
-            let next = current
-                .unwrap_or(0)
-                .saturating_mul(10)
-                .saturating_add(digit as u64);
-            current = Some(next);
-        } else if let Some(value) = current.take() {
-            numbers.push(value);
-        }
-    }
-    if let Some(value) = current {
-        numbers.push(value);
-    }
-    numbers
-}
-
-fn major_version(version: &str) -> Option<u64> {
-    extract_version_numbers(version).into_iter().next()
-}
-
-fn major_minor_version(version: &str) -> Option<(u64, u64)> {
-    let numbers = extract_version_numbers(version);
-    if numbers.len() >= 2 {
-        Some((numbers[0], numbers[1]))
-    } else {
-        None
-    }
-}
-
-fn rust_version_mismatch(local: &str, remote: &str) -> bool {
-    match (major_minor_version(local), major_minor_version(remote)) {
-        (Some((lmaj, lmin)), Some((rmaj, rmin))) => lmaj != rmaj || lmin != rmin,
-        _ => false,
-    }
-}
-
-fn major_version_mismatch(local: &str, remote: &str) -> bool {
-    match (major_version(local), major_version(remote)) {
-        (Some(lmaj), Some(rmaj)) => lmaj != rmaj,
-        _ => false,
-    }
 }
 
 fn collect_local_capability_warnings(
