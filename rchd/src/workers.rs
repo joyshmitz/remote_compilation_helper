@@ -21,10 +21,30 @@ pub struct WorkerState {
     status: RwLock<WorkerStatus>,
     /// Number of slots currently in use.
     used_slots: Arc<AtomicU32>,
-    /// Speed score from benchmarking (0-100), stored as f64 bits via `to_bits`/`from_bits`.
+    /// Speed score from benchmarking (0-100).
+    ///
+    /// **Why atomic:** Read on every worker selection decision (hot path). RwLock's
+    /// ~25ns overhead per acquire multiplied by N workers is measurable; AtomicU64
+    /// load compiles to a single MOV instruction (~1ns).
+    ///
+    /// **Bit-casting:** `f64` is stored as `u64` via `f64::to_bits`/`f64::from_bits`.
+    /// This is a zero-cost transmute that preserves all IEEE 754 values including
+    /// NaN, infinity, and negative zero.
+    ///
+    /// **Ordering:** `Relaxed` — speed_score is a statistical performance hint, not
+    /// a correctness-critical flag. Stale reads produce slightly suboptimal worker
+    /// selection, never incorrect behavior. No happens-before dependency with other
+    /// fields (status transitions use RwLock which provides its own ordering).
     pub speed_score: AtomicU64,
     /// Last observed worker latency in milliseconds (from health checks).
-    /// Uses 0 as None sentinel (latency of 0ms is not meaningful).
+    ///
+    /// **Why atomic:** Same hot-path rationale as `speed_score`.
+    ///
+    /// **Sentinel:** `0` encodes `None` (latency of exactly 0ms is not meaningful
+    /// in practice). Use `last_latency_ms()` accessor which returns `Option<u64>`.
+    ///
+    /// **Ordering:** `Relaxed` — advisory diagnostic value with no ordering
+    /// dependency. See `speed_score` rationale.
     last_latency_ms: AtomicU64,
     /// Projects cached on this worker.
     pub cached_projects: RwLock<Vec<String>>,
@@ -36,7 +56,17 @@ pub struct WorkerState {
     capabilities: RwLock<WorkerCapabilities>,
     /// Reason for disabling this worker (if disabled).
     disabled_reason: RwLock<Option<String>>,
-    /// Unix timestamp when worker was disabled. Uses 0 as None sentinel.
+    /// Unix timestamp (seconds since epoch) when worker was disabled.
+    ///
+    /// **Why atomic:** Queried during worker selection to skip disabled workers.
+    ///
+    /// **Sentinel:** `0` encodes `None` (no disable event). Use `disabled_at()`
+    /// accessor which returns `Option<i64>`.
+    ///
+    /// **Ordering:** `Relaxed` — diagnostic timestamp set alongside `status`
+    /// (RwLock) and `disabled_reason` (RwLock). The RwLock transitions provide
+    /// happens-before ordering for the authoritative disabled state; this timestamp
+    /// is supplementary. Briefly stale reads are acceptable for display purposes.
     disabled_at: AtomicI64,
 }
 
@@ -541,6 +571,267 @@ mod tests {
         assert!(!state.is_draining().await);
         assert!(state.disabled_reason().await.is_none());
         assert!(state.disabled_at().is_none());
+    }
+
+    // =========================================================================
+    // WS3.4: Unit tests for atomic field accessors (bd-1gyl)
+    //
+    // Verify that AtomicU64/AtomicI64 accessors for speed_score,
+    // last_latency_ms, and disabled_at correctly roundtrip values including
+    // edge cases (NaN, infinity, zero sentinels).
+    // =========================================================================
+
+    // --- speed_score (AtomicU64 via f64::to_bits/from_bits) ---
+
+    #[test]
+    fn test_speed_score_roundtrip_normal_values() {
+        let state = WorkerState::new(test_config("test"));
+
+        // Default should be 50.0
+        assert_eq!(state.get_speed_score(), 50.0);
+
+        // Set and get various normal values
+        state.set_speed_score(0.0);
+        assert_eq!(state.get_speed_score(), 0.0);
+
+        state.set_speed_score(1.0);
+        assert_eq!(state.get_speed_score(), 1.0);
+
+        state.set_speed_score(100.0);
+        assert_eq!(state.get_speed_score(), 100.0);
+
+        state.set_speed_score(99.5);
+        assert_eq!(state.get_speed_score(), 99.5);
+
+        // Negative score (shouldn't happen in practice, but verify roundtrip)
+        state.set_speed_score(-1.0);
+        assert_eq!(state.get_speed_score(), -1.0);
+    }
+
+    #[test]
+    fn test_speed_score_roundtrip_extremes() {
+        let state = WorkerState::new(test_config("test"));
+
+        // f64::MAX
+        state.set_speed_score(f64::MAX);
+        assert_eq!(state.get_speed_score(), f64::MAX);
+
+        // f64::MIN (most negative)
+        state.set_speed_score(f64::MIN);
+        assert_eq!(state.get_speed_score(), f64::MIN);
+
+        // f64::MIN_POSITIVE (smallest positive)
+        state.set_speed_score(f64::MIN_POSITIVE);
+        assert_eq!(state.get_speed_score(), f64::MIN_POSITIVE);
+
+        // f64::EPSILON
+        state.set_speed_score(f64::EPSILON);
+        assert_eq!(state.get_speed_score(), f64::EPSILON);
+    }
+
+    #[test]
+    fn test_speed_score_roundtrip_special_float_values() {
+        let state = WorkerState::new(test_config("test"));
+
+        // Positive infinity
+        state.set_speed_score(f64::INFINITY);
+        assert_eq!(state.get_speed_score(), f64::INFINITY);
+
+        // Negative infinity
+        state.set_speed_score(f64::NEG_INFINITY);
+        assert_eq!(state.get_speed_score(), f64::NEG_INFINITY);
+
+        // NaN roundtrips via to_bits/from_bits (NaN != NaN, so check bits)
+        state.set_speed_score(f64::NAN);
+        let retrieved = state.get_speed_score();
+        assert!(retrieved.is_nan(), "NaN should roundtrip via to_bits/from_bits");
+        assert_eq!(
+            f64::NAN.to_bits(),
+            retrieved.to_bits(),
+            "NaN bit pattern should be preserved"
+        );
+
+        // Negative zero
+        state.set_speed_score(-0.0_f64);
+        let retrieved = state.get_speed_score();
+        assert_eq!(retrieved, 0.0); // -0.0 == 0.0 in f64
+        // But bit pattern differs from +0.0
+        assert_eq!((-0.0_f64).to_bits(), retrieved.to_bits());
+    }
+
+    // --- last_latency_ms (AtomicU64 with 0 as None sentinel) ---
+
+    #[test]
+    fn test_last_latency_ms_none_default() {
+        let state = WorkerState::new(test_config("test"));
+        assert_eq!(state.last_latency_ms(), None);
+    }
+
+    #[test]
+    fn test_last_latency_ms_roundtrip() {
+        let state = WorkerState::new(test_config("test"));
+
+        // Set Some value
+        state.set_last_latency_ms(Some(100));
+        assert_eq!(state.last_latency_ms(), Some(100));
+
+        // Update to different value
+        state.set_last_latency_ms(Some(250));
+        assert_eq!(state.last_latency_ms(), Some(250));
+
+        // Large value
+        state.set_last_latency_ms(Some(u64::MAX));
+        assert_eq!(state.last_latency_ms(), Some(u64::MAX));
+
+        // Set back to None
+        state.set_last_latency_ms(None);
+        assert_eq!(state.last_latency_ms(), None);
+    }
+
+    #[test]
+    fn test_last_latency_ms_zero_sentinel_behavior() {
+        let state = WorkerState::new(test_config("test"));
+
+        // Some(0) maps to None because 0 is the sentinel value.
+        // This is documented behavior: 0ms latency is not meaningful.
+        state.set_last_latency_ms(Some(0));
+        assert_eq!(
+            state.last_latency_ms(),
+            None,
+            "Some(0) should map to None (0 is sentinel for None)"
+        );
+
+        // Some(1) should work fine
+        state.set_last_latency_ms(Some(1));
+        assert_eq!(state.last_latency_ms(), Some(1));
+    }
+
+    // --- disabled_at (AtomicI64 with 0 as None sentinel) ---
+
+    #[test]
+    fn test_disabled_at_none_default() {
+        let state = WorkerState::new(test_config("test"));
+        assert_eq!(state.disabled_at(), None);
+    }
+
+    #[tokio::test]
+    async fn test_disabled_at_set_on_disable() {
+        let state = WorkerState::new(test_config("test"));
+
+        // Initially None
+        assert!(state.disabled_at().is_none());
+
+        // Disabling the worker should set disabled_at
+        state.disable(Some("test reason".to_string())).await;
+        let ts = state.disabled_at();
+        assert!(ts.is_some(), "disabled_at should be set after disable()");
+        assert!(ts.unwrap() > 0, "timestamp should be positive");
+    }
+
+    #[tokio::test]
+    async fn test_disabled_at_cleared_on_enable() {
+        let state = WorkerState::new(test_config("test"));
+
+        // Disable then enable
+        state.disable(Some("test".to_string())).await;
+        assert!(state.disabled_at().is_some());
+
+        state.enable().await;
+        assert_eq!(
+            state.disabled_at(),
+            None,
+            "disabled_at should be None after enable()"
+        );
+    }
+
+    // --- Concurrent access tests ---
+
+    #[tokio::test]
+    async fn test_speed_score_concurrent_updates() {
+        let state = Arc::new(WorkerState::new(test_config("test")));
+        let mut handles = vec![];
+
+        // Spawn 10 tasks that each set a different speed score
+        for i in 0..10u64 {
+            let s = Arc::clone(&state);
+            handles.push(tokio::spawn(async move {
+                s.set_speed_score(i as f64 * 10.0);
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // The final value should be one of the set values (last-write-wins)
+        let score = state.get_speed_score();
+        assert!(
+            (0.0..=90.0).contains(&score) && score % 10.0 == 0.0,
+            "Final speed score {} should be one of the written values",
+            score
+        );
+    }
+
+    #[tokio::test]
+    async fn test_latency_concurrent_updates() {
+        let state = Arc::new(WorkerState::new(test_config("test")));
+        let mut handles = vec![];
+
+        // Spawn tasks that set latency and None concurrently
+        for i in 0..10u64 {
+            let s = Arc::clone(&state);
+            handles.push(tokio::spawn(async move {
+                if i % 2 == 0 {
+                    s.set_last_latency_ms(Some(i * 100 + 1)); // Avoid 0
+                } else {
+                    s.set_last_latency_ms(None);
+                }
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // Result should be valid (either None or a reasonable value)
+        let latency = state.last_latency_ms();
+        match latency {
+            None => {} // Valid
+            Some(v) => assert!(v <= 901, "Latency {} out of expected range", v),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_disabled_at_concurrent_disable_enable() {
+        let state = Arc::new(WorkerState::new(test_config("test")));
+        let mut handles = vec![];
+
+        for i in 0..10u32 {
+            let s = Arc::clone(&state);
+            handles.push(tokio::spawn(async move {
+                if i % 2 == 0 {
+                    s.disable(Some(format!("reason {i}"))).await;
+                } else {
+                    s.enable().await;
+                }
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // State should be consistent: if disabled, disabled_at is Some; if not, None
+        let is_disabled = state.is_disabled().await;
+        let disabled_at = state.disabled_at();
+        if is_disabled {
+            assert!(
+                disabled_at.is_some(),
+                "disabled worker should have disabled_at set"
+            );
+        }
+        // Note: disabled_at might not be None when !is_disabled due to race
+        // between status and atomic checks, which is acceptable for diagnostic data
     }
 
     #[tokio::test]
