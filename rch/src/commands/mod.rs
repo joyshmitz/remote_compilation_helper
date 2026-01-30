@@ -45,8 +45,11 @@ use crate::hook::{query_daemon, release_worker, required_runtime_for_kind};
 use crate::toolchain::detect_toolchain;
 use crate::transfer::project_id_from_path;
 
-/// Default socket path.
-const DEFAULT_SOCKET_PATH: &str = "/tmp/rch.sock";
+/// Get the default socket path.
+/// Uses XDG_RUNTIME_DIR if available, falls back to ~/.cache/rch/rch.sock, then /tmp/rch.sock.
+fn default_socket_path() -> String {
+    rch_common::default_socket_path()
+}
 
 fn print_file_validation(
     label: &str,
@@ -1297,7 +1300,7 @@ pub async fn workers_drain(worker_id: &str, ctx: &OutputContext) -> Result<()> {
     let style = ctx.theme();
 
     // Check if daemon is running
-    if !Path::new(DEFAULT_SOCKET_PATH).exists() {
+    if !Path::new(&default_socket_path()).exists() {
         if ctx.is_json() {
             let _ = ctx.json(&ApiResponse::<()>::err(
                 "workers drain",
@@ -1387,7 +1390,7 @@ pub async fn workers_drain(worker_id: &str, ctx: &OutputContext) -> Result<()> {
 pub async fn workers_enable(worker_id: &str, ctx: &OutputContext) -> Result<()> {
     let style = ctx.theme();
 
-    if !Path::new(DEFAULT_SOCKET_PATH).exists() {
+    if !Path::new(&default_socket_path()).exists() {
         if ctx.is_json() {
             let _ = ctx.json(&ApiResponse::<()>::err(
                 "workers enable",
@@ -1469,7 +1472,7 @@ pub async fn workers_disable(
 ) -> Result<()> {
     let style = ctx.theme();
 
-    if !Path::new(DEFAULT_SOCKET_PATH).exists() {
+    if !Path::new(&default_socket_path()).exists() {
         if ctx.is_json() {
             let _ = ctx.json(&ApiResponse::<()>::err(
                 "workers disable",
@@ -3321,7 +3324,8 @@ impl ProbeInfo {
 
 /// Check daemon status.
 pub fn daemon_status(ctx: &OutputContext) -> Result<()> {
-    let socket_path = Path::new(DEFAULT_SOCKET_PATH);
+    let socket_path_str = default_socket_path();
+    let socket_path = Path::new(&socket_path_str);
     let style = ctx.theme();
 
     let running = socket_path.exists();
@@ -3340,7 +3344,7 @@ pub fn daemon_status(ctx: &OutputContext) -> Result<()> {
             "daemon status",
             DaemonStatusResponse {
                 running,
-                socket_path: DEFAULT_SOCKET_PATH.to_string(),
+                socket_path: default_socket_path(),
                 uptime_seconds,
             },
         ));
@@ -3361,7 +3365,7 @@ pub fn daemon_status(ctx: &OutputContext) -> Result<()> {
             "  {} {} {}",
             style.key("Socket"),
             style.muted(":"),
-            style.value(DEFAULT_SOCKET_PATH)
+            style.value(&default_socket_path())
         );
 
         if let Some(secs) = uptime_seconds {
@@ -3386,7 +3390,7 @@ pub fn daemon_status(ctx: &OutputContext) -> Result<()> {
             "  {} {} {} {}",
             style.key("Socket"),
             style.muted(":"),
-            style.muted(DEFAULT_SOCKET_PATH),
+            style.muted(&default_socket_path()),
             style.muted("(not found)")
         );
         println!();
@@ -3405,7 +3409,8 @@ pub fn daemon_status(ctx: &OutputContext) -> Result<()> {
 /// Start the daemon.
 pub async fn daemon_start(ctx: &OutputContext) -> Result<()> {
     let style = ctx.theme();
-    let socket_path = Path::new(DEFAULT_SOCKET_PATH);
+    let socket_path_str = default_socket_path();
+    let socket_path = Path::new(&socket_path_str);
 
     if socket_path.exists() {
         if ctx.is_json() {
@@ -3414,7 +3419,7 @@ pub async fn daemon_start(ctx: &OutputContext) -> Result<()> {
                 DaemonActionResponse {
                     action: "start".to_string(),
                     success: false,
-                    socket_path: DEFAULT_SOCKET_PATH.to_string(),
+                    socket_path: default_socket_path(),
                     message: Some("Daemon already running".to_string()),
                 },
             ));
@@ -3427,7 +3432,7 @@ pub async fn daemon_start(ctx: &OutputContext) -> Result<()> {
                 "  {} {} {}",
                 style.key("Socket"),
                 style.muted(":"),
-                style.value(DEFAULT_SOCKET_PATH)
+                style.value(&default_socket_path())
             );
             println!(
                 "\n{} Use {} to restart it.",
@@ -3467,7 +3472,7 @@ pub async fn daemon_start(ctx: &OutputContext) -> Result<()> {
                         DaemonActionResponse {
                             action: "start".to_string(),
                             success: true,
-                            socket_path: DEFAULT_SOCKET_PATH.to_string(),
+                            socket_path: default_socket_path(),
                             message: Some("Daemon started successfully".to_string()),
                         },
                     ));
@@ -3480,7 +3485,7 @@ pub async fn daemon_start(ctx: &OutputContext) -> Result<()> {
                         "  {} {} {}",
                         style.key("Socket"),
                         style.muted(":"),
-                        style.value(DEFAULT_SOCKET_PATH)
+                        style.value(&default_socket_path())
                     );
                 }
             } else if ctx.is_json() {
@@ -3489,7 +3494,7 @@ pub async fn daemon_start(ctx: &OutputContext) -> Result<()> {
                     DaemonActionResponse {
                         action: "start".to_string(),
                         success: false,
-                        socket_path: DEFAULT_SOCKET_PATH.to_string(),
+                        socket_path: default_socket_path(),
                         message: Some("Process started but socket not found".to_string()),
                     },
                 ));
@@ -3536,7 +3541,8 @@ pub async fn daemon_stop(skip_confirm: bool, ctx: &OutputContext) -> Result<()> 
     use dialoguer::Confirm;
 
     let style = ctx.theme();
-    let socket_path = Path::new(DEFAULT_SOCKET_PATH);
+    let socket_path_str = default_socket_path();
+    let socket_path = Path::new(&socket_path_str);
 
     if !socket_path.exists() {
         if ctx.is_json() {
@@ -3545,7 +3551,7 @@ pub async fn daemon_stop(skip_confirm: bool, ctx: &OutputContext) -> Result<()> 
                 DaemonActionResponse {
                     action: "stop".to_string(),
                     success: true,
-                    socket_path: DEFAULT_SOCKET_PATH.to_string(),
+                    socket_path: default_socket_path(),
                     message: Some("Daemon was not running".to_string()),
                 },
             ));
@@ -3602,7 +3608,7 @@ pub async fn daemon_stop(skip_confirm: bool, ctx: &OutputContext) -> Result<()> 
                             DaemonActionResponse {
                                 action: "stop".to_string(),
                                 success: true,
-                                socket_path: DEFAULT_SOCKET_PATH.to_string(),
+                                socket_path: default_socket_path(),
                                 message: Some("Daemon stopped".to_string()),
                             },
                         ));
@@ -3621,7 +3627,7 @@ pub async fn daemon_stop(skip_confirm: bool, ctx: &OutputContext) -> Result<()> 
                     DaemonActionResponse {
                         action: "stop".to_string(),
                         success: false,
-                        socket_path: DEFAULT_SOCKET_PATH.to_string(),
+                        socket_path: default_socket_path(),
                         message: Some("Daemon may still be shutting down".to_string()),
                     },
                 ));
@@ -3659,7 +3665,7 @@ pub async fn daemon_stop(skip_confirm: bool, ctx: &OutputContext) -> Result<()> 
                             DaemonActionResponse {
                                 action: "stop".to_string(),
                                 success: true,
-                                socket_path: DEFAULT_SOCKET_PATH.to_string(),
+                                socket_path: default_socket_path(),
                                 message: Some("Daemon stopped via pkill".to_string()),
                             },
                         ));
@@ -3704,7 +3710,8 @@ pub async fn daemon_restart(skip_confirm: bool, ctx: &OutputContext) -> Result<(
     let style = ctx.theme();
 
     // Check for active builds and prompt for confirmation before restarting
-    let socket_path = Path::new(DEFAULT_SOCKET_PATH);
+    let socket_path_str = default_socket_path();
+    let socket_path = Path::new(&socket_path_str);
     if !skip_confirm
         && !ctx.is_json()
         && socket_path.exists()
@@ -3751,7 +3758,7 @@ pub async fn daemon_reload(ctx: &OutputContext) -> Result<()> {
     let style = ctx.theme();
 
     // Check if daemon is running
-    if !Path::new(DEFAULT_SOCKET_PATH).exists() {
+    if !Path::new(&default_socket_path()).exists() {
         if ctx.is_json() {
             let _ = ctx.json(&ApiResponse::<()>::err(
                 "daemon reload",
@@ -3905,11 +3912,14 @@ pub async fn daemon_reload(ctx: &OutputContext) -> Result<()> {
 pub fn daemon_logs(lines: usize, ctx: &OutputContext) -> Result<()> {
     let style = ctx.theme();
 
-    // Try common log locations
+    // Try common log file locations first
     let log_paths = vec![
         PathBuf::from("/tmp/rchd.log"),
         config_dir()
             .map(|d| d.join("daemon.log"))
+            .unwrap_or_default(),
+        config_dir()
+            .map(|d| d.join("logs").join("daemon.log"))
             .unwrap_or_default(),
         dirs::cache_dir()
             .map(|d| d.join("rch").join("daemon.log"))
@@ -3949,6 +3959,47 @@ pub fn daemon_logs(lines: usize, ctx: &OutputContext) -> Result<()> {
         }
     }
 
+    // No log files found - try journald (for systemd service)
+    if let Ok(output) = std::process::Command::new("journalctl")
+        .args(["--user", "-u", "rchd", "-n", &lines.to_string(), "--no-pager"])
+        .output()
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let log_lines: Vec<String> = stdout.lines().map(|s| s.to_string()).collect();
+
+        // Check if we got actual log output (not just "No entries")
+        if !log_lines.is_empty()
+            && !stdout.contains("-- No entries --")
+            && !stdout.contains("No journal files were found")
+        {
+            if ctx.is_json() {
+                let _ = ctx.json(&ApiResponse::ok(
+                    "daemon logs",
+                    DaemonLogsResponse {
+                        log_file: Some("journalctl --user -u rchd".to_string()),
+                        lines: log_lines,
+                        found: true,
+                    },
+                ));
+            } else {
+                println!(
+                    "{} {} {}\n",
+                    style.key("Log source"),
+                    style.muted(":"),
+                    style.value("journalctl --user -u rchd")
+                );
+
+                for line in &log_lines {
+                    println!("{}", line);
+                }
+            }
+
+            return Ok(());
+        }
+    }
+
+    // No logs found anywhere
     if ctx.is_json() {
         let _ = ctx.json(&ApiResponse::ok(
             "daemon logs",
@@ -3964,22 +4015,18 @@ pub fn daemon_logs(lines: usize, ctx: &OutputContext) -> Result<()> {
             StatusIndicator::Warning.display(style)
         );
         println!("\n{}", style.key("Checked locations:"));
-        println!(
-            "{}",
-            style.muted("# Configuration sources (in priority order):")
-        );
-        println!("{}", style.muted("# 1. Environment variables (RCH_*)"));
-        println!("{}", style.muted("# 2. Project config: .rch/config.toml"));
-        if let Some(dir) = config_dir() {
-            println!(
-                "{}",
-                style.muted(&format!(
-                    "# 3. User config: {}",
-                    dir.join("config.toml").display()
-                ))
-            );
+        for path in &log_paths {
+            if !path.as_os_str().is_empty() {
+                println!("  {}", style.muted(&format!("• {}", path.display())));
+            }
         }
-        println!("{}", style.muted("# 4. Built-in defaults"));
+        println!("  {}", style.muted("• journalctl --user -u rchd"));
+        println!();
+        println!(
+            "{} If running via systemd, use: {}",
+            StatusIndicator::Info.display(style),
+            style.highlight("journalctl --user -u rchd -f")
+        );
     }
 
     Ok(())
@@ -10072,13 +10119,17 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // DEFAULT_SOCKET_PATH Tests
+    // default_socket_path Tests
     // -------------------------------------------------------------------------
 
     #[test]
-    fn default_socket_path_is_expected() {
+    fn default_socket_path_returns_valid_path() {
         let _guard = test_guard!();
-        assert_eq!(DEFAULT_SOCKET_PATH, "/tmp/rch.sock");
+        let path = default_socket_path();
+        // Should end with rch.sock regardless of prefix
+        assert!(path.ends_with("rch.sock"), "Socket path should end with rch.sock, got: {}", path);
+        // Should be an absolute path
+        assert!(path.starts_with('/'), "Socket path should be absolute, got: {}", path);
     }
 
     // -------------------------------------------------------------------------
