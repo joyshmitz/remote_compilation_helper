@@ -585,7 +585,7 @@ download_binaries() {
     # Try to fetch the latest release
     local release_url="${GITHUB_API}/releases/latest"
     local release_info
-    release_info=$(curl -sL --connect-timeout 10 "$release_url" 2>/dev/null || echo "")
+    release_info=$(curl -sL --connect-timeout 10 $PROXY_ARGS "$release_url" 2>/dev/null || echo "")
 
     if [[ -z "$release_info" ]] || ! echo "$release_info" | grep -q '"tag_name"'; then
         warn "No pre-built binaries available yet"
@@ -615,6 +615,7 @@ download_binaries() {
     if ! curl -fsSL $PROXY_ARGS "$download_url" -o "$TEMP_DIR/$asset_name" 2>/dev/null; then
         warn "Download failed"
         info "Falling back to building from source..."
+        rm -rf "$TEMP_DIR"  # Clean up before fallback to avoid leak
         clone_and_build_from_source
         return
     fi
@@ -624,6 +625,7 @@ download_binaries() {
     if ! tar -xzf "$TEMP_DIR/$asset_name" -C "$TEMP_DIR"; then
         warn "Failed to extract tarball"
         info "Falling back to building from source..."
+        rm -rf "$TEMP_DIR"  # Clean up before fallback to avoid leak
         clone_and_build_from_source
         return
     fi
@@ -635,6 +637,7 @@ download_binaries() {
         else
             warn "Worker binary not in release"
             info "Falling back to building from source..."
+            rm -rf "$TEMP_DIR"  # Clean up before fallback to avoid leak
             clone_and_build_from_source
             return
         fi
@@ -646,6 +649,7 @@ download_binaries() {
             else
                 warn "$binary not in release"
                 info "Falling back to building from source..."
+                rm -rf "$TEMP_DIR"  # Clean up before fallback to avoid leak
                 clone_and_build_from_source
                 return
             fi
