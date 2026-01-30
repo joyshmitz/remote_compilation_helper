@@ -66,6 +66,11 @@ impl TestCodeChange {
                 "println!(\"Hello from test project!\");",
                 &format!("println!(\"Hello from test project! {}\");", change_id),
             )
+        } else if original.contains("println!(\"rch self-test\");") {
+            original.replace(
+                "println!(\"rch self-test\");",
+                &format!("println!(\"rch self-test {}\");", change_id),
+            )
         } else {
             // Fallback: append a function
             format!(
