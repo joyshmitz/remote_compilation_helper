@@ -108,7 +108,7 @@ fn classify_and_log(harness: &TestHarness, command: &str) -> Classification {
         ),
         vec![
             ("duration_us".to_string(), duration.as_micros().to_string()),
-            ("reason".to_string(), result.reason.clone()),
+            ("reason".to_string(), result.reason.to_string()),
         ],
     );
 
@@ -528,33 +528,29 @@ fn test_hook_ignores_background_commands() {
 }
 
 #[test]
-fn test_hook_ignores_chained_commands() {
+fn test_hook_classifies_chained_commands() {
     let _guard = test_guard!();
-    let harness = create_hook_harness("hook_ignores_chained").unwrap();
+    let harness = create_hook_harness("hook_classifies_chained").unwrap();
 
     harness
         .logger
-        .info("TEST START: test_hook_ignores_chained_commands");
+        .info("TEST START: test_hook_classifies_chained_commands");
 
-    // && chained
+    // && chained - multi-command splitting detects compilation sub-commands
     let result = classify_and_log(&harness, "cargo build && cargo test");
     harness
         .assert(
-            !result.is_compilation,
-            "&& chained should NOT be intercepted",
+            result.is_compilation,
+            "&& chained with compilation sub-commands should be intercepted",
         )
         .unwrap();
-    assert!(
-        result.reason.contains("chained"),
-        "Reason should mention chained"
-    );
 
     // ; chained
     let result = classify_and_log(&harness, "cargo build; cargo test");
     harness
         .assert(
-            !result.is_compilation,
-            "; chained should NOT be intercepted",
+            result.is_compilation,
+            "; chained with compilation sub-commands should be intercepted",
         )
         .unwrap();
 
@@ -562,14 +558,14 @@ fn test_hook_ignores_chained_commands() {
     let result = classify_and_log(&harness, "cargo build || echo failed");
     harness
         .assert(
-            !result.is_compilation,
-            "|| chained should NOT be intercepted",
+            result.is_compilation,
+            "|| chained with compilation sub-commands should be intercepted",
         )
         .unwrap();
 
     harness
         .logger
-        .info("TEST PASS: test_hook_ignores_chained_commands");
+        .info("TEST PASS: test_hook_classifies_chained_commands");
     harness.mark_passed();
 }
 

@@ -251,6 +251,7 @@ where
 mod tests {
     use super::*;
     use rch_common::CompilationKind;
+    use std::borrow::Cow;
 
     fn make_classification(is_compilation: bool) -> Classification {
         Classification {
@@ -261,7 +262,7 @@ mod tests {
             } else {
                 None
             },
-            reason: "test".to_string(),
+            reason: Cow::Borrowed("test"),
         }
     }
 
