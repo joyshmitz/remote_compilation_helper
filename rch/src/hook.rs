@@ -2834,9 +2834,6 @@ mod tests {
     #[test]
     fn test_estimate_cores_for_command() {
         let _guard = test_guard!();
-        let _env_guard = env_lock();
-        let _build_jobs = EnvVarGuard::remove("CARGO_BUILD_JOBS");
-        let _test_threads = EnvVarGuard::remove("RUST_TEST_THREADS");
         let config = rch_common::CompilationConfig {
             build_slots: 6,
             test_slots: 10,

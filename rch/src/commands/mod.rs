@@ -53,12 +53,6 @@ use crate::hook::{query_daemon, release_worker, required_runtime_for_kind};
 use crate::toolchain::detect_toolchain;
 use crate::transfer::project_id_from_path;
 
-/// Get the default socket path.
-/// Uses XDG_RUNTIME_DIR if available, falls back to ~/.cache/rch/rch.sock, then /tmp/rch.sock.
-fn default_socket_path() -> String {
-    rch_common::default_socket_path()
-}
-
 fn print_file_validation(
     label: &str,
     validations: &[crate::config::FileValidation],
