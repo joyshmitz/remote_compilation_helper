@@ -416,7 +416,6 @@ impl RollbackManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     // ========================
     // Helper functions

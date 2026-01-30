@@ -15,6 +15,42 @@ const MAX_CONCURRENT_QUERIES: usize = 10;
 /// Default timeout for individual worker queries in seconds.
 const DEFAULT_QUERY_TIMEOUT_SECS: u64 = 30;
 
+/// Retry an async operation with configurable retry count and delay.
+///
+/// Uses exponential backoff between retries. Returns the last error if all attempts fail.
+pub async fn with_retry<T, E, F, Fut>(
+    config: &FleetConfig,
+    operation: F,
+) -> std::result::Result<T, E>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, E>>,
+    E: std::fmt::Display,
+{
+    let mut last_error = None;
+
+    for attempt in 0..=config.retry_count {
+        match operation().await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                if attempt < config.retry_count {
+                    debug!(
+                        attempt = %attempt,
+                        max_retries = %config.retry_count,
+                        error = %e,
+                        delay_ms = %config.retry_delay_ms,
+                        "Retrying after transient error"
+                    );
+                    tokio::time::sleep(config.retry_delay()).await;
+                }
+                last_error = Some(e);
+            }
+        }
+    }
+
+    Err(last_error.unwrap())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Severity {
     Info,
@@ -481,28 +517,26 @@ async fn query_worker_inner(worker: &WorkerConfig, config: &FleetConfig) -> Work
                 "~/.local/bin/rch-wkr --version 2>/dev/null || rch-wkr --version 2>/dev/null",
             )
             .await
+            && output.success()
+            && !output.stdout.trim().is_empty()
         {
-            if output.success() && !output.stdout.trim().is_empty() {
-                version = output
-                    .stdout
-                    .trim()
-                    .split_whitespace()
-                    .last()
-                    .map(|s| s.to_string());
-            }
+            version = output
+                .stdout
+                .trim()
+                .split_whitespace()
+                .last()
+                .map(|s| s.to_string());
         }
 
         // Check disk space
         let disk_cmd = "df -Pm /tmp 2>/dev/null | tail -1 | awk '{print $4}'";
-        if let Ok(output) = ssh_executor.run_command(disk_cmd).await {
-            if output.success() {
-                if let Ok(mb) = output.stdout.trim().parse::<u64>() {
-                    if mb < config.min_disk_space_mb {
-                        issues.push(format!("Low disk space: {}MB", mb));
-                        healthy = false;
-                    }
-                }
-            }
+        if let Ok(output) = ssh_executor.run_command(disk_cmd).await
+            && output.success()
+            && let Ok(mb) = output.stdout.trim().parse::<u64>()
+            && mb < config.min_disk_space_mb
+        {
+            issues.push(format!("Low disk space: {}MB", mb));
+            healthy = false;
         }
     } else {
         issues.push("Unreachable".to_string());
@@ -539,8 +573,8 @@ pub async fn get_fleet_status(
     config: &FleetConfig,
 ) -> Result<Vec<WorkerStatus>> {
     use indicatif::{ProgressBar, ProgressStyle};
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Handle empty workers case
     if workers.is_empty() {
@@ -565,13 +599,13 @@ pub async fn get_fleet_status(
         "Starting parallel fleet status check"
     );
 
-    // Human-readable progress output (non-JSON mode)
-    if !ctx.is_json() {
+    // Human-readable progress output (non-JSON/non-quiet mode)
+    if !ctx.is_json() && !ctx.is_quiet() {
         eprintln!("Querying {} workers...", workers.len());
     }
 
-    // Create progress bar for multi-worker operations (non-JSON mode only)
-    let progress_bar = if !ctx.is_json() && workers.len() > 1 {
+    // Create progress bar for multi-worker operations (non-JSON/non-quiet mode only)
+    let progress_bar = if !ctx.is_json() && !ctx.is_quiet() && workers.len() > 1 {
         let pb = ProgressBar::new(workers.len() as u64);
         pb.set_style(
             ProgressStyle::default_bar()
@@ -583,6 +617,9 @@ pub async fn get_fleet_status(
     } else {
         None
     };
+
+    // Capture verbose flag for worker-level output
+    let show_per_worker = ctx.is_verbose() && !ctx.is_json() && !ctx.is_quiet();
 
     let start = std::time::Instant::now();
     let completed = Arc::new(AtomicUsize::new(0));
@@ -615,8 +652,8 @@ pub async fn get_fleet_status(
         .await;
 
     // Sort by original index to preserve order
-    let mut results: Vec<WorkerStatus> = {
-        let mut sorted: Vec<(usize, WorkerStatus)> = results;
+    let results: Vec<WorkerStatus> = {
+        let mut sorted = results;
         sorted.sort_by_key(|(idx, _)| *idx);
         sorted.into_iter().map(|(_, status)| status).collect()
     };
@@ -641,8 +678,44 @@ pub async fn get_fleet_status(
         "Fleet status query complete"
     );
 
+    // Verbose per-worker status output
+    if show_per_worker {
+        eprintln!("\nPer-worker status:");
+        for r in &results {
+            let icon = if r.healthy {
+                "✓"
+            } else if r.reachable {
+                "⚠"
+            } else {
+                "✗"
+            };
+            let status_text = if r.healthy {
+                "healthy"
+            } else if r.reachable {
+                "issues found"
+            } else {
+                "unreachable"
+            };
+            eprintln!(
+                "  {} {} - {}{}",
+                icon,
+                r.worker_id,
+                status_text,
+                r.version
+                    .as_ref()
+                    .map(|v| format!(" (v{})", v))
+                    .unwrap_or_default()
+            );
+            if !r.issues.is_empty() {
+                for issue in &r.issues {
+                    eprintln!("      → {}", issue);
+                }
+            }
+        }
+    }
+
     // Human-readable summary (non-JSON mode)
-    if !ctx.is_json() && unreachable_count > 0 {
+    if !ctx.is_json() && !ctx.is_quiet() && unreachable_count > 0 {
         eprintln!("Warning: {} worker(s) unreachable", unreachable_count);
     }
 
@@ -654,6 +727,7 @@ pub async fn get_fleet_status(
 pub const MIN_DISK_SPACE_MB: u64 = 500;
 
 /// SSH connectivity check timeout in seconds (fast fail for preflight).
+#[allow(dead_code)] // Available as fallback default
 pub const SSH_CONNECT_TIMEOUT_SECS: u64 = 5;
 
 #[cfg(test)]

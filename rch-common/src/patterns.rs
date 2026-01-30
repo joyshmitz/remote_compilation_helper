@@ -252,9 +252,8 @@ impl CompilationKind {
 /// Implements the 5-tier classification system for maximum precision with
 /// minimal latency on non-compilation commands.
 ///
-/// Multi-command strings (joined by `&&`, `||`, or `;`) are split and each
-/// sub-command is classified independently. If any sub-command is compilation,
-/// the result with the highest confidence is returned.
+/// Multi-command strings (joined by `&&`, `||`, or `;`) are rejected by
+/// Tier 1 structure analysis to prevent partial interception issues.
 pub fn classify_command(cmd: &str) -> Classification {
     classify_command_inner(cmd, 0)
 }

@@ -8,13 +8,13 @@ pub mod disk;
 pub mod memory;
 pub mod network;
 
-use anyhow::Result;
-use std::time::{Duration, Instant};
-use crate::protocol::WorkerTelemetry;
 use crate::collect::cpu::CpuTelemetry;
 use crate::collect::disk::DiskCollector;
 use crate::collect::memory::MemoryTelemetry;
 use crate::collect::network::NetworkCollector;
+use crate::protocol::WorkerTelemetry;
+use anyhow::Result;
+use std::time::{Duration, Instant};
 
 pub fn resolve_worker_id(override_id: Option<String>) -> String {
     if let Some(id) = override_id {

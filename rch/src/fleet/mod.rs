@@ -18,7 +18,7 @@ use crate::config::load_config;
 use crate::ui::context::OutputContext;
 use crate::ui::theme::StatusIndicator;
 use anyhow::{Result, bail};
-use rch_common::{ApiError, ApiResponse, ErrorCode, FleetConfig};
+use rch_common::{ApiError, ApiResponse, ErrorCode};
 use std::path::PathBuf;
 
 pub use audit::{AuditEventType, AuditLogger, DeploymentAuditEntry};

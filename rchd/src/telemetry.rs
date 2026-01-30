@@ -616,20 +616,22 @@ mod tests {
         assert!(latest.is_empty());
     }
 
-    #[test]
-    fn test_store_latest_speedscore_no_storage() {
+    #[tokio::test]
+    async fn test_store_latest_speedscore_no_storage() {
         let _guard = test_guard!();
         let store = TelemetryStore::new(Duration::from_secs(300), None);
-        let result = store.latest_speedscore("w1");
+        let result = store.latest_speedscore("w1").await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
     }
 
-    #[test]
-    fn test_store_speedscore_history_no_storage() {
+    #[tokio::test]
+    async fn test_store_speedscore_history_no_storage() {
         let _guard = test_guard!();
         let store = TelemetryStore::new(Duration::from_secs(300), None);
-        let result = store.speedscore_history("w1", Utc::now() - ChronoDuration::hours(1), 10, 0);
+        let result = store
+            .speedscore_history("w1", Utc::now() - ChronoDuration::hours(1), 10, 0)
+            .await;
         assert!(result.is_ok());
         let page = result.unwrap();
         assert_eq!(page.total, 0);

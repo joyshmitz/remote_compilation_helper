@@ -1908,6 +1908,76 @@ mod tests {
     }
 
     #[test]
+    fn test_bun_test_external_timeout_wrapper() {
+        let _guard = test_guard!();
+        // Test that BunTest commands get wrapped with timeout
+        let pipeline = TransferPipeline::new(
+            PathBuf::from("/tmp/test"),
+            "test-project".to_string(),
+            "abc123".to_string(),
+            TransferConfig::default(),
+        )
+        .with_compilation_kind(Some(CompilationKind::BunTest));
+
+        let wrapped = pipeline.wrap_with_external_timeout("bun test");
+        assert!(wrapped.contains("timeout"));
+        assert!(wrapped.contains("--signal=KILL"));
+        assert!(wrapped.contains("--foreground"));
+        assert!(wrapped.contains("600")); // Default timeout
+        assert!(wrapped.contains("bun test"));
+    }
+
+    #[test]
+    fn test_bun_typecheck_external_timeout_wrapper() {
+        let _guard = test_guard!();
+        // Test that BunTypecheck commands also get wrapped
+        let pipeline = TransferPipeline::new(
+            PathBuf::from("/tmp/test"),
+            "test-project".to_string(),
+            "abc123".to_string(),
+            TransferConfig::default(),
+        )
+        .with_compilation_kind(Some(CompilationKind::BunTypecheck));
+
+        let wrapped = pipeline.wrap_with_external_timeout("bun typecheck");
+        assert!(wrapped.contains("timeout"));
+        assert!(wrapped.contains("bun typecheck"));
+    }
+
+    #[test]
+    fn test_non_bun_commands_not_wrapped_with_timeout() {
+        let _guard = test_guard!();
+        // Test that non-bun commands are NOT wrapped with timeout
+        let pipeline = TransferPipeline::new(
+            PathBuf::from("/tmp/test"),
+            "test-project".to_string(),
+            "abc123".to_string(),
+            TransferConfig::default(),
+        )
+        .with_compilation_kind(Some(CompilationKind::CargoBuild));
+
+        let wrapped = pipeline.wrap_with_external_timeout("cargo build");
+        assert!(!wrapped.contains("timeout"));
+        assert_eq!(wrapped, "cargo build");
+    }
+
+    #[test]
+    fn test_no_compilation_kind_not_wrapped() {
+        let _guard = test_guard!();
+        // Test that commands without compilation kind are NOT wrapped
+        let pipeline = TransferPipeline::new(
+            PathBuf::from("/tmp/test"),
+            "test-project".to_string(),
+            "abc123".to_string(),
+            TransferConfig::default(),
+        ); // No with_compilation_kind() call
+
+        let wrapped = pipeline.wrap_with_external_timeout("some command");
+        assert!(!wrapped.contains("timeout"));
+        assert_eq!(wrapped, "some command");
+    }
+
+    #[test]
     fn test_build_sync_command_includes_keepalive_and_controlpersist_when_set() {
         let _guard = test_guard!();
         let custom_options = SshOptions {

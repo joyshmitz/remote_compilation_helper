@@ -33,7 +33,7 @@ use uuid::Uuid;
 // Helper Functions
 // ============================================================================
 
-const MAX_LINE_SIZE: usize = 8192; // 8KB
+const MAX_LINE_SIZE: usize = 65536; // 64KB
 const MAX_BODY_SIZE: u64 = 10 * 1024 * 1024; // 10MB
 
 async fn read_line_with_limit<R: AsyncBufReadExt + Unpin>(
