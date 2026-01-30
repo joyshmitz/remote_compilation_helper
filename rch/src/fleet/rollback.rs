@@ -15,6 +15,7 @@
 
 use crate::fleet::history::HistoryManager;
 use crate::fleet::ssh::SshExecutor;
+use crate::state::lock::ConfigLock;
 use crate::ui::context::OutputContext;
 use crate::ui::theme::StatusIndicator;
 use anyhow::{Context, Result, bail};
@@ -50,6 +51,9 @@ const REGISTRY_FILE: &str = "registry.json";
 /// Timeout for rollback operations.
 #[allow(dead_code)] // Reserved for future timeout handling
 const ROLLBACK_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Timeout for acquiring the backup registry lock.
+const REGISTRY_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Maximum concurrent rollback operations (cap to prevent resource exhaustion).
 const MAX_CONCURRENT_ROLLBACKS: usize = 10;
@@ -170,6 +174,11 @@ impl RollbackManager {
     ///
     /// Uses atomic writes to prevent corruption from concurrent access.
     pub fn save_backup_entry(&self, backup: &WorkerBackup) -> Result<()> {
+        let _lock = ConfigLock::acquire_with_timeout(
+            "backup-registry",
+            REGISTRY_LOCK_TIMEOUT,
+            "save backup registry",
+        )?;
         let path = self.registry_path();
         let temp_path = path.with_extension("json.tmp");
 
@@ -226,6 +235,11 @@ impl RollbackManager {
     ///
     /// Returns the list of removed backups so the caller can clean up remote files.
     pub fn prune_old_backups(&mut self, max_per_worker: usize) -> Result<Vec<WorkerBackup>> {
+        let _lock = ConfigLock::acquire_with_timeout(
+            "backup-registry",
+            REGISTRY_LOCK_TIMEOUT,
+            "prune backup registry",
+        )?;
         let path = self.registry_path();
         let registry = self.load_registry()?;
 
