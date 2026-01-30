@@ -1944,10 +1944,14 @@ async fn deploy_via_scp(worker: &WorkerConfig, local_binary: &Path) -> Result<St
         .await
         .context("Failed to create remote directory")?;
     if !mkdir_output.status.success() {
-        bail!(
-            "Failed to create remote directory: {}",
-            String::from_utf8_lossy(&mkdir_output.stderr)
-        );
+        return Err(SshError::CommandFailed {
+            host: worker.host.clone(),
+            message: format!(
+                "Failed to create remote directory: {}",
+                String::from_utf8_lossy(&mkdir_output.stderr).trim()
+            ),
+        }
+        .into());
     }
 
     // Copy binary
@@ -1964,10 +1968,14 @@ async fn deploy_via_scp(worker: &WorkerConfig, local_binary: &Path) -> Result<St
 
     let scp_output = scp_cmd.output().await.context("Failed to scp binary")?;
     if !scp_output.status.success() {
-        bail!(
-            "scp failed: {}",
-            String::from_utf8_lossy(&scp_output.stderr)
-        );
+        return Err(SshError::CommandFailed {
+            host: worker.host.clone(),
+            message: format!(
+                "scp failed: {}",
+                String::from_utf8_lossy(&scp_output.stderr).trim()
+            ),
+        }
+        .into());
     }
 
     // Make executable
@@ -1982,10 +1990,14 @@ async fn deploy_via_scp(worker: &WorkerConfig, local_binary: &Path) -> Result<St
 
     let chmod_output = chmod_cmd.output().await.context("Failed to chmod binary")?;
     if !chmod_output.status.success() {
-        bail!(
-            "chmod failed: {}",
-            String::from_utf8_lossy(&chmod_output.stderr)
-        );
+        return Err(SshError::CommandFailed {
+            host: worker.host.clone(),
+            message: format!(
+                "chmod failed: {}",
+                String::from_utf8_lossy(&chmod_output.stderr).trim()
+            ),
+        }
+        .into());
     }
 
     // Verify installation
@@ -2003,10 +2015,14 @@ async fn deploy_via_scp(worker: &WorkerConfig, local_binary: &Path) -> Result<St
         .await
         .context("Failed to verify installation")?;
     if !verify_output.status.success() {
-        bail!(
-            "Health check failed: {}",
-            String::from_utf8_lossy(&verify_output.stderr)
-        );
+        return Err(SshError::CommandFailed {
+            host: worker.host.clone(),
+            message: format!(
+                "Health check failed: {}",
+                String::from_utf8_lossy(&verify_output.stderr).trim()
+            ),
+        }
+        .into());
     }
 
     Ok(format!("~/{}", remote_path))
@@ -2730,7 +2746,10 @@ pub async fn workers_init(yes: bool, ctx: &OutputContext) -> Result<()> {
     // Step 1: Get hostname
     println!("{}", style.highlight("Step 1/5: Connection Details"));
     let hostname: String = if yes {
-        bail!("--yes flag requires hostname via environment variable RCH_INIT_HOST");
+        return Err(ConfigError::MissingField {
+            field: "RCH_INIT_HOST environment variable (required with --yes flag)".to_string(),
+        }
+        .into());
     } else {
         Input::new()
             .with_prompt("Hostname or IP address")
@@ -5397,10 +5416,12 @@ fn config_set_at(config_path: &Path, key: &str, value: &str, ctx: &OutputContext
             config.output.first_run_complete = parse_bool(value, key)?;
         }
         _ => {
-            bail!(
-                "Unknown config key: {}. Supported keys: general.enabled, general.force_local, general.force_remote, general.log_level, general.socket_path, compilation.confidence_threshold, compilation.min_local_time_ms, transfer.compression_level, transfer.exclude_patterns, environment.allowlist, output.visibility, output.first_run_complete, first_run_complete",
-                key
-            );
+            return Err(ConfigError::InvalidValue {
+                field: key.to_string(),
+                reason: "unknown configuration key".to_string(),
+                suggestion: "Supported keys: general.enabled, general.force_local, general.force_remote, general.log_level, general.socket_path, compilation.confidence_threshold, compilation.min_local_time_ms, transfer.compression_level, transfer.exclude_patterns, environment.allowlist, output.visibility, output.first_run_complete".to_string(),
+            }
+            .into());
         }
     }
 
@@ -5520,10 +5541,12 @@ pub fn config_export(format: &str, ctx: &OutputContext) -> Result<()> {
             ));
         }
         _ => {
-            bail!(
-                "Unknown export format '{}'. Supported: shell, env, json",
-                format
-            );
+            return Err(ConfigError::InvalidValue {
+                field: "format".to_string(),
+                reason: format!("unknown export format '{}'", format),
+                suggestion: "Supported formats: shell, env, json".to_string(),
+            }
+            .into());
         }
     }
     Ok(())
