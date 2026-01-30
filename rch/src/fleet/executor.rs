@@ -480,6 +480,12 @@ async fn create_remote_directory(worker: &WorkerConfig) -> Result<()> {
 
 /// Copy the binary to the worker via SCP.
 async fn copy_binary_via_scp(worker: &WorkerConfig, local_binary: &Path) -> Result<()> {
+    // Mock mode: skip actual SCP
+    if mock::is_mock_enabled() || mock::is_mock_worker(worker) {
+        debug!("Mock mode: skipping SCP for {}", worker.id);
+        return Ok(());
+    }
+
     let target = format!("{}@{}", worker.user, worker.host);
     let remote_path = "~/.local/bin/rch-wkr";
 
@@ -510,6 +516,12 @@ async fn copy_binary_via_scp(worker: &WorkerConfig, local_binary: &Path) -> Resu
 
 /// Set executable permissions on the remote binary.
 async fn set_executable_permissions(worker: &WorkerConfig) -> Result<()> {
+    // Mock mode: skip actual chmod
+    if mock::is_mock_enabled() || mock::is_mock_worker(worker) {
+        debug!("Mock mode: skipping chmod for {}", worker.id);
+        return Ok(());
+    }
+
     let target = format!("{}@{}", worker.user, worker.host);
     let remote_path = "~/.local/bin/rch-wkr";
 
@@ -533,6 +545,12 @@ async fn set_executable_permissions(worker: &WorkerConfig) -> Result<()> {
 
 /// Verify the installation by running health check.
 async fn verify_installation(worker: &WorkerConfig) -> Result<()> {
+    // Mock mode: skip actual verification
+    if mock::is_mock_enabled() || mock::is_mock_worker(worker) {
+        debug!("Mock mode: skipping verification for {}", worker.id);
+        return Ok(());
+    }
+
     let target = format!("{}@{}", worker.user, worker.host);
     let remote_path = "~/.local/bin/rch-wkr";
 
