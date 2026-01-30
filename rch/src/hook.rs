@@ -1936,10 +1936,18 @@ fn queue_when_busy_enabled() -> bool {
 
 /// Extract project name from current working directory.
 fn extract_project_name() -> String {
-    std::env::current_dir()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-        .unwrap_or_else(|| "unknown".to_string())
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("unknown"));
+    let name = cwd
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Compute short hash of the absolute path to ensure uniqueness
+    // This prevents cache affinity collisions for projects with same dir name (e.g. "app")
+    let hash = blake3::hash(cwd.to_string_lossy().as_bytes()).to_hex();
+    let short_hash = &hash[..8];
+
+    format!("{}-{}", name, short_hash)
 }
 
 fn command_priority_from_env(reporter: &HookReporter) -> CommandPriority {
