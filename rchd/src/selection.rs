@@ -893,7 +893,7 @@ impl WorkerSelector {
         for (worker, circuit_state) in workers {
             let config = worker.config.read().await;
             let worker_id = config.id.as_str().to_string();
-            let speed_score = worker.get_speed_score().await;
+            let speed_score = worker.get_speed_score();
             let total_slots = config.total_slots;
             let used_slots = worker.used_slots();
             let slot_availability = if total_slots > 0 {
@@ -987,7 +987,7 @@ impl WorkerSelector {
             }
             SelectionStrategy::Fastest | SelectionStrategy::FairFastest => {
                 for (worker, _) in workers {
-                    let score = worker.get_speed_score().await;
+                    let score = worker.get_speed_score();
                     let id = worker.config.read().await.id.as_str().to_string();
                     scores.push((id, score));
                 }
@@ -1260,11 +1260,11 @@ impl WorkerSelector {
         let mut best: Option<&(Arc<WorkerState>, CircuitState)> = None;
         for pair in workers {
             let (worker, _) = pair;
-            let score = worker.get_speed_score().await;
+            let score = worker.get_speed_score();
             match best {
                 None => best = Some(pair),
                 Some((best_worker, _)) => {
-                    let best_score = best_worker.get_speed_score().await;
+                    let best_score = best_worker.get_speed_score();
                     if score > best_score {
                         best = Some(pair);
                     }
@@ -1326,7 +1326,7 @@ impl WorkerSelector {
         max_priority: u32,
     ) -> f64 {
         // SpeedScore component (0-1), clamped to valid range
-        let speed_score = (worker.get_speed_score().await / 100.0).clamp(0.0, 1.0);
+        let speed_score = (worker.get_speed_score() / 100.0).clamp(0.0, 1.0);
 
         let config = worker.config.read().await;
         let total_slots = if config.total_slots == 0 {
@@ -1357,7 +1357,7 @@ impl WorkerSelector {
         let health_score = self.health_score(worker).await;
 
         // Network score (0-1)
-        let network_score = self.network_score(worker).await;
+        let network_score = self.network_score(worker);
 
         // Priority normalization (0-1)
         let priority_score = Self::normalize_priority(config.priority, min_priority, max_priority);
@@ -1401,8 +1401,8 @@ impl WorkerSelector {
         success_rate.clamp(0.0, 1.0)
     }
 
-    async fn network_score(&self, worker: &WorkerState) -> f64 {
-        match worker.last_latency_ms().await {
+    fn network_score(&self, worker: &WorkerState) -> f64 {
+        match worker.last_latency_ms() {
             Some(latency_ms) => Self::normalize_latency_ms(latency_ms),
             None => DEFAULT_NETWORK_SCORE,
         }
@@ -1457,7 +1457,7 @@ impl WorkerSelector {
         // Calculate weights for each worker
         let mut weights = Vec::with_capacity(workers.len());
         for (w, _) in workers {
-            let speed = w.get_speed_score().await.max(10.0);
+            let speed = w.get_speed_score().max(10.0);
             let id = w.config.read().await.id.clone();
             let recent = history.recent_selections(id.as_str(), lookback);
             weights.push(speed / (1.0 + recent as f64));
@@ -1807,7 +1807,7 @@ async fn compute_score(
     let slot_score = (worker.available_slots().await as f64 / total_slots).min(1.0);
 
     // Speed score (already 0-100, normalize to 0-1)
-    let speed_score = worker.get_speed_score().await / 100.0;
+    let speed_score = worker.get_speed_score() / 100.0;
 
     // Locality score (1.0 if project is cached, 0.5 otherwise)
     let locality_score = if worker.has_cached_project(&request.project).await {
@@ -1879,10 +1879,7 @@ mod tests {
             tags: vec![],
         };
         let state = WorkerState::new(config);
-        {
-            let mut speed_lock = state.speed_score.try_write().unwrap();
-            *speed_lock = speed;
-        }
+        state.set_speed_score(speed);
         state
     }
 
@@ -2769,11 +2766,11 @@ mod tests {
         let pool = WorkerPool::new();
 
         let fast_net = make_worker("fast-net", 8, 70.0);
-        fast_net.set_last_latency_ms(Some(20)).await;
+        fast_net.set_last_latency_ms(Some(20));
         pool.add_worker_state(fast_net).await;
 
         let slow_net = make_worker("slow-net", 8, 70.0);
-        slow_net.set_last_latency_ms(Some(600)).await;
+        slow_net.set_last_latency_ms(Some(600));
         pool.add_worker_state(slow_net).await;
 
         let selector = WorkerSelector::with_config(

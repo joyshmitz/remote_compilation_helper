@@ -366,11 +366,9 @@ impl HealthMonitor {
                     health.update(result.clone(), &config, &worker_id);
 
                     if result.healthy {
-                        worker
-                            .set_last_latency_ms(Some(result.response_time_ms))
-                            .await;
+                        worker.set_last_latency_ms(Some(result.response_time_ms));
                     } else {
-                        worker.set_last_latency_ms(None).await;
+                        worker.set_last_latency_ms(None);
                     }
 
                     // Log status changes

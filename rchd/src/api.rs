@@ -1841,7 +1841,7 @@ async fn handle_select_worker(
                 };
 
                 let slots_available = worker.available_slots().await;
-                let speed_score = worker.get_speed_score().await;
+                let speed_score = worker.get_speed_score();
 
                 if request.command_priority != CommandPriority::Normal {
                     ctx.events.emit(
@@ -2454,7 +2454,7 @@ async fn handle_status(ctx: &DaemonContext) -> Result<DaemonFullStatus> {
             circuit_state: circuit_str.to_string(),
             used_slots,
             total_slots,
-            speed_score: worker.get_speed_score().await,
+            speed_score: worker.get_speed_score(),
             last_error: worker.last_error().await,
             consecutive_failures: circuit_stats.consecutive_failures(),
             recovery_in_secs,

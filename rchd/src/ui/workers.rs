@@ -146,7 +146,7 @@ impl WorkerStatusPanel {
             let status = worker.status().await;
             let available_slots = worker.available_slots().await;
             let used_slots = total_slots.saturating_sub(available_slots);
-            let speed_score = worker.get_speed_score().await;
+            let speed_score = worker.get_speed_score();
 
             snapshots.push(WorkerSnapshot::new(
                 id,

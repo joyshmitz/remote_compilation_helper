@@ -8,7 +8,7 @@ use rch_common::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::RwLock;
 use tracing::debug;
 
@@ -21,10 +21,11 @@ pub struct WorkerState {
     status: RwLock<WorkerStatus>,
     /// Number of slots currently in use.
     used_slots: Arc<AtomicU32>,
-    /// Speed score from benchmarking (0-100).
-    pub speed_score: RwLock<f64>,
+    /// Speed score from benchmarking (0-100), stored as f64 bits via `to_bits`/`from_bits`.
+    pub speed_score: AtomicU64,
     /// Last observed worker latency in milliseconds (from health checks).
-    last_latency_ms: RwLock<Option<u64>>,
+    /// Uses 0 as None sentinel (latency of 0ms is not meaningful).
+    last_latency_ms: AtomicU64,
     /// Projects cached on this worker.
     pub cached_projects: RwLock<Vec<String>>,
     /// Circuit breaker statistics.
@@ -35,8 +36,8 @@ pub struct WorkerState {
     capabilities: RwLock<WorkerCapabilities>,
     /// Reason for disabling this worker (if disabled).
     disabled_reason: RwLock<Option<String>>,
-    /// Unix timestamp when worker was disabled.
-    disabled_at: RwLock<Option<i64>>,
+    /// Unix timestamp when worker was disabled. Uses 0 as None sentinel.
+    disabled_at: AtomicI64,
 }
 
 impl WorkerState {
@@ -46,14 +47,14 @@ impl WorkerState {
             config: RwLock::new(config),
             status: RwLock::new(WorkerStatus::Healthy),
             used_slots: Arc::new(AtomicU32::new(0)),
-            speed_score: RwLock::new(50.0), // Default mid-range score
-            last_latency_ms: RwLock::new(None),
+            speed_score: AtomicU64::new(50.0_f64.to_bits()), // Default mid-range score
+            last_latency_ms: AtomicU64::new(0),
             cached_projects: RwLock::new(Vec::new()),
             circuit: RwLock::new(CircuitStats::new()),
             last_error_msg: RwLock::new(None),
             capabilities: RwLock::new(WorkerCapabilities::new()),
             disabled_reason: RwLock::new(None),
-            disabled_at: RwLock::new(None),
+            disabled_at: AtomicI64::new(0),
         }
     }
 
@@ -152,23 +153,25 @@ impl WorkerState {
     }
 
     /// Update the speed score.
-    pub async fn set_speed_score(&self, score: f64) {
-        *self.speed_score.write().await = score;
+    pub fn set_speed_score(&self, score: f64) {
+        self.speed_score.store(score.to_bits(), Ordering::Relaxed);
     }
 
     /// Get the current speed score.
-    pub async fn get_speed_score(&self) -> f64 {
-        *self.speed_score.read().await
+    pub fn get_speed_score(&self) -> f64 {
+        f64::from_bits(self.speed_score.load(Ordering::Relaxed))
     }
 
     /// Update the last observed worker latency (ms).
-    pub async fn set_last_latency_ms(&self, latency_ms: Option<u64>) {
-        *self.last_latency_ms.write().await = latency_ms;
+    pub fn set_last_latency_ms(&self, latency_ms: Option<u64>) {
+        self.last_latency_ms
+            .store(latency_ms.unwrap_or(0), Ordering::Relaxed);
     }
 
     /// Get the last observed worker latency (ms).
-    pub async fn last_latency_ms(&self) -> Option<u64> {
-        *self.last_latency_ms.read().await
+    pub fn last_latency_ms(&self) -> Option<u64> {
+        let v = self.last_latency_ms.load(Ordering::Relaxed);
+        if v == 0 { None } else { Some(v) }
     }
 
     /// Get the current circuit breaker state.
@@ -279,11 +282,12 @@ impl WorkerState {
     pub async fn disable(&self, reason: Option<String>) {
         *self.status.write().await = WorkerStatus::Disabled;
         *self.disabled_reason.write().await = reason;
-        *self.disabled_at.write().await = Some(
+        self.disabled_at.store(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
-                .unwrap_or(0),
+                .unwrap_or(1), // Use 1 instead of 0 to avoid None sentinel
+            Ordering::Relaxed,
         );
     }
 
@@ -297,7 +301,7 @@ impl WorkerState {
     pub async fn enable(&self) {
         *self.status.write().await = WorkerStatus::Healthy;
         *self.disabled_reason.write().await = None;
-        *self.disabled_at.write().await = None;
+        self.disabled_at.store(0, Ordering::Relaxed);
     }
 
     /// Check if worker is disabled.
@@ -334,8 +338,9 @@ impl WorkerState {
     }
 
     /// Get the timestamp when this worker was disabled (Unix seconds).
-    pub async fn disabled_at(&self) -> Option<i64> {
-        *self.disabled_at.read().await
+    pub fn disabled_at(&self) -> Option<i64> {
+        let v = self.disabled_at.load(Ordering::Relaxed);
+        if v == 0 { None } else { Some(v) }
     }
 
     /// Get the number of slots currently in use.
@@ -529,13 +534,13 @@ mod tests {
         assert_eq!(state.status().await, WorkerStatus::Healthy);
         assert_eq!(state.available_slots().await, 8);
         assert_eq!(state.used_slots(), 0);
-        assert_eq!(state.get_speed_score().await, 50.0);
-        assert!(state.last_latency_ms().await.is_none());
+        assert_eq!(state.get_speed_score(), 50.0);
+        assert!(state.last_latency_ms().is_none());
         assert!(state.last_error().await.is_none());
         assert!(!state.is_disabled().await);
         assert!(!state.is_draining().await);
         assert!(state.disabled_reason().await.is_none());
-        assert!(state.disabled_at().await.is_none());
+        assert!(state.disabled_at().is_none());
     }
 
     #[tokio::test]
@@ -624,14 +629,14 @@ mod tests {
             state.disabled_reason().await,
             Some("Maintenance".to_string())
         );
-        assert!(state.disabled_at().await.is_some());
+        assert!(state.disabled_at().is_some());
 
         // Enable again
         state.enable().await;
         assert!(!state.is_disabled().await);
         assert_eq!(state.status().await, WorkerStatus::Healthy);
         assert!(state.disabled_reason().await.is_none());
-        assert!(state.disabled_at().await.is_none());
+        assert!(state.disabled_at().is_none());
     }
 
     #[tokio::test]
@@ -641,7 +646,7 @@ mod tests {
         state.disable(None).await;
         assert!(state.is_disabled().await);
         assert!(state.disabled_reason().await.is_none());
-        assert!(state.disabled_at().await.is_some());
+        assert!(state.disabled_at().is_some());
     }
 
     #[tokio::test]
@@ -734,32 +739,32 @@ mod tests {
         let state = WorkerState::new(test_config("test"));
 
         // Default is 50.0
-        assert_eq!(state.get_speed_score().await, 50.0);
+        assert_eq!(state.get_speed_score(), 50.0);
 
-        state.set_speed_score(85.5).await;
-        assert_eq!(state.get_speed_score().await, 85.5);
+        state.set_speed_score(85.5);
+        assert_eq!(state.get_speed_score(), 85.5);
 
-        state.set_speed_score(0.0).await;
-        assert_eq!(state.get_speed_score().await, 0.0);
+        state.set_speed_score(0.0);
+        assert_eq!(state.get_speed_score(), 0.0);
 
-        state.set_speed_score(100.0).await;
-        assert_eq!(state.get_speed_score().await, 100.0);
+        state.set_speed_score(100.0);
+        assert_eq!(state.get_speed_score(), 100.0);
     }
 
     #[tokio::test]
     async fn test_latency_tracking() {
         let state = WorkerState::new(test_config("test"));
 
-        assert!(state.last_latency_ms().await.is_none());
+        assert!(state.last_latency_ms().is_none());
 
-        state.set_last_latency_ms(Some(42)).await;
-        assert_eq!(state.last_latency_ms().await, Some(42));
+        state.set_last_latency_ms(Some(42));
+        assert_eq!(state.last_latency_ms(), Some(42));
 
-        state.set_last_latency_ms(Some(100)).await;
-        assert_eq!(state.last_latency_ms().await, Some(100));
+        state.set_last_latency_ms(Some(100));
+        assert_eq!(state.last_latency_ms(), Some(100));
 
-        state.set_last_latency_ms(None).await;
-        assert!(state.last_latency_ms().await.is_none());
+        state.set_last_latency_ms(None);
+        assert!(state.last_latency_ms().is_none());
     }
 
     #[tokio::test]
