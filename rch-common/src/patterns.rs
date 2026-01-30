@@ -2978,6 +2978,8 @@ mod tests {
     // =========================================================================
 
     /// Helper: assert that a Cow is the Borrowed variant (no heap allocation).
+    /// We need the actual &Cow to distinguish Borrowed from Owned.
+    #[allow(clippy::ptr_arg)]
     fn assert_cow_borrowed(cow: &Cow<'static, str>, context: &str) {
         assert!(
             matches!(cow, Cow::Borrowed(_)),
