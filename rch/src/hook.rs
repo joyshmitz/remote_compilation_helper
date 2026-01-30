@@ -1488,8 +1488,12 @@ async fn handle_selection_response(
                     warn!("Failed to record build: {}", e);
                 }
 
-                // Record timing for future gating decisions
-                record_build_timing(project, classification_kind, result.duration_ms, true);
+                // Record timing for future gating decisions (bd-mnhp: spawn_blocking for file I/O)
+                let project_for_timing = project.to_string();
+                let duration = result.duration_ms;
+                tokio::task::spawn_blocking(move || {
+                    record_build_timing(&project_for_timing, classification_kind, duration, true);
+                });
 
                 if !config.output.first_run_complete {
                     let local_estimate =
@@ -1559,7 +1563,12 @@ async fn handle_selection_response(
                 }
 
                 // Still record timing for failed builds (useful for predictions)
-                record_build_timing(project, classification_kind, result.duration_ms, true);
+                // bd-mnhp: spawn_blocking for file I/O
+                let project_for_timing = project.to_string();
+                let duration = result.duration_ms;
+                tokio::task::spawn_blocking(move || {
+                    record_build_timing(&project_for_timing, classification_kind, duration, true);
+                });
 
                 HookOutput::deny(format!(
                     "RCH: Remote compilation failed with exit code {}",
