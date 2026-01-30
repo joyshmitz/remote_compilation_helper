@@ -1220,9 +1220,19 @@ async fn process_hook(input: HookInput) -> HookOutput {
 
     // Check timing thresholds (min_local_time_ms and remote_speedup_threshold)
     // This gating prevents offloading tiny builds where overhead dominates.
+    // Note: spawn_blocking moves file I/O off the async runtime (bd-1gz8)
     if !config.general.force_remote {
-        if let Some(timing_estimate) =
-            estimate_timing_for_build(&project, classification.kind, &config)
+        let project_clone = project.clone();
+        let kind = classification.kind;
+        let config_clone = config.clone();
+        let timing_estimate = tokio::task::spawn_blocking(move || {
+            estimate_timing_for_build(&project_clone, kind, &config_clone)
+        })
+        .await
+        .ok()
+        .flatten();
+
+        if let Some(timing_estimate) = timing_estimate
         {
             // Gate on min_local_time_ms: skip remote if build is too small
             if timing_estimate.predicted_local_ms < config.compilation.min_local_time_ms {
