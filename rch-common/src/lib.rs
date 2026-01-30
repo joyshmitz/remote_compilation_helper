@@ -26,6 +26,8 @@ pub mod protocol;
 pub mod remote_compilation;
 pub mod remote_verification;
 pub mod ssh;
+#[cfg(test)]
+mod ssh_timeout_test;
 pub mod test_change;
 pub mod testing;
 pub mod toolchain;

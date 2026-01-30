@@ -174,16 +174,18 @@ impl CacheTracker {
                     .last_activity()
                     .map(Self::warmth_from_instant)
                     .unwrap_or(0.0),
-                CacheUse::Test => match state.last_test {
-                    Some(last_test) => Self::warmth_from_instant(last_test),
-                    None => {
-                        state
-                            .last_build
-                            .map(Self::warmth_from_instant)
-                            .unwrap_or(0.0)
-                            * TEST_BUILD_FALLBACK_FACTOR
-                    }
-                },
+                CacheUse::Test => {
+                    let test_warmth = state
+                        .last_test
+                        .map(Self::warmth_from_instant)
+                        .unwrap_or(0.0);
+                    let build_warmth = state
+                        .last_build
+                        .map(Self::warmth_from_instant)
+                        .unwrap_or(0.0)
+                        * TEST_BUILD_FALLBACK_FACTOR;
+                    test_warmth.max(build_warmth)
+                }
             })
             .unwrap_or(0.0)
     }

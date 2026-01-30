@@ -107,9 +107,13 @@ fn mask_sensitive_command(cmd: &str) -> String {
         ("ANTHROPIC_API_KEY=", "ANTHROPIC_API_KEY=***"),
         // Command-line argument patterns (--token, --password, etc.)
         ("--token ", "--token ***"),
+        ("--token=", "--token=***"),
         ("--password ", "--password ***"),
+        ("--password=", "--password=***"),
         ("--api-key ", "--api-key ***"),
+        ("--api-key=", "--api-key=***"),
         ("--secret ", "--secret ***"),
+        ("--secret=", "--secret=***"),
     ];
 
     let mut result = cmd.to_string();
@@ -145,17 +149,16 @@ fn mask_sensitive_command(cmd: &str) -> String {
 
 /// Run the hook, reading from stdin and writing to stdout.
 pub async fn run_hook() -> anyhow::Result<()> {
-    let stdin = io::stdin();
     let mut stdout = io::stdout();
 
     // Read input from stdin with a 10MB limit to prevent OOM
     let mut input = String::new();
     {
-        use std::io::Read;
-        stdin
-            .lock()
+        use tokio::io::{AsyncReadExt, stdin};
+        stdin()
             .take(10 * 1024 * 1024)
-            .read_to_string(&mut input)?;
+            .read_to_string(&mut input)
+            .await?;
     }
 
     let input = input.trim();

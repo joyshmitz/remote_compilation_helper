@@ -47,6 +47,14 @@ fn mask_sensitive_in_log(cmd: &str) -> String {
         "DATABASE_URL=",
         "AWS_SECRET_ACCESS_KEY=",
         "AWS_ACCESS_KEY_ID=",
+        "--token ",
+        "--token=",
+        "--password ",
+        "--password=",
+        "--api-key ",
+        "--api-key=",
+        "--secret ",
+        "--secret=",
     ];
 
     let mut result = cmd.to_string();
@@ -236,6 +244,11 @@ pub struct TransferPipeline {
     /// Used to apply appropriate timeouts and wrappers (e.g., external timeout
     /// for bun test to protect against known CPU hang issues).
     compilation_kind: Option<CompilationKind>,
+    /// Compilation configuration for timeouts and other settings.
+    ///
+    /// Provides configurable external timeout values per command type and
+    /// the ability to enable/disable timeout wrapping entirely.
+    compilation_config: rch_common::CompilationConfig,
 }
 
 /// Validate a project hash for safe use in file paths.
@@ -308,6 +321,7 @@ impl TransferPipeline {
             env_allowlist: Vec::new(),
             env_overrides: None,
             compilation_kind: None,
+            compilation_config: rch_common::CompilationConfig::default(),
         }
     }
 
@@ -354,6 +368,16 @@ impl TransferPipeline {
     /// external timeout to protect against known CPU hang issues.
     pub fn with_compilation_kind(mut self, kind: Option<CompilationKind>) -> Self {
         self.compilation_kind = kind;
+        self
+    }
+
+    /// Set the compilation configuration for timeout settings.
+    ///
+    /// This allows customizing external timeout durations for different command
+    /// types and enables/disables timeout wrapping entirely.
+    #[cfg(test)]
+    pub fn with_compilation_config(mut self, config: rch_common::CompilationConfig) -> Self {
+        self.compilation_config = config;
         self
     }
 
@@ -442,36 +466,68 @@ impl TransferPipeline {
         )
     }
 
-    /// Wrap a command with an external timeout for known problematic command types.
+    /// Wrap a command with an external timeout to prevent zombie/stuck processes.
     ///
-    /// Bun test/typecheck commands can hang indefinitely at 100% CPU due to known
-    /// bugs (see https://github.com/oven-sh/bun/issues/21277 and 6751). The `timeout`
-    /// command provides a reliable kill mechanism that works even for CPU-bound loops
-    /// where Bun's internal --timeout flag doesn't work.
+    /// All remote commands are wrapped with the `timeout` command to ensure they
+    /// don't run indefinitely. Timeouts are configurable per command type via
+    /// CompilationConfig:
+    /// - Bun commands: bun_timeout_sec (default 600s = 10 min) - known hang issues
+    /// - Test commands: test_timeout_sec (default 1800s = 30 min)
+    /// - Build/other: build_timeout_sec (default 300s = 5 min)
     ///
-    /// Returns the original command unchanged for non-bun commands or when no
-    /// compilation kind is set.
+    /// The timeout wrapper can be disabled entirely via `external_timeout_enabled`.
+    ///
+    /// Returns the original command unchanged if timeout wrapping is disabled.
     fn wrap_with_external_timeout(&self, command: &str) -> String {
-        // Default timeout for bun commands: 10 minutes
-        // This is intentionally generous to avoid killing legitimate long-running tests
-        const BUN_TEST_TIMEOUT_SECS: u64 = 600;
-
-        match self.compilation_kind {
-            Some(CompilationKind::BunTest) | Some(CompilationKind::BunTypecheck) => {
-                info!(
-                    "Wrapping bun command with {}s external timeout for hang protection",
-                    BUN_TEST_TIMEOUT_SECS
-                );
-                // Use --signal=KILL to ensure the process dies even if stuck in a CPU loop.
-                // The --foreground flag ensures timeout works properly in non-interactive shells.
-                // --preserve-status ensures the exit code reflects whether timeout killed it.
-                format!(
-                    "timeout --signal=KILL --foreground --preserve-status {} {}",
-                    BUN_TEST_TIMEOUT_SECS, command
-                )
-            }
-            _ => command.to_string(),
+        // Check if external timeout protection is enabled
+        if !self.compilation_config.external_timeout_enabled() {
+            debug!("External timeout protection disabled by config");
+            return command.to_string();
         }
+
+        // Get the appropriate timeout for this command type
+        let timeout_duration = self
+            .compilation_config
+            .timeout_for_kind(self.compilation_kind);
+        let timeout_secs = timeout_duration.as_secs();
+
+        // Log the timeout being applied
+        let kind_name = match self.compilation_kind {
+            Some(CompilationKind::BunTest) => "bun test",
+            Some(CompilationKind::BunTypecheck) => "bun typecheck",
+            Some(CompilationKind::CargoTest) => "cargo test",
+            Some(CompilationKind::CargoNextest) => "cargo nextest",
+            Some(CompilationKind::CargoBuild) => "cargo build",
+            Some(CompilationKind::CargoCheck) => "cargo check",
+            Some(CompilationKind::CargoClippy) => "cargo clippy",
+            Some(CompilationKind::CargoDoc) => "cargo doc",
+            Some(CompilationKind::CargoBench) => "cargo bench",
+            Some(CompilationKind::Rustc) => "rustc",
+            Some(CompilationKind::Gcc) => "gcc",
+            Some(CompilationKind::Gpp) => "g++",
+            Some(CompilationKind::Clang) => "clang",
+            Some(CompilationKind::Clangpp) => "clang++",
+            Some(CompilationKind::Make) => "make",
+            Some(CompilationKind::CmakeBuild) => "cmake build",
+            Some(CompilationKind::Ninja) => "ninja",
+            Some(CompilationKind::Meson) => "meson",
+            None => "unknown",
+        };
+
+        info!(
+            kind = %kind_name,
+            timeout_secs = %timeout_secs,
+            "Wrapping command with external timeout protection"
+        );
+
+        // Use --signal=KILL to ensure the process dies even if stuck in a CPU loop.
+        // The --foreground flag ensures timeout works properly in non-interactive shells.
+        // --preserve-status ensures the exit code reflects whether timeout killed it.
+        // Exit code 137 (128 + 9) indicates SIGKILL was sent.
+        format!(
+            "timeout --signal=KILL --foreground --preserve-status {} {}",
+            timeout_secs, command
+        )
     }
 
     // =========================================================================
@@ -1947,9 +2003,9 @@ mod tests {
     }
 
     #[test]
-    fn test_non_bun_commands_not_wrapped_with_timeout() {
+    fn test_cargo_build_wrapped_with_build_timeout() {
         let _guard = test_guard!();
-        // Test that non-bun commands are NOT wrapped with timeout
+        // All commands now wrapped with appropriate timeout (bd-1nmv)
         let pipeline = TransferPipeline::new(
             PathBuf::from("/tmp/test"),
             "test-project".to_string(),
@@ -1959,14 +2015,17 @@ mod tests {
         .with_compilation_kind(Some(CompilationKind::CargoBuild));
 
         let wrapped = pipeline.wrap_with_external_timeout("cargo build");
-        assert!(!wrapped.contains("timeout"));
-        assert_eq!(wrapped, "cargo build");
+        assert!(wrapped.contains("timeout"));
+        assert!(wrapped.contains("--signal=KILL"));
+        assert!(wrapped.contains("--foreground"));
+        assert!(wrapped.contains("300")); // Default build_timeout_sec
+        assert!(wrapped.contains("cargo build"));
     }
 
     #[test]
-    fn test_no_compilation_kind_not_wrapped() {
+    fn test_unknown_compilation_kind_uses_build_timeout() {
         let _guard = test_guard!();
-        // Test that commands without compilation kind are NOT wrapped
+        // Commands without compilation kind use build_timeout (bd-1nmv)
         let pipeline = TransferPipeline::new(
             PathBuf::from("/tmp/test"),
             "test-project".to_string(),
@@ -1975,8 +2034,80 @@ mod tests {
         ); // No with_compilation_kind() call
 
         let wrapped = pipeline.wrap_with_external_timeout("some command");
+        assert!(wrapped.contains("timeout"));
+        assert!(wrapped.contains("300")); // Default build_timeout_sec
+        assert!(wrapped.contains("some command"));
+    }
+
+    #[test]
+    fn test_cargo_test_wrapped_with_test_timeout() {
+        let _guard = test_guard!();
+        // Test commands use test_timeout_sec (bd-1nmv)
+        let pipeline = TransferPipeline::new(
+            PathBuf::from("/tmp/test"),
+            "test-project".to_string(),
+            "abc123".to_string(),
+            TransferConfig::default(),
+        )
+        .with_compilation_kind(Some(CompilationKind::CargoTest));
+
+        let wrapped = pipeline.wrap_with_external_timeout("cargo test");
+        assert!(wrapped.contains("timeout"));
+        assert!(wrapped.contains("1800")); // Default test_timeout_sec
+        assert!(wrapped.contains("cargo test"));
+    }
+
+    #[test]
+    fn test_external_timeout_disabled() {
+        let _guard = test_guard!();
+        use rch_common::CompilationConfig;
+
+        // External timeout can be disabled via config (bd-1nmv)
+        let config = CompilationConfig {
+            external_timeout_enabled: false,
+            ..CompilationConfig::default()
+        };
+
+        let pipeline = TransferPipeline::new(
+            PathBuf::from("/tmp/test"),
+            "test-project".to_string(),
+            "abc123".to_string(),
+            TransferConfig::default(),
+        )
+        .with_compilation_kind(Some(CompilationKind::BunTest))
+        .with_compilation_config(config);
+
+        let wrapped = pipeline.wrap_with_external_timeout("bun test");
         assert!(!wrapped.contains("timeout"));
-        assert_eq!(wrapped, "some command");
+        assert_eq!(wrapped, "bun test");
+    }
+
+    #[test]
+    fn test_custom_timeout_values() {
+        let _guard = test_guard!();
+        use rch_common::CompilationConfig;
+
+        // Custom timeout values can be configured (bd-1nmv)
+        let config = CompilationConfig {
+            build_timeout_sec: 120,
+            test_timeout_sec: 900,
+            bun_timeout_sec: 180,
+            external_timeout_enabled: true,
+            ..CompilationConfig::default()
+        };
+
+        let pipeline = TransferPipeline::new(
+            PathBuf::from("/tmp/test"),
+            "test-project".to_string(),
+            "abc123".to_string(),
+            TransferConfig::default(),
+        )
+        .with_compilation_kind(Some(CompilationKind::BunTest))
+        .with_compilation_config(config);
+
+        let wrapped = pipeline.wrap_with_external_timeout("bun test");
+        assert!(wrapped.contains("180")); // Custom bun_timeout_sec
+        assert!(wrapped.contains("bun test"));
     }
 
     #[test]

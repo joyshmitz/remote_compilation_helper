@@ -74,14 +74,13 @@ fn parse_legacy_toolchain_file(path: &Path) -> Result<ToolchainInfo, ToolchainEr
 
     // rustup allows `rust-toolchain` (no extension) to be either TOML or plain text.
     // Try TOML parsing first.
-    if let Ok(toml) = toml::from_str::<toml::Value>(&content) {
-        if let Some(channel) = toml
+    if let Ok(toml) = toml::from_str::<toml::Value>(&content)
+        && let Some(channel) = toml
             .get("toolchain")
             .and_then(|t| t.get("channel"))
             .and_then(|c| c.as_str())
-        {
-            return parse_channel_string(channel);
-        }
+    {
+        return parse_channel_string(channel);
     }
 
     // Fallback: treat as plain text channel name (trim whitespace)

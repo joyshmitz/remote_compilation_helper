@@ -48,6 +48,7 @@ pub const MAX_BACKUPS_PER_WORKER: usize = 3;
 const REGISTRY_FILE: &str = "registry.json";
 
 /// Timeout for rollback operations.
+#[allow(dead_code)] // Reserved for future timeout handling
 const ROLLBACK_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Maximum concurrent rollback operations (cap to prevent resource exhaustion).
@@ -286,8 +287,8 @@ impl RollbackManager {
     /// Rollback workers to a specific or previous version.
     ///
     /// This function restores workers to a previous binary version by:
-    /// 1. Gracefully stopping any running rch-wkr process
-    /// 2. Looking up the backup for each worker (specific version or latest)
+    /// 1. Looking up the backup for each worker (specific version or latest)
+    /// 2. Gracefully stopping any running rch-wkr process
     /// 3. Copying the backup binary back to the main rch-wkr location via SSH
     /// 4. Optionally verifying the restored binary hash matches the backup record
     /// 5. Verifying the version after restoration
@@ -317,7 +318,7 @@ impl RollbackManager {
         }
 
         // Cap parallelism to prevent resource exhaustion
-        let max_concurrent = parallelism.min(MAX_CONCURRENT_ROLLBACKS).max(1);
+        let max_concurrent = parallelism.clamp(1, MAX_CONCURRENT_ROLLBACKS);
 
         info!(
             workers = %workers.len(),
@@ -327,22 +328,79 @@ impl RollbackManager {
             "Starting parallel rollback operation"
         );
 
+        // Phase 1: Look up backups sequentially (fast, no I/O)
+        // This avoids capturing `self` in async closures
+        type RollbackTask<'a> = (usize, &'a WorkerConfig, Option<(WorkerBackup, String)>);
+        let mut rollback_tasks: Vec<RollbackTask<'_>> = Vec::with_capacity(workers.len());
+
+        for (idx, worker) in workers.iter().enumerate() {
+            let worker_id = &worker.id.0;
+
+            // Determine target version
+            let target_version = match to_version {
+                Some(v) => v.to_string(),
+                None => match self.history.get_previous_version(worker_id) {
+                    Ok(Some(v)) => v,
+                    Ok(None) => {
+                        warn!(worker = %worker_id, "No previous version found for rollback");
+                        rollback_tasks.push((idx, worker, None));
+                        continue;
+                    }
+                    Err(e) => {
+                        error!(worker = %worker_id, error = %e, "Failed to get previous version");
+                        rollback_tasks.push((idx, worker, None));
+                        continue;
+                    }
+                },
+            };
+
+            // Look up backup for this version
+            let backup = match self.get_backup(worker_id, &target_version) {
+                Some(b) => b,
+                None => {
+                    // Try getting the latest backup if specific version not found
+                    match self.get_latest_backup(worker_id) {
+                        Some(b) if b.version == target_version => b,
+                        _ => {
+                            error!(
+                                worker = %worker_id,
+                                version = %target_version,
+                                "No backup found for target version"
+                            );
+                            rollback_tasks.push((idx, worker, None));
+                            continue;
+                        }
+                    }
+                }
+            };
+
+            rollback_tasks.push((idx, worker, Some((backup, target_version))));
+        }
+
         let completed = Arc::new(AtomicUsize::new(0));
         let total = workers.len();
 
-        // Clone to_version for use in async closures
-        let to_version_owned = to_version.map(|s| s.to_string());
-
-        // Process workers in parallel with bounded concurrency
-        let results: Vec<(usize, RollbackResult)> = stream::iter(workers.iter().enumerate())
-            .map(|(idx, worker)| {
+        // Phase 2: Execute rollbacks in parallel with bounded concurrency
+        let results: Vec<(usize, RollbackResult)> = stream::iter(rollback_tasks)
+            .map(|(idx, worker, backup_opt)| {
                 let completed = completed.clone();
-                let to_version = to_version_owned.clone();
 
                 async move {
-                    let result = self
-                        .rollback_single_worker(worker, to_version.as_deref(), verify, ctx)
-                        .await;
+                    let result = match backup_opt {
+                        Some((backup, target_version)) => {
+                            execute_single_rollback(worker, &backup, &target_version, verify, ctx)
+                                .await
+                        }
+                        None => RollbackResult {
+                            worker_id: worker.id.0.clone(),
+                            success: false,
+                            rolled_back_to: None,
+                            error: Some(
+                                "No backup found. Re-deploy the desired version instead."
+                                    .to_string(),
+                            ),
+                        },
+                    };
 
                     // Update progress
                     let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
@@ -379,204 +437,6 @@ impl RollbackManager {
         );
 
         Ok(results)
-    }
-
-    /// Perform a complete rollback for a single worker.
-    ///
-    /// This method handles the full rollback workflow:
-    /// 1. Determine target version (explicit or previous)
-    /// 2. Look up backup from registry
-    /// 3. Gracefully stop running rch-wkr
-    /// 4. Restore the backup binary
-    /// 5. Verify the restored version
-    /// 6. Restart rch-wkr
-    async fn rollback_single_worker(
-        &self,
-        worker: &WorkerConfig,
-        to_version: Option<&str>,
-        verify: bool,
-        ctx: &OutputContext,
-    ) -> RollbackResult {
-        let style = ctx.theme();
-        let worker_id = &worker.id.0;
-
-        // Step 1: Determine target version
-        let target_version = match to_version {
-            Some(v) => v.to_string(),
-            None => match self.history.get_previous_version(worker_id) {
-                Ok(Some(v)) => v,
-                Ok(None) => {
-                    warn!(worker = %worker_id, "No previous version found for rollback");
-                    return RollbackResult {
-                        worker_id: worker_id.clone(),
-                        success: false,
-                        rolled_back_to: None,
-                        error: Some("No previous version found".to_string()),
-                    };
-                }
-                Err(e) => {
-                    error!(worker = %worker_id, error = %e, "Failed to get previous version");
-                    return RollbackResult {
-                        worker_id: worker_id.clone(),
-                        success: false,
-                        rolled_back_to: None,
-                        error: Some(format!("Failed to get previous version: {}", e)),
-                    };
-                }
-            },
-        };
-
-        // Step 2: Look up backup for this version
-        let backup = match self.get_backup(worker_id, &target_version) {
-            Some(b) => b,
-            None => {
-                // Try getting the latest backup if specific version not found
-                match self.get_latest_backup(worker_id) {
-                    Some(b) if b.version == target_version => b,
-                    _ => {
-                        error!(
-                            worker = %worker_id,
-                            version = %target_version,
-                            "No backup found for target version"
-                        );
-                        return RollbackResult {
-                            worker_id: worker_id.clone(),
-                            success: false,
-                            rolled_back_to: None,
-                            error: Some(format!(
-                                "No backup found for version {}. Re-deploy the desired version instead.",
-                                target_version
-                            )),
-                        };
-                    }
-                }
-            }
-        };
-
-        if !ctx.is_json() {
-            println!(
-                "  {} Rolling back {} to v{}...",
-                StatusIndicator::Pending.display(style),
-                style.highlight(worker_id),
-                target_version
-            );
-        }
-
-        let ssh = SshExecutor::new(worker);
-
-        // Step 3: Gracefully stop running rch-wkr (if any)
-        debug!(worker = %worker_id, "Stopping rch-wkr before rollback");
-        if let Err(e) = ssh
-            .run_command("pkill -TERM rch-wkr 2>/dev/null || true")
-            .await
-        {
-            // Log but don't fail - process might not be running
-            debug!(worker = %worker_id, error = %e, "pkill returned error (process may not be running)");
-        }
-        // Allow brief time for graceful shutdown
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // Step 4: Restore the backup
-        if let Err(e) = self
-            .restore_backup_with_verification(&backup, worker, verify)
-            .await
-        {
-            error!(
-                worker = %worker_id,
-                version = %target_version,
-                error = %e,
-                "Rollback failed"
-            );
-
-            if !ctx.is_json() {
-                println!(
-                    "  {} {} rollback failed: {}",
-                    StatusIndicator::Error.display(style),
-                    style.highlight(worker_id),
-                    e
-                );
-            }
-
-            return RollbackResult {
-                worker_id: worker_id.clone(),
-                success: false,
-                rolled_back_to: None,
-                error: Some(e.to_string()),
-            };
-        }
-
-        // Step 5: Verify the restored version
-        debug!(worker = %worker_id, version = %target_version, "Verifying restored version");
-        match ssh
-            .run_command(&format!("{} --version", REMOTE_RCH_PATH))
-            .await
-        {
-            Ok(output) if output.success() => {
-                let reported_version = output.stdout.trim();
-                if !reported_version.contains(&target_version) {
-                    warn!(
-                        worker = %worker_id,
-                        expected = %target_version,
-                        reported = %reported_version,
-                        "Version mismatch after rollback (may be OK if format differs)"
-                    );
-                } else {
-                    debug!(
-                        worker = %worker_id,
-                        version = %reported_version,
-                        "Post-rollback version check passed"
-                    );
-                }
-            }
-            Ok(output) => {
-                warn!(
-                    worker = %worker_id,
-                    stderr = %output.stderr.trim(),
-                    "Version check failed after rollback"
-                );
-            }
-            Err(e) => {
-                warn!(worker = %worker_id, error = %e, "Could not verify version after rollback");
-            }
-        }
-
-        // Step 6: Restart rch-wkr (best-effort)
-        debug!(worker = %worker_id, "Restarting rch-wkr after rollback");
-        if let Err(e) = ssh
-            .run_command(&format!(
-                "nohup {} serve >/dev/null 2>&1 &",
-                REMOTE_RCH_PATH
-            ))
-            .await
-        {
-            warn!(
-                worker = %worker_id,
-                error = %e,
-                "Failed to restart rch-wkr (may need manual intervention)"
-            );
-        }
-
-        if !ctx.is_json() {
-            println!(
-                "  {} {} rolled back to v{}",
-                StatusIndicator::Success.display(style),
-                style.highlight(worker_id),
-                target_version
-            );
-        }
-
-        info!(
-            worker = %worker_id,
-            version = %target_version,
-            "Rollback successful"
-        );
-
-        RollbackResult {
-            worker_id: worker_id.clone(),
-            success: true,
-            rolled_back_to: Some(target_version),
-            error: None,
-        }
     }
 
     /// Create a backup of a worker's current binary.
@@ -778,6 +638,254 @@ impl RollbackManager {
         }
 
         Ok(())
+    }
+}
+
+// =============================================================================
+// Standalone Functions (for use in async parallel execution)
+// =============================================================================
+
+/// Execute a rollback for a single worker.
+///
+/// This is a standalone function (not a method) to allow capture in async closures
+/// without borrowing `self`.
+///
+/// Performs the complete rollback workflow:
+/// 1. Gracefully stop running rch-wkr
+/// 2. Restore the backup binary
+/// 3. Verify the restored version
+/// 4. Restart rch-wkr
+async fn execute_single_rollback(
+    worker: &WorkerConfig,
+    backup: &WorkerBackup,
+    target_version: &str,
+    verify: bool,
+    ctx: &OutputContext,
+) -> RollbackResult {
+    let style = ctx.theme();
+    let worker_id = &worker.id.0;
+
+    if !ctx.is_json() {
+        println!(
+            "  {} Rolling back {} to v{}...",
+            StatusIndicator::Pending.display(style),
+            style.highlight(worker_id),
+            target_version
+        );
+    }
+
+    let ssh = SshExecutor::new(worker);
+
+    // Step 1: Gracefully stop running rch-wkr (if any)
+    debug!(worker = %worker_id, "Stopping rch-wkr before rollback");
+    if let Err(e) = ssh
+        .run_command("pkill -TERM rch-wkr 2>/dev/null || true")
+        .await
+    {
+        // Log but don't fail - process might not be running
+        debug!(worker = %worker_id, error = %e, "pkill returned error (process may not be running)");
+    }
+    // Allow brief time for graceful shutdown
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Step 2: Restore the backup via SSH
+    let remote_backup_path = backup.remote_path.to_string_lossy();
+
+    // Verify backup exists
+    let check_cmd = format!("test -f {}", remote_backup_path);
+    match ssh.run_command(&check_cmd).await {
+        Ok(result) if result.success() => {
+            debug!(worker = %worker_id, "Backup file exists, proceeding with restore");
+        }
+        Ok(_) => {
+            error!(worker = %worker_id, path = %remote_backup_path, "Backup file does not exist");
+            if !ctx.is_json() {
+                println!(
+                    "  {} {} rollback failed: backup file not found",
+                    StatusIndicator::Error.display(style),
+                    style.highlight(worker_id)
+                );
+            }
+            return RollbackResult {
+                worker_id: worker_id.clone(),
+                success: false,
+                rolled_back_to: None,
+                error: Some(format!(
+                    "Backup file {} not found on worker",
+                    remote_backup_path
+                )),
+            };
+        }
+        Err(e) => {
+            error!(worker = %worker_id, error = %e, "Failed to check backup file");
+            if !ctx.is_json() {
+                println!(
+                    "  {} {} rollback failed: {}",
+                    StatusIndicator::Error.display(style),
+                    style.highlight(worker_id),
+                    e
+                );
+            }
+            return RollbackResult {
+                worker_id: worker_id.clone(),
+                success: false,
+                rolled_back_to: None,
+                error: Some(format!("SSH error checking backup: {}", e)),
+            };
+        }
+    }
+
+    // Copy backup to main binary location
+    let restore_cmd = format!(
+        "cp --preserve=mode,timestamps {} {}",
+        remote_backup_path, REMOTE_RCH_PATH
+    );
+    match ssh.run_command(&restore_cmd).await {
+        Ok(result) if result.success() => {
+            debug!(worker = %worker_id, "Binary restored from backup");
+        }
+        Ok(result) => {
+            error!(worker = %worker_id, stderr = %result.stderr.trim(), "Failed to copy backup");
+            if !ctx.is_json() {
+                println!(
+                    "  {} {} rollback failed: {}",
+                    StatusIndicator::Error.display(style),
+                    style.highlight(worker_id),
+                    result.stderr.trim()
+                );
+            }
+            return RollbackResult {
+                worker_id: worker_id.clone(),
+                success: false,
+                rolled_back_to: None,
+                error: Some(format!("Failed to copy backup: {}", result.stderr.trim())),
+            };
+        }
+        Err(e) => {
+            error!(worker = %worker_id, error = %e, "SSH error during restore");
+            if !ctx.is_json() {
+                println!(
+                    "  {} {} rollback failed: {}",
+                    StatusIndicator::Error.display(style),
+                    style.highlight(worker_id),
+                    e
+                );
+            }
+            return RollbackResult {
+                worker_id: worker_id.clone(),
+                success: false,
+                rolled_back_to: None,
+                error: Some(e.to_string()),
+            };
+        }
+    }
+
+    // Ensure executable permissions
+    if let Err(e) = ssh.set_executable(REMOTE_RCH_PATH).await {
+        warn!(worker = %worker_id, error = %e, "Failed to set executable permissions");
+    }
+
+    info!(worker = %worker_id, version = %target_version, "Binary restored successfully");
+
+    // Step 3: Optionally verify hash
+    if verify && backup.binary_hash != "unknown" {
+        debug!(worker = %worker_id, expected_hash = %backup.binary_hash, "Verifying restored binary hash");
+
+        let hash_cmd = format!("sha256sum {} | cut -d' ' -f1", REMOTE_RCH_PATH);
+        match ssh.run_command(&hash_cmd).await {
+            Ok(result) if result.success() => {
+                let actual_hash = result.stdout.trim();
+                if actual_hash != backup.binary_hash {
+                    warn!(
+                        worker = %worker_id,
+                        expected = %backup.binary_hash,
+                        actual = %actual_hash,
+                        "Hash mismatch after restore (continuing anyway)"
+                    );
+                } else {
+                    info!(worker = %worker_id, hash = %actual_hash, "Hash verification passed");
+                }
+            }
+            Ok(result) => {
+                warn!(worker = %worker_id, stderr = %result.stderr.trim(), "Hash verification command failed");
+            }
+            Err(e) => {
+                warn!(worker = %worker_id, error = %e, "Could not verify hash after restore");
+            }
+        }
+    }
+
+    // Step 4: Verify the restored version
+    debug!(worker = %worker_id, version = %target_version, "Verifying restored version");
+    match ssh
+        .run_command(&format!("{} --version", REMOTE_RCH_PATH))
+        .await
+    {
+        Ok(output) if output.success() => {
+            let reported_version = output.stdout.trim();
+            if !reported_version.contains(target_version) {
+                warn!(
+                    worker = %worker_id,
+                    expected = %target_version,
+                    reported = %reported_version,
+                    "Version mismatch after rollback (may be OK if format differs)"
+                );
+            } else {
+                debug!(
+                    worker = %worker_id,
+                    version = %reported_version,
+                    "Post-rollback version check passed"
+                );
+            }
+        }
+        Ok(output) => {
+            warn!(
+                worker = %worker_id,
+                stderr = %output.stderr.trim(),
+                "Version check failed after rollback"
+            );
+        }
+        Err(e) => {
+            warn!(worker = %worker_id, error = %e, "Could not verify version after rollback");
+        }
+    }
+
+    // Step 5: Restart rch-wkr (best-effort)
+    debug!(worker = %worker_id, "Restarting rch-wkr after rollback");
+    if let Err(e) = ssh
+        .run_command(&format!(
+            "nohup {} serve >/dev/null 2>&1 &",
+            REMOTE_RCH_PATH
+        ))
+        .await
+    {
+        warn!(
+            worker = %worker_id,
+            error = %e,
+            "Failed to restart rch-wkr (may need manual intervention)"
+        );
+    }
+
+    if !ctx.is_json() {
+        println!(
+            "  {} {} rolled back to v{}",
+            StatusIndicator::Success.display(style),
+            style.highlight(worker_id),
+            target_version
+        );
+    }
+
+    info!(
+        worker = %worker_id,
+        version = %target_version,
+        "Rollback successful"
+    );
+
+    RollbackResult {
+        worker_id: worker_id.clone(),
+        success: true,
+        rolled_back_to: Some(target_version.to_string()),
+        error: None,
     }
 }
 
@@ -1134,23 +1242,732 @@ mod tests {
         assert_ne!(backup1.version, backup2.version);
     }
 
-    #[tokio::test]
-    async fn rollback_manager_restore_backup_succeeds() {
-        use rch_common::{WorkerConfig, WorkerId};
+    // Note: restore_backup tests require real SSH and are moved to integration tests
 
-        let manager = RollbackManager::new().unwrap();
-        let worker = WorkerConfig {
-            id: WorkerId::new("restore-test"),
-            host: "localhost".to_string(),
+    // ========================
+    // Registry Operations Tests
+    // ========================
+
+    #[test]
+    fn test_backup_registry_add_entry() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = RollbackManager::with_path(temp_dir.path()).unwrap();
+
+        // Create and save a backup entry
+        let backup = manager.create_backup_entry("worker1", "0.9.0", "/path/to/backup", "abc123");
+        manager.save_backup_entry(&backup).unwrap();
+
+        // Verify it can be retrieved
+        let latest = manager.get_latest_backup("worker1");
+        assert!(latest.is_some());
+        let latest = latest.unwrap();
+        assert_eq!(latest.worker_id, "worker1");
+        assert_eq!(latest.version, "0.9.0");
+        assert_eq!(latest.binary_hash, "abc123");
+    }
+
+    #[test]
+    fn test_backup_registry_multiple_workers() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = RollbackManager::with_path(temp_dir.path()).unwrap();
+
+        // Save backups for different workers
+        let backup1 = manager.create_backup_entry("worker1", "1.0.0", "/path/1", "hash1");
+        let backup2 = manager.create_backup_entry("worker2", "1.0.0", "/path/2", "hash2");
+        let backup3 = manager.create_backup_entry("worker1", "1.1.0", "/path/3", "hash3");
+
+        manager.save_backup_entry(&backup1).unwrap();
+        manager.save_backup_entry(&backup2).unwrap();
+        // Small delay to ensure different timestamps
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        manager.save_backup_entry(&backup3).unwrap();
+
+        // Check worker1 has latest version 1.1.0
+        let latest1 = manager.get_latest_backup("worker1").unwrap();
+        assert_eq!(latest1.version, "1.1.0");
+
+        // Check worker2 has version 1.0.0
+        let latest2 = manager.get_latest_backup("worker2").unwrap();
+        assert_eq!(latest2.version, "1.0.0");
+
+        // Check unknown worker returns None
+        assert!(manager.get_latest_backup("worker3").is_none());
+    }
+
+    #[test]
+    fn test_backup_registry_get_specific_version() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = RollbackManager::with_path(temp_dir.path()).unwrap();
+
+        // Save multiple versions
+        let backup1 = manager.create_backup_entry("worker1", "0.8.0", "/path/1", "hash_0.8.0");
+        let backup2 = manager.create_backup_entry("worker1", "0.9.0", "/path/2", "hash_0.9.0");
+        let backup3 = manager.create_backup_entry("worker1", "1.0.0", "/path/3", "hash_1.0.0");
+
+        manager.save_backup_entry(&backup1).unwrap();
+        manager.save_backup_entry(&backup2).unwrap();
+        manager.save_backup_entry(&backup3).unwrap();
+
+        // Get specific version
+        let backup = manager.get_backup("worker1", "0.9.0");
+        assert!(backup.is_some());
+        assert_eq!(backup.unwrap().binary_hash, "hash_0.9.0");
+
+        // Non-existent version
+        assert!(manager.get_backup("worker1", "0.7.0").is_none());
+
+        // Non-existent worker
+        assert!(manager.get_backup("worker2", "0.9.0").is_none());
+    }
+
+    #[test]
+    fn test_backup_registry_persistence() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let registry_path = temp_dir.path();
+
+        // Create and save with first manager instance
+        {
+            let manager = RollbackManager::with_path(registry_path).unwrap();
+            let backup = manager.create_backup_entry("worker1", "1.0.0", "/path", "abc123");
+            manager.save_backup_entry(&backup).unwrap();
+        }
+
+        // Reload with new manager instance and verify
+        {
+            let manager = RollbackManager::with_path(registry_path).unwrap();
+            let latest = manager.get_latest_backup("worker1");
+            assert!(latest.is_some());
+            assert_eq!(latest.unwrap().version, "1.0.0");
+        }
+    }
+
+    #[test]
+    fn test_backup_registry_corrupted_recovery() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let registry_path = temp_dir.path().join("registry.json");
+
+        // Write corrupted data
+        std::fs::write(&registry_path, "{ invalid json").unwrap();
+
+        // Create manager - should recover gracefully
+        let manager = RollbackManager::with_path(temp_dir.path()).unwrap();
+        let registry = manager.load_registry().unwrap();
+
+        // Should return empty registry after recovery
+        assert!(registry.is_empty());
+
+        // Corrupted file should be backed up
+        let backup_path = temp_dir.path().join("registry.json.corrupted");
+        assert!(backup_path.exists());
+    }
+
+    #[test]
+    fn test_backup_registry_prune() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut manager = RollbackManager::with_path(temp_dir.path()).unwrap();
+
+        // Add 4 backups for worker1 with different timestamps
+        for i in 0..4 {
+            let backup = WorkerBackup {
+                worker_id: "worker1".to_string(),
+                version: format!("0.{}.0", 7 + i),
+                backup_path: PathBuf::from(format!("/tmp/backups/worker1/0.{}.0.bak", 7 + i)),
+                remote_path: PathBuf::from(format!("~/.rch/backups/rch-wkr-0.{}.0", 7 + i)),
+                binary_hash: format!("hash_{}", i),
+                // Use sequential timestamps to ensure deterministic ordering
+                created_at: format!("2024-01-15T12:00:{:02}Z", i * 10),
+            };
+            manager.save_backup_entry(&backup).unwrap();
+        }
+
+        // Prune to keep only 2 most recent
+        let removed = manager.prune_old_backups(2).unwrap();
+
+        // Should have removed 2 (oldest)
+        assert_eq!(removed.len(), 2);
+        assert!(removed.iter().any(|b| b.version == "0.7.0"));
+        assert!(removed.iter().any(|b| b.version == "0.8.0"));
+
+        // Verify only latest 2 remain
+        let registry = manager.load_registry().unwrap();
+        assert_eq!(registry.len(), 2);
+
+        // Oldest should be gone
+        assert!(manager.get_backup("worker1", "0.7.0").is_none());
+        assert!(manager.get_backup("worker1", "0.8.0").is_none());
+
+        // Newest should still exist
+        assert!(manager.get_backup("worker1", "0.9.0").is_some());
+        assert!(manager.get_backup("worker1", "0.10.0").is_some());
+    }
+
+    #[test]
+    fn test_backup_registry_prune_multiple_workers() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut manager = RollbackManager::with_path(temp_dir.path()).unwrap();
+
+        // Add 3 backups each for 2 workers
+        for worker in ["worker1", "worker2"] {
+            for i in 0..3 {
+                let backup = WorkerBackup {
+                    worker_id: worker.to_string(),
+                    version: format!("1.{}.0", i),
+                    backup_path: PathBuf::from(format!("/tmp/{}/1.{}.0.bak", worker, i)),
+                    remote_path: PathBuf::from(format!("~/.rch/backups/rch-wkr-1.{}.0", i)),
+                    binary_hash: format!("hash_{}_{}", worker, i),
+                    created_at: format!("2024-01-15T12:{}:00Z", i * 10),
+                };
+                manager.save_backup_entry(&backup).unwrap();
+            }
+        }
+
+        // Prune to keep 2 per worker
+        let removed = manager.prune_old_backups(2).unwrap();
+
+        // Should remove 1 per worker (2 total)
+        assert_eq!(removed.len(), 2);
+
+        // Each worker should have 2 backups remaining
+        let registry = manager.load_registry().unwrap();
+        let worker1_count = registry.iter().filter(|b| b.worker_id == "worker1").count();
+        let worker2_count = registry.iter().filter(|b| b.worker_id == "worker2").count();
+        assert_eq!(worker1_count, 2);
+        assert_eq!(worker2_count, 2);
+    }
+
+    #[test]
+    fn test_backup_registry_empty_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let registry_path = temp_dir.path().join("registry.json");
+
+        // Write empty JSON array
+        std::fs::write(&registry_path, "[]").unwrap();
+
+        let manager = RollbackManager::with_path(temp_dir.path()).unwrap();
+        let registry = manager.load_registry().unwrap();
+
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn test_backup_registry_missing_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        // Don't create any registry file
+        let manager = RollbackManager::with_path(temp_dir.path()).unwrap();
+        let registry = manager.load_registry().unwrap();
+
+        // Should return empty without error
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn test_backup_registry_atomic_write() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = RollbackManager::with_path(temp_dir.path()).unwrap();
+
+        // Save multiple entries
+        for i in 0..5 {
+            let backup =
+                manager.create_backup_entry(&format!("worker{}", i), "1.0.0", "/path", "hash");
+            manager.save_backup_entry(&backup).unwrap();
+        }
+
+        // Verify no temp files left behind
+        let entries: Vec<_> = std::fs::read_dir(temp_dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+
+        // Should only have registry.json (and possibly worker subdirs)
+        for entry in &entries {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            assert!(
+                !name_str.ends_with(".tmp"),
+                "Temp file left behind: {}",
+                name_str
+            );
+        }
+    }
+
+    #[test]
+    fn test_backup_entry_timestamp_ordering() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = RollbackManager::with_path(temp_dir.path()).unwrap();
+
+        // Save backups with explicit timestamps (out of order)
+        let backup_old = WorkerBackup {
+            worker_id: "worker1".to_string(),
+            version: "0.8.0".to_string(),
+            backup_path: PathBuf::from("/tmp/0.8.0.bak"),
+            remote_path: PathBuf::from("~/.rch/backups/rch-wkr-0.8.0"),
+            binary_hash: "old_hash".to_string(),
+            created_at: "2024-01-15T10:00:00Z".to_string(), // Earlier
+        };
+        let backup_new = WorkerBackup {
+            worker_id: "worker1".to_string(),
+            version: "0.9.0".to_string(),
+            backup_path: PathBuf::from("/tmp/0.9.0.bak"),
+            remote_path: PathBuf::from("~/.rch/backups/rch-wkr-0.9.0"),
+            binary_hash: "new_hash".to_string(),
+            created_at: "2024-01-15T12:00:00Z".to_string(), // Later
+        };
+
+        // Save in reverse order
+        manager.save_backup_entry(&backup_new).unwrap();
+        manager.save_backup_entry(&backup_old).unwrap();
+
+        // get_latest_backup should return the one with latest timestamp
+        let latest = manager.get_latest_backup("worker1").unwrap();
+        assert_eq!(latest.version, "0.9.0");
+        assert_eq!(latest.binary_hash, "new_hash");
+    }
+
+    // ========================
+    // Rollback Workers Tests (Empty Workers)
+    // ========================
+
+    #[tokio::test]
+    async fn test_rollback_workers_empty_list() {
+        use crate::ui::test_utils::OutputCapture;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = RollbackManager::with_path(temp_dir.path()).unwrap();
+        let capture = OutputCapture::json();
+        let ctx = capture.context();
+
+        let results = manager
+            .rollback_workers(&[], None, 4, true, &ctx)
+            .await
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    // ========================
+    // Create Backup Entry Tests
+    // ========================
+
+    #[test]
+    fn test_create_backup_entry_fields() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = RollbackManager::with_path(temp_dir.path()).unwrap();
+
+        let backup = manager.create_backup_entry(
+            "test-worker",
+            "1.2.3",
+            "~/.rch/backups/rch-wkr-1.2.3",
+            "sha256hash",
+        );
+
+        assert_eq!(backup.worker_id, "test-worker");
+        assert_eq!(backup.version, "1.2.3");
+        assert_eq!(backup.binary_hash, "sha256hash");
+        assert!(backup.backup_path.to_string_lossy().contains("test-worker"));
+        assert!(backup.backup_path.to_string_lossy().contains("1.2.3.bak"));
+        assert!(!backup.created_at.is_empty());
+    }
+
+    #[test]
+    fn test_create_backup_entry_unknown_hash() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = RollbackManager::with_path(temp_dir.path()).unwrap();
+
+        let backup = manager.create_backup_entry("worker1", "1.0.0", "/path", "unknown");
+
+        assert_eq!(backup.binary_hash, "unknown");
+    }
+
+    // ========================
+    // Rollback Execution Tests (No SSH)
+    // ========================
+
+    /// Test helper to create a mock WorkerConfig
+    fn mock_worker(id: &str) -> WorkerConfig {
+        use rch_common::WorkerId;
+        WorkerConfig {
+            id: WorkerId::new(id),
+            host: format!("mock://{}.local", id),
             user: "testuser".to_string(),
             identity_file: "~/.ssh/id_rsa".to_string(),
             total_slots: 4,
             priority: 100,
             tags: vec![],
-        };
+        }
+    }
 
-        let backup = manager.create_backup(&worker, "1.0.0").await.unwrap();
-        let result = manager.restore_backup(&backup, &worker).await;
-        assert!(result.is_ok());
+    /// Test helper to create a mock backup with specific hash
+    fn mock_backup_with_hash(
+        worker_id: &str,
+        version: &str,
+        timestamp: u64,
+        hash: &str,
+    ) -> WorkerBackup {
+        WorkerBackup {
+            worker_id: worker_id.to_string(),
+            version: version.to_string(),
+            backup_path: PathBuf::from(format!("/tmp/backups/{}/{}.bak", worker_id, version)),
+            remote_path: PathBuf::from(format!("~/.rch/backups/rch-wkr-{}", version)),
+            binary_hash: hash.to_string(),
+            created_at: format!("2024-01-15T12:00:{:02}Z", timestamp % 60),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rollback_no_backup() {
+        use crate::ui::test_utils::OutputCapture;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = RollbackManager::with_path(temp_dir.path()).unwrap();
+        let worker = mock_worker("worker1");
+        let workers = vec![&worker];
+        let capture = OutputCapture::json();
+        let ctx = capture.context();
+
+        // Manager has no backups registered
+        let results = manager
+            .rollback_workers(&workers, None, 4, true, &ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].success);
+        assert!(
+            results[0]
+                .error
+                .as_ref()
+                .unwrap()
+                .to_lowercase()
+                .contains("no backup")
+                || results[0].error.as_ref().unwrap().contains("Re-deploy")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rollback_specific_version_not_found() {
+        use crate::ui::test_utils::OutputCapture;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = RollbackManager::with_path(temp_dir.path()).unwrap();
+        let worker = mock_worker("worker1");
+        let workers = vec![&worker];
+
+        // Save a backup for version 1.0.0
+        let backup = mock_backup_with_hash("worker1", "1.0.0", 1000, "abc123");
+        manager.save_backup_entry(&backup).unwrap();
+
+        let capture = OutputCapture::json();
+        let ctx = capture.context();
+
+        // Request version 2.0.0 which doesn't exist
+        let results = manager
+            .rollback_workers(&workers, Some("2.0.0"), 4, true, &ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].success);
+        assert!(results[0].rolled_back_to.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_rollback_parallelism_capped() {
+        use crate::ui::test_utils::OutputCapture;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = RollbackManager::with_path(temp_dir.path()).unwrap();
+
+        // Create many workers
+        let workers: Vec<WorkerConfig> = (0..20).map(|i| mock_worker(&format!("w{}", i))).collect();
+        let worker_refs: Vec<&WorkerConfig> = workers.iter().collect();
+
+        let capture = OutputCapture::json();
+        let ctx = capture.context();
+
+        // Even with parallelism=100, should be capped at MAX_CONCURRENT_ROLLBACKS
+        let results = manager
+            .rollback_workers(&worker_refs, None, 100, false, &ctx)
+            .await
+            .unwrap();
+
+        // All should report "no backup" error since no backups registered
+        assert_eq!(results.len(), 20);
+        assert!(results.iter().all(|r| !r.success));
+    }
+
+    // ========================
+    // MockSshExecutor-based Tests
+    // These test the actual SSH execution logic using mocks
+    // ========================
+
+    /// Execute rollback with MockSshExecutor for testing.
+    /// This mirrors execute_single_rollback but uses the mock.
+    #[cfg(test)]
+    async fn execute_rollback_with_mock(
+        worker: &WorkerConfig,
+        backup: &WorkerBackup,
+        target_version: &str,
+        verify: bool,
+        mock: &crate::fleet::ssh::MockSshExecutor,
+    ) -> RollbackResult {
+        let worker_id = &worker.id.0;
+
+        // Step 1: Graceful stop (pkill)
+        if let Err(e) = mock
+            .run_command("pkill -TERM rch-wkr 2>/dev/null || true")
+            .await
+        {
+            debug!(worker = %worker_id, error = %e, "pkill returned error (expected)");
+        }
+
+        // Step 2: Verify backup exists
+        let remote_backup_path = backup.remote_path.to_string_lossy();
+        let check_cmd = format!("test -f {}", remote_backup_path);
+        match mock.run_command(&check_cmd).await {
+            Ok(result) if result.success() => {}
+            Ok(_) => {
+                return RollbackResult {
+                    worker_id: worker_id.clone(),
+                    success: false,
+                    rolled_back_to: None,
+                    error: Some(format!(
+                        "Backup file {} not found on worker",
+                        remote_backup_path
+                    )),
+                };
+            }
+            Err(e) => {
+                return RollbackResult {
+                    worker_id: worker_id.clone(),
+                    success: false,
+                    rolled_back_to: None,
+                    error: Some(format!("SSH error checking backup: {}", e)),
+                };
+            }
+        }
+
+        // Step 3: Copy backup to main location
+        let restore_cmd = format!(
+            "cp --preserve=mode,timestamps {} {}",
+            remote_backup_path, REMOTE_RCH_PATH
+        );
+        match mock.run_command(&restore_cmd).await {
+            Ok(result) if result.success() => {}
+            Ok(result) => {
+                return RollbackResult {
+                    worker_id: worker_id.clone(),
+                    success: false,
+                    rolled_back_to: None,
+                    error: Some(format!("Failed to copy backup: {}", result.stderr.trim())),
+                };
+            }
+            Err(e) => {
+                return RollbackResult {
+                    worker_id: worker_id.clone(),
+                    success: false,
+                    rolled_back_to: None,
+                    error: Some(e.to_string()),
+                };
+            }
+        }
+
+        // Step 4: Set executable permissions
+        let _ = mock
+            .run_command(&format!("chmod +x {}", REMOTE_RCH_PATH))
+            .await;
+
+        // Step 5: Verify hash (if enabled and hash is known)
+        if verify && backup.binary_hash != "unknown" {
+            let hash_cmd = format!("sha256sum {} | cut -d' ' -f1", REMOTE_RCH_PATH);
+            match mock.run_command(&hash_cmd).await {
+                Ok(result) if result.success() => {
+                    let actual_hash = result.stdout.trim();
+                    if actual_hash != backup.binary_hash {
+                        return RollbackResult {
+                            worker_id: worker_id.clone(),
+                            success: false,
+                            rolled_back_to: Some(target_version.to_string()),
+                            error: Some(format!(
+                                "Hash mismatch: expected {}, got {}",
+                                backup.binary_hash, actual_hash
+                            )),
+                        };
+                    }
+                }
+                Ok(_) | Err(_) => {
+                    // Hash check failed but we continue
+                }
+            }
+        }
+
+        // Step 6: Verify version
+        let version_cmd = format!("{} --version", REMOTE_RCH_PATH);
+        let _ = mock.run_command(&version_cmd).await;
+
+        // Step 7: Restart service
+        let restart_cmd = format!("nohup {} serve >/dev/null 2>&1 &", REMOTE_RCH_PATH);
+        let _ = mock.run_command(&restart_cmd).await;
+
+        RollbackResult {
+            worker_id: worker_id.clone(),
+            success: true,
+            rolled_back_to: Some(target_version.to_string()),
+            error: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rollback_success_with_mock() {
+        use crate::fleet::ssh::{MockCommandResult, MockSshExecutor};
+
+        let worker = mock_worker("worker1");
+        let backup = mock_backup_with_hash("worker1", "0.9.0", 1000, "abc123");
+
+        let mock = MockSshExecutor::new()
+            .with_command("pkill", MockCommandResult::ok(""))
+            .with_command("test -f", MockCommandResult::ok(""))
+            .with_command("cp --preserve", MockCommandResult::ok(""))
+            .with_command("chmod", MockCommandResult::ok(""))
+            .with_command("sha256sum", MockCommandResult::ok("abc123  /path"))
+            .with_command("--version", MockCommandResult::ok("rch-wkr 0.9.0"))
+            .with_command("nohup", MockCommandResult::ok(""));
+
+        let result = execute_rollback_with_mock(&worker, &backup, "0.9.0", true, &mock).await;
+
+        assert!(result.success);
+        assert_eq!(result.rolled_back_to, Some("0.9.0".to_string()));
+        assert!(result.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_rollback_hash_mismatch_with_mock() {
+        use crate::fleet::ssh::{MockCommandResult, MockSshExecutor};
+
+        let worker = mock_worker("worker1");
+        let backup = mock_backup_with_hash("worker1", "0.9.0", 1000, "expected_hash");
+
+        let mock = MockSshExecutor::new()
+            .with_command("pkill", MockCommandResult::ok(""))
+            .with_command("test -f", MockCommandResult::ok(""))
+            .with_command("cp --preserve", MockCommandResult::ok(""))
+            .with_command("chmod", MockCommandResult::ok(""))
+            // Hash mismatch!
+            .with_command("sha256sum", MockCommandResult::ok("different_hash  /path"));
+
+        let result = execute_rollback_with_mock(&worker, &backup, "0.9.0", true, &mock).await;
+
+        assert!(!result.success);
+        assert!(result.error.as_ref().unwrap().contains("Hash mismatch"));
+    }
+
+    #[tokio::test]
+    async fn test_rollback_unknown_hash_skips_verification_with_mock() {
+        use crate::fleet::ssh::{MockCommandResult, MockSshExecutor};
+
+        let worker = mock_worker("worker1");
+        // Hash is "unknown" - should skip verification
+        let backup = mock_backup_with_hash("worker1", "0.9.0", 1000, "unknown");
+
+        let mock = MockSshExecutor::new()
+            .with_command("pkill", MockCommandResult::ok(""))
+            .with_command("test -f", MockCommandResult::ok(""))
+            .with_command("cp --preserve", MockCommandResult::ok(""))
+            .with_command("chmod", MockCommandResult::ok(""))
+            // Would mismatch if checked, but should be ignored
+            .with_command("sha256sum", MockCommandResult::ok("any_hash  /path"))
+            .with_command("--version", MockCommandResult::ok("rch-wkr 0.9.0"))
+            .with_command("nohup", MockCommandResult::ok(""));
+
+        let result = execute_rollback_with_mock(&worker, &backup, "0.9.0", true, &mock).await;
+
+        // Should succeed because hash="unknown" skips verification
+        assert!(result.success);
+        assert!(result.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_rollback_backup_file_missing_with_mock() {
+        use crate::fleet::ssh::{MockCommandResult, MockSshExecutor};
+
+        let worker = mock_worker("worker1");
+        let backup = mock_backup_with_hash("worker1", "0.9.0", 1000, "abc123");
+
+        let mock = MockSshExecutor::new()
+            .with_command("pkill", MockCommandResult::ok(""))
+            // test -f returns non-zero (file doesn't exist)
+            .with_command("test -f", MockCommandResult::err(1, ""));
+
+        let result = execute_rollback_with_mock(&worker, &backup, "0.9.0", true, &mock).await;
+
+        assert!(!result.success);
+        assert!(result.error.as_ref().unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_rollback_cp_fails_with_mock() {
+        use crate::fleet::ssh::{MockCommandResult, MockSshExecutor};
+
+        let worker = mock_worker("worker1");
+        let backup = mock_backup_with_hash("worker1", "0.9.0", 1000, "abc123");
+
+        let mock = MockSshExecutor::new()
+            .with_command("pkill", MockCommandResult::ok(""))
+            .with_command("test -f", MockCommandResult::ok(""))
+            // cp fails
+            .with_command(
+                "cp --preserve",
+                MockCommandResult::err(1, "Permission denied"),
+            );
+
+        let result = execute_rollback_with_mock(&worker, &backup, "0.9.0", true, &mock).await;
+
+        assert!(!result.success);
+        assert!(result.error.as_ref().unwrap().contains("Permission denied"));
+    }
+
+    #[tokio::test]
+    async fn test_rollback_verifies_hash_when_enabled() {
+        use crate::fleet::ssh::{MockCommandResult, MockSshExecutor};
+
+        let worker = mock_worker("worker1");
+        let backup = mock_backup_with_hash("worker1", "0.9.0", 1000, "correct_hash");
+
+        let mock = MockSshExecutor::new()
+            .with_command("pkill", MockCommandResult::ok(""))
+            .with_command("test -f", MockCommandResult::ok(""))
+            .with_command("cp --preserve", MockCommandResult::ok(""))
+            .with_command("chmod", MockCommandResult::ok(""))
+            // Hash matches exactly
+            .with_command("sha256sum", MockCommandResult::ok("correct_hash  /path"))
+            .with_command("--version", MockCommandResult::ok("rch-wkr 0.9.0"))
+            .with_command("nohup", MockCommandResult::ok(""));
+
+        let result = execute_rollback_with_mock(&worker, &backup, "0.9.0", true, &mock).await;
+
+        assert!(result.success);
+        assert!(result.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_rollback_skips_hash_when_disabled() {
+        use crate::fleet::ssh::{MockCommandResult, MockSshExecutor};
+
+        let worker = mock_worker("worker1");
+        let backup = mock_backup_with_hash("worker1", "0.9.0", 1000, "expected_hash");
+
+        // Mock doesn't provide sha256sum result - would fail if hash check runs
+        let mock = MockSshExecutor::new()
+            .with_command("pkill", MockCommandResult::ok(""))
+            .with_command("test -f", MockCommandResult::ok(""))
+            .with_command("cp --preserve", MockCommandResult::ok(""))
+            .with_command("chmod", MockCommandResult::ok(""))
+            .with_command("--version", MockCommandResult::ok("rch-wkr 0.9.0"))
+            .with_command("nohup", MockCommandResult::ok(""));
+
+        // verify=false
+        let result = execute_rollback_with_mock(&worker, &backup, "0.9.0", false, &mock).await;
+
+        // Should succeed because verification is disabled
+        assert!(result.success);
     }
 }

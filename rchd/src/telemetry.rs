@@ -142,11 +142,12 @@ impl TelemetryStore {
     }
 
     /// Fetch aggregate test run stats.
-    pub fn test_run_stats(&self) -> TestRunStats {
-        if let Some(storage) = self.storage.as_ref()
-            && let Ok(stats) = storage.test_run_stats()
-        {
-            return stats;
+    pub async fn test_run_stats(&self) -> TestRunStats {
+        if let Some(storage) = self.storage.clone() {
+            let result = task::spawn_blocking(move || storage.test_run_stats()).await;
+            if let Ok(Ok(stats)) = result {
+                return stats;
+            }
         }
 
         let test_runs = self.test_runs.read().unwrap();
@@ -495,8 +496,8 @@ mod tests {
         assert!((entries[0].telemetry.cpu.overall_percent - 30.0).abs() < f64::EPSILON);
     }
 
-    #[test]
-    fn test_record_test_run_stats() {
+    #[tokio::test]
+    async fn test_record_test_run_stats() {
         let _guard = test_guard!();
         let store = TelemetryStore::new(Duration::from_secs(300), None);
         let record = TestRunRecord::new(
@@ -509,7 +510,7 @@ mod tests {
         );
 
         store.record_test_run(record);
-        let stats = store.test_run_stats();
+        let stats = store.test_run_stats().await;
 
         assert_eq!(stats.total_runs, 1);
         assert_eq!(stats.passed_runs, 1);
@@ -638,18 +639,18 @@ mod tests {
         assert!(page.entries.is_empty());
     }
 
-    #[test]
-    fn test_store_test_run_stats_empty() {
+    #[tokio::test]
+    async fn test_store_test_run_stats_empty() {
         let _guard = test_guard!();
         let store = TelemetryStore::new(Duration::from_secs(300), None);
-        let stats = store.test_run_stats();
+        let stats = store.test_run_stats().await;
         assert_eq!(stats.total_runs, 0);
         assert_eq!(stats.passed_runs, 0);
         assert_eq!(stats.failed_runs, 0);
     }
 
-    #[test]
-    fn test_test_run_stats_multiple_runs() {
+    #[tokio::test]
+    async fn test_test_run_stats_multiple_runs() {
         let _guard = test_guard!();
         let store = TelemetryStore::new(Duration::from_secs(300), None);
 
@@ -675,7 +676,7 @@ mod tests {
         );
         store.record_test_run(failed_run);
 
-        let stats = store.test_run_stats();
+        let stats = store.test_run_stats().await;
         assert_eq!(stats.total_runs, 2);
         assert_eq!(stats.passed_runs, 1);
         assert_eq!(stats.failed_runs, 1);
@@ -919,8 +920,8 @@ mod tests {
         assert!((entries[0].telemetry.cpu.overall_percent - 50.0).abs() < f64::EPSILON);
     }
 
-    #[test]
-    fn test_test_run_different_kinds() {
+    #[tokio::test]
+    async fn test_test_run_different_kinds() {
         let _guard = test_guard!();
         let store = TelemetryStore::new(Duration::from_secs(300), None);
 
@@ -952,7 +953,7 @@ mod tests {
             800,
         ));
 
-        let stats = store.test_run_stats();
+        let stats = store.test_run_stats().await;
         assert_eq!(stats.total_runs, 3);
         assert_eq!(stats.passed_runs, 3);
         assert!(stats.runs_by_kind.contains_key("cargo_build"));

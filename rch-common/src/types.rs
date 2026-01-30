@@ -1495,6 +1495,16 @@ pub struct CompilationConfig {
     /// Test commands often need longer timeouts due to test suite execution time.
     #[serde(default = "default_test_timeout")]
     pub test_timeout_sec: u64,
+    /// Timeout in seconds for bun commands (bun test, bun typecheck).
+    /// Bun has known issues where its internal --timeout flag doesn't work for
+    /// CPU-bound hangs, so we use a shorter external timeout by default.
+    #[serde(default = "default_bun_timeout")]
+    pub bun_timeout_sec: u64,
+    /// Whether to wrap remote commands with external timeout protection.
+    /// This prevents runaway/stuck processes from consuming worker slots indefinitely.
+    /// Default: true. Set to false to disable timeout wrapping entirely.
+    #[serde(default = "default_external_timeout_enabled")]
+    pub external_timeout_enabled: bool,
 }
 
 impl Default for CompilationConfig {
@@ -1508,6 +1518,8 @@ impl Default for CompilationConfig {
             check_slots: default_check_slots(),
             build_timeout_sec: default_build_timeout(),
             test_timeout_sec: default_test_timeout(),
+            bun_timeout_sec: default_bun_timeout(),
+            external_timeout_enabled: default_external_timeout_enabled(),
         }
     }
 }
@@ -1536,19 +1548,43 @@ fn default_test_timeout() -> u64 {
     1800
 }
 
+/// Default bun timeout: 10 minutes (600 seconds).
+/// Bun's internal --timeout flag doesn't work for CPU-bound hangs,
+/// so we use a shorter external timeout to prevent zombies.
+fn default_bun_timeout() -> u64 {
+    600
+}
+
+/// Default: external timeout protection is enabled.
+fn default_external_timeout_enabled() -> bool {
+    true
+}
+
 impl CompilationConfig {
-    /// Returns the appropriate timeout for the given compilation kind.
+    /// Returns the appropriate external timeout for the given compilation kind.
     ///
-    /// Test commands get the longer test timeout, while all other commands
-    /// (builds, checks, clippy, etc.) use the build timeout.
+    /// - Bun commands get the shorter bun_timeout (to protect against known hang issues)
+    /// - Test commands get the longer test_timeout
+    /// - All other commands (builds, checks, clippy) get the build_timeout
     pub fn timeout_for_kind(&self, kind: Option<CompilationKind>) -> std::time::Duration {
         let secs = match kind {
-            Some(CompilationKind::CargoTest)
-            | Some(CompilationKind::CargoNextest)
-            | Some(CompilationKind::BunTest) => self.test_timeout_sec,
+            // Bun has known issues where internal timeout doesn't work for CPU hangs
+            Some(CompilationKind::BunTest) | Some(CompilationKind::BunTypecheck) => {
+                self.bun_timeout_sec
+            }
+            // Other test commands use the standard test timeout
+            Some(CompilationKind::CargoTest) | Some(CompilationKind::CargoNextest) => {
+                self.test_timeout_sec
+            }
+            // Builds, checks, clippy, and unknown use build timeout
             _ => self.build_timeout_sec,
         };
         std::time::Duration::from_secs(secs)
+    }
+
+    /// Returns whether external timeout wrapping is enabled.
+    pub fn external_timeout_enabled(&self) -> bool {
+        self.external_timeout_enabled
     }
 }
 

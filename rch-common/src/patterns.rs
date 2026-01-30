@@ -578,6 +578,16 @@ pub fn normalize_command(cmd: &str) -> Cow<'_, str> {
                 if rest.is_empty() || rest.starts_with(char::is_whitespace) {
                     result = rest.trim_start();
                     changed = true;
+
+                    // Strip flags that might follow the wrapper (e.g., "time -v", "sudo -E")
+                    // We heuristically strip any token starting with '-' until we find a non-flag.
+                    while result.starts_with('-') {
+                        // Find the end of this token
+                        let end_idx = result.find(char::is_whitespace).unwrap_or(result.len());
+
+                        // Safety: we checked starts_with('-'), so token is not empty
+                        result = result[end_idx..].trim_start();
+                    }
                 }
             }
         }

@@ -541,12 +541,7 @@ pub async fn backup_before_deploy(
     debug!(worker = %worker.id, "Checking for existing version to backup");
     let version_cmd = format!("{} --version 2>/dev/null", REMOTE_RCH_PATH);
     let current_version = match ssh.run_command(&version_cmd).await {
-        Ok(output) if output.success() => output
-            .stdout
-            .trim()
-            .split_whitespace()
-            .nth(1)
-            .map(String::from),
+        Ok(output) if output.success() => output.stdout.split_whitespace().nth(1).map(String::from),
         Ok(_) => None,
         Err(e) => {
             debug!(worker = %worker.id, error = %e, "No existing rch-wkr found");

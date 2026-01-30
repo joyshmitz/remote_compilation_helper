@@ -984,7 +984,7 @@ mod tests {
         let config = FleetConfig::default();
         let workers: Vec<&rch_common::WorkerConfig> = vec![];
 
-        let result = get_fleet_status(&workers, &*ctx, &config).await;
+        let result = get_fleet_status(&workers, &ctx, &config).await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
     }

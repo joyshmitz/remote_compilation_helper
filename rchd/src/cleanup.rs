@@ -5,7 +5,7 @@ use rch_common::WorkerId;
 use std::path::Path;
 use std::time::Duration;
 use tokio::time::interval;
-use tracing::{debug, warn};
+use tracing::warn;
 
 pub struct ActiveBuildCleanup {
     context: DaemonContext,

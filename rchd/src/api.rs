@@ -2542,7 +2542,7 @@ async fn handle_status(ctx: &DaemonContext) -> Result<DaemonFullStatus> {
     // Get recent builds from history
     let recent_builds = ctx.history.recent(20);
     let stats = ctx.history.stats();
-    let test_stats = ctx.telemetry.test_run_stats();
+    let test_stats = ctx.telemetry.test_run_stats().await;
 
     // Collect active alerts from the alert manager
     let alerts = ctx.alert_manager.active_alerts();
