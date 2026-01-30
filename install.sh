@@ -621,7 +621,12 @@ download_binaries() {
 
     # Extract and install
     info "Extracting binaries..."
-    tar -xzf "$TEMP_DIR/$asset_name" -C "$TEMP_DIR"
+    if ! tar -xzf "$TEMP_DIR/$asset_name" -C "$TEMP_DIR"; then
+        warn "Failed to extract tarball"
+        info "Falling back to building from source..."
+        clone_and_build_from_source
+        return
+    fi
 
     if [[ "$MODE" == "worker" ]]; then
         if [[ -f "$TEMP_DIR/$WORKER_BIN" ]]; then
@@ -669,19 +674,27 @@ clone_and_build_from_source() {
 
     info "Cloning repository..."
     if $USE_GUM; then
-        spin "Cloning RCH repository..." git clone --depth 1 "$REPO_URL" "$TEMP_DIR/rch"
+        if ! spin "Cloning RCH repository..." git clone --depth 1 "$REPO_URL" "$TEMP_DIR/rch"; then
+            die "Failed to clone repository from $REPO_URL"
+        fi
     else
-        git clone --depth 1 "$REPO_URL" "$TEMP_DIR/rch"
+        if ! git clone --depth 1 "$REPO_URL" "$TEMP_DIR/rch"; then
+            die "Failed to clone repository from $REPO_URL"
+        fi
     fi
 
-    cd "$TEMP_DIR/rch"
+    cd "$TEMP_DIR/rch" || die "Failed to change to cloned repository directory"
 
     # Build release binaries
     if $USE_GUM; then
-        spin "Building release binaries (this may take a few minutes)..." cargo build --release
+        if ! spin "Building release binaries (this may take a few minutes)..." cargo build --release; then
+            die "Build failed. Check that Rust nightly is installed: rustup default nightly"
+        fi
     else
         info "Building release binaries (this may take a few minutes)..."
-        cargo build --release
+        if ! cargo build --release; then
+            die "Build failed. Check that Rust nightly is installed: rustup default nightly"
+        fi
     fi
 
     # Install binaries
@@ -717,7 +730,8 @@ install_rust_toolchain() {
     fi
 
     info "Installing Rust via rustup..."
-    if curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly; then
+    # Note: rustup respects HTTPS_PROXY/HTTP_PROXY environment variables automatically
+    if curl --proto '=https' --tlsv1.2 -sSf $PROXY_ARGS https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly; then
         # Source cargo env for current session
         if [[ -f "$HOME/.cargo/env" ]]; then
             source "$HOME/.cargo/env"
@@ -727,12 +741,6 @@ install_rust_toolchain() {
     else
         return 1
     fi
-}
-
-
-# Alias for backwards compatibility - calls the more complete version with Rust toolchain install
-clone_and_build() {
-    clone_and_build_from_source
 }
 
 # ============================================================================
@@ -1095,11 +1103,8 @@ install_binaries() {
             FROM_SOURCE=true
             build_from_source
         else
-            # Try binary download first, fallback to clone and build from source
-            if ! download_binaries; then
-                info "Falling back to building from source..."
-                clone_and_build
-            fi
+            # Try binary download (handles fallback to source build internally)
+            download_binaries
         fi
     fi
 }
