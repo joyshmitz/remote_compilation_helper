@@ -5899,7 +5899,7 @@ mod tests {
     use crate::status_types::format_bytes;
     use crate::ui::context::{OutputConfig, OutputMode};
     use crate::ui::writer::SharedOutputBuffer;
-    use rch_common::{Classification, CompilationKind, RequiredRuntime};
+    use rch_common::{Classification, CompilationKind, RequiredRuntime, WorkerId};
     use rch_common::test_guard;
     use rch_common::{SelectedWorker, SelectionReason};
 
