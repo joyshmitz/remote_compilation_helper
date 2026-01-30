@@ -18,7 +18,11 @@ pub struct CommandFailed {
 ///
 /// Streams stdout/stderr in real-time and returns Ok on success.
 pub async fn execute(workdir: &str, command: &str) -> Result<()> {
-    info!("Executing in {}: {}", workdir, command);
+    info!(
+        "Executing in {}: {}",
+        workdir,
+        rch_common::util::mask_sensitive_command(command)
+    );
 
     if command.trim().is_empty() {
         anyhow::bail!("Empty command");

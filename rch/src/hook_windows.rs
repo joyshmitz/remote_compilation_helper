@@ -4,6 +4,7 @@
 //! platforms we compile a fail-open stub so the CLI can build and the hook
 //! never blocks local execution.
 
+use crate::error::PlatformError;
 use rch_common::{
     CommandPriority, CompilationKind, RequiredRuntime, SelectionResponse, ToolchainInfo, WorkerId,
 };
@@ -37,7 +38,7 @@ pub(crate) async fn query_daemon(
     _classification_duration_us: u64,
     _hook_pid: Option<u32>,
 ) -> anyhow::Result<SelectionResponse> {
-    anyhow::bail!("daemon communication via Unix socket is not supported on this platform");
+    Err(PlatformError::UnixSocketUnsupported)?
 }
 
 /// Release reserved slots on a worker.

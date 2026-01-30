@@ -33,6 +33,7 @@ pub mod testing;
 pub mod toolchain;
 pub mod types;
 pub mod ui;
+pub mod util;
 
 pub use artifact_verify::{
     ArtifactManifest, FileHash, VerificationFailure, VerificationResult, compute_file_hash,

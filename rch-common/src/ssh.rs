@@ -7,7 +7,6 @@ use crate::types::{WorkerConfig, WorkerId};
 use anyhow::{Context, Result};
 use openssh::{ControlPersist, KnownHosts, Session, SessionBuilder, Stdio};
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -181,7 +180,29 @@ pub fn shell_escape_value(value: &str) -> Option<String> {
     if value.contains('\n') || value.contains('\r') || value.contains('\0') {
         return None;
     }
-    Some(shell_escape::escape(Cow::Borrowed(value)).into_owned())
+
+    if value.is_empty() {
+        return Some("''".to_string());
+    }
+
+    let needs_quotes = value
+        .chars()
+        .any(|c| !c.is_ascii_alphanumeric() && c != '_');
+    if !needs_quotes {
+        return Some(value.to_string());
+    }
+
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('\'');
+    for ch in value.chars() {
+        if ch == '\'' {
+            escaped.push_str("'\\''");
+        } else {
+            escaped.push(ch);
+        }
+    }
+    escaped.push('\'');
+    Some(escaped)
 }
 
 /// SSH connection options.
@@ -392,7 +413,11 @@ impl SshClient {
         let session = self.session.as_ref().context("Not connected to worker")?;
 
         let start = std::time::Instant::now();
-        debug!("Executing on {}: {}", self.config.id, command);
+        debug!(
+            "Executing on {}: {}",
+            self.config.id,
+            crate::util::mask_sensitive_command(command)
+        );
 
         let mut child = session
             .command("sh")
@@ -492,7 +517,11 @@ impl SshClient {
         let session = self.session.as_ref().context("Not connected to worker")?;
 
         let start = std::time::Instant::now();
-        debug!("Executing (streaming) on {}: {}", self.config.id, command);
+        debug!(
+            "Executing (streaming) on {}: {}",
+            self.config.id,
+            crate::util::mask_sensitive_command(command)
+        );
 
         let mut child = session
             .command("sh")

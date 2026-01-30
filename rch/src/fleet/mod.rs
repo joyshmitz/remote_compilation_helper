@@ -38,6 +38,8 @@ pub use ssh::{
 };
 
 /// Deploy rch-wkr to workers.
+///
+/// If `skip_confirm` is false, prompts for confirmation before deploying.
 #[allow(clippy::too_many_arguments)]
 pub async fn deploy(
     ctx: &OutputContext,
@@ -54,7 +56,9 @@ pub async fn deploy(
     resume: bool,
     version: Option<String>,
     audit_log: Option<PathBuf>,
+    skip_confirm: bool,
 ) -> Result<()> {
+    use dialoguer::Confirm;
     let style = ctx.theme();
 
     // Load workers configuration
@@ -166,6 +170,30 @@ pub async fn deploy(
         return Ok(());
     }
 
+    // Prompt for confirmation unless skipped or in JSON mode
+    if !skip_confirm && !ctx.is_json() {
+        println!(
+            "{} This will deploy rch-wkr to {} worker(s).",
+            StatusIndicator::Warning.display(style),
+            target_workers.len()
+        );
+        if drain_first {
+            println!(
+                "  {} Active builds will be drained first.",
+                StatusIndicator::Info.display(style)
+            );
+        }
+        let confirmed = Confirm::new()
+            .with_prompt("Proceed with deployment?")
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            println!("{} Aborted.", StatusIndicator::Info.display(style));
+            return Ok(());
+        }
+        println!();
+    }
+
     // Create audit logger if requested
     let audit_logger = if let Some(ref path) = audit_log {
         Some(AuditLogger::new(Some(path))?)
@@ -235,6 +263,9 @@ pub async fn deploy(
 }
 
 /// Rollback workers to a previous version.
+/// Rollback rch-wkr on workers to a previous version.
+///
+/// If `skip_confirm` is false, prompts for confirmation before rolling back.
 pub async fn rollback(
     ctx: &OutputContext,
     worker: Option<String>,
@@ -242,7 +273,10 @@ pub async fn rollback(
     parallel: usize,
     verify: bool,
     dry_run: bool,
+    skip_confirm: bool,
 ) -> Result<()> {
+    use dialoguer::Confirm;
+
     let style = ctx.theme();
 
     // Load workers configuration
@@ -320,6 +354,31 @@ pub async fn rollback(
             }
         }
         return Ok(());
+    }
+
+    // Prompt for confirmation unless skipped or in JSON mode
+    if !skip_confirm && !ctx.is_json() {
+        println!(
+            "{} This will rollback rch-wkr on {} worker(s).",
+            StatusIndicator::Warning.display(style),
+            target_workers.len()
+        );
+        if let Some(ref ver) = to_version {
+            println!(
+                "  {} Rolling back to version {}.",
+                StatusIndicator::Info.display(style),
+                ver
+            );
+        }
+        let confirmed = Confirm::new()
+            .with_prompt("Proceed with rollback?")
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            println!("{} Aborted.", StatusIndicator::Info.display(style));
+            return Ok(());
+        }
+        println!();
     }
 
     // Execute rollback
@@ -548,12 +607,18 @@ pub async fn verify(ctx: &OutputContext, worker: Option<String>) -> Result<()> {
 }
 
 /// Drain workers before maintenance.
+/// Drain workers before maintenance.
+///
+/// If `skip_confirm` is false, prompts for confirmation before draining.
 pub async fn drain(
     ctx: &OutputContext,
     worker: Option<String>,
     all: bool,
     timeout: u64,
+    skip_confirm: bool,
 ) -> Result<()> {
+    use dialoguer::Confirm;
+
     let style = ctx.theme();
 
     if worker.is_none() && !all {
@@ -601,6 +666,30 @@ pub async fn drain(
             target_workers.len(),
             timeout
         );
+        println!();
+    }
+
+    // Prompt for confirmation unless skipped or in JSON mode
+    if !skip_confirm && !ctx.is_json() {
+        println!(
+            "{} This will drain {} worker(s), stopping new job routing.",
+            StatusIndicator::Warning.display(style),
+            target_workers.len()
+        );
+        if all {
+            println!(
+                "  {} ALL workers will be drained!",
+                StatusIndicator::Warning.display(style)
+            );
+        }
+        let confirmed = Confirm::new()
+            .with_prompt("Proceed with drain?")
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            println!("{} Aborted.", StatusIndicator::Info.display(style));
+            return Ok(());
+        }
         println!();
     }
 
@@ -777,7 +866,7 @@ mod tests {
     async fn deploy_dry_run_emits_json_response() {
         let (ctx, stdout) = json_ctx();
         deploy(
-            &ctx, None, 2, None, 0, false, false, true, false, 0, true, false, None, None,
+            &ctx, None, 2, None, 0, false, false, true, false, 0, true, false, None, None, true,
         )
         .await
         .unwrap();
@@ -789,7 +878,9 @@ mod tests {
     #[tokio::test]
     async fn rollback_dry_run_emits_json_response() {
         let (ctx, stdout) = json_ctx();
-        rollback(&ctx, None, None, 2, false, true).await.unwrap();
+        rollback(&ctx, None, None, 2, false, true, true)
+            .await
+            .unwrap();
 
         let value = parse_json_output(&stdout);
         assert_is_api_response(&value);
@@ -820,7 +911,7 @@ mod tests {
     #[tokio::test]
     async fn drain_requires_worker_or_all_in_json_mode() {
         let (ctx, stdout) = json_ctx();
-        drain(&ctx, None, false, 10).await.unwrap();
+        drain(&ctx, None, false, 10, true).await.unwrap();
 
         let value = parse_json_output(&stdout);
         assert_is_api_response(&value);
@@ -836,7 +927,7 @@ mod tests {
     #[tokio::test]
     async fn drain_all_ok_even_when_no_workers_configured() {
         let (ctx, stdout) = json_ctx();
-        drain(&ctx, None, true, 10).await.unwrap();
+        drain(&ctx, None, true, 10, true).await.unwrap();
 
         let value = parse_json_output(&stdout);
         assert_is_api_response(&value);
@@ -856,20 +947,22 @@ mod tests {
         let ctx = plain_ctx();
 
         deploy(
-            &ctx, None, 2, None, 0, false, false, true, false, 0, true, false, None, None,
+            &ctx, None, 2, None, 0, false, false, true, false, 0, true, false, None, None, true,
         )
         .await
         .unwrap();
 
-        rollback(&ctx, None, None, 2, false, true).await.unwrap();
+        rollback(&ctx, None, None, 2, false, true, true)
+            .await
+            .unwrap();
         status(&ctx, Some("definitely-missing-worker".to_string()), false)
             .await
             .unwrap();
         verify(&ctx, Some("definitely-missing-worker".to_string()))
             .await
             .unwrap();
-        drain(&ctx, None, false, 10).await.unwrap();
-        drain(&ctx, None, true, 10).await.unwrap();
+        drain(&ctx, None, false, 10, true).await.unwrap();
+        drain(&ctx, None, true, 10, true).await.unwrap();
         history(&ctx, 5, None).await.unwrap();
     }
 }

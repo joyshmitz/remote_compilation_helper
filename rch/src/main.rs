@@ -809,6 +809,10 @@ Use 'rch workers list' to monitor the drain progress."#)]
     Drain {
         /// Worker ID to drain
         worker: String,
+
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
 
     /// Enable a worker (resume accepting jobs)
@@ -845,6 +849,9 @@ Use 'rch workers enable css' to bring the worker back online."#)]
         /// Drain active builds before fully disabling
         #[arg(long)]
         drain: bool,
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
     /// Deploy rch-wkr binary to remote workers
     DeployBinary {
@@ -1032,7 +1039,11 @@ enum HookAction {
     /// Install the Claude Code hook
     Install,
     /// Uninstall the hook
-    Uninstall,
+    Uninstall {
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
     /// Test the hook with a sample command
     Test,
     /// Show hook status
@@ -1044,7 +1055,7 @@ impl HookAction {
     fn as_str(&self) -> &'static str {
         match self {
             HookAction::Install => "install",
-            HookAction::Uninstall => "uninstall",
+            HookAction::Uninstall { .. } => "uninstall",
             HookAction::Test => "test",
             HookAction::Status => "status",
         }
@@ -1163,6 +1174,9 @@ enum FleetAction {
         /// Write deployment audit log to file
         #[arg(long)]
         audit_log: Option<PathBuf>,
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
 
     /// Rollback to previous version
@@ -1187,6 +1201,9 @@ enum FleetAction {
         /// Show planned actions without executing
         #[arg(long)]
         dry_run: bool,
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
 
     /// Show fleet deployment status
@@ -1227,6 +1244,9 @@ enum FleetAction {
         /// Timeout in seconds (default: 120)
         #[arg(long, default_value = "120")]
         timeout: u64,
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
 
     /// Show deployment history
@@ -1590,7 +1610,7 @@ fn handle_schema_request(command: &Option<Commands>) -> Result<()> {
             serde_json::to_string_pretty(&schema)?
         }
         Some(Commands::Hook { action }) => match action {
-            HookAction::Install | HookAction::Uninstall | HookAction::Status => {
+            HookAction::Install | HookAction::Uninstall { .. } | HookAction::Status => {
                 let schema = schema_for!(HookActionResponse);
                 serde_json::to_string_pretty(&schema)?
             }
@@ -2014,8 +2034,8 @@ async fn handle_workers(action: WorkersAction, ctx: &OutputContext) -> Result<()
         WorkersAction::Benchmark => {
             commands::workers_benchmark(ctx).await?;
         }
-        WorkersAction::Drain { worker } => {
-            commands::workers_drain(&worker, ctx).await?;
+        WorkersAction::Drain { worker, yes } => {
+            commands::workers_drain(&worker, yes, ctx).await?;
         }
         WorkersAction::Enable { worker } => {
             commands::workers_enable(&worker, ctx).await?;
@@ -2024,8 +2044,9 @@ async fn handle_workers(action: WorkersAction, ctx: &OutputContext) -> Result<()
             worker,
             reason,
             drain,
+            yes,
         } => {
-            commands::workers_disable(&worker, reason, drain, ctx).await?;
+            commands::workers_disable(&worker, reason, drain, yes, ctx).await?;
         }
         WorkersAction::DeployBinary {
             worker,
@@ -2109,8 +2130,8 @@ async fn handle_hook(action: HookAction, ctx: &OutputContext) -> Result<()> {
         HookAction::Install => {
             commands::hook_install(ctx)?;
         }
-        HookAction::Uninstall => {
-            commands::hook_uninstall(ctx)?;
+        HookAction::Uninstall { yes } => {
+            commands::hook_uninstall(yes, ctx)?;
         }
         HookAction::Test => {
             commands::hook_test(ctx).await?;
@@ -2244,6 +2265,7 @@ async fn handle_fleet(action: FleetAction, ctx: &OutputContext) -> Result<()> {
             resume,
             version,
             audit_log,
+            yes,
         } => {
             fleet::deploy(
                 ctx,
@@ -2260,6 +2282,7 @@ async fn handle_fleet(action: FleetAction, ctx: &OutputContext) -> Result<()> {
                 resume,
                 version,
                 audit_log,
+                yes,
             )
             .await
         }
@@ -2269,14 +2292,16 @@ async fn handle_fleet(action: FleetAction, ctx: &OutputContext) -> Result<()> {
             parallel,
             verify,
             dry_run,
-        } => fleet::rollback(ctx, worker, to_version, parallel, verify, dry_run).await,
+            yes,
+        } => fleet::rollback(ctx, worker, to_version, parallel, verify, dry_run, yes).await,
         FleetAction::Status { worker, watch } => fleet::status(ctx, worker, watch).await,
         FleetAction::Verify { worker } => fleet::verify(ctx, worker).await,
         FleetAction::Drain {
             worker,
             all,
             timeout,
-        } => fleet::drain(ctx, worker, all, timeout).await,
+            yes,
+        } => fleet::drain(ctx, worker, all, timeout, yes).await,
         FleetAction::History { limit, worker } => fleet::history(ctx, limit, worker).await,
     }
 }
@@ -2741,7 +2766,7 @@ mod tests {
         let cli = Cli::try_parse_from(["rch", "workers", "drain", "css"]).unwrap();
         match cli.command {
             Some(Commands::Workers {
-                action: WorkersAction::Drain { worker },
+                action: WorkersAction::Drain { worker, .. },
             }) => {
                 assert_eq!(worker, "css");
             }
@@ -3085,7 +3110,7 @@ mod tests {
         let cli = Cli::try_parse_from(["rch", "hook", "uninstall"]).unwrap();
         match cli.command {
             Some(Commands::Hook {
-                action: HookAction::Uninstall,
+                action: HookAction::Uninstall { .. },
             }) => {}
             _ => panic!("Expected hook uninstall command"),
         }

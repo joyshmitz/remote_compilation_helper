@@ -74,78 +74,7 @@ const EXIT_TEST_FAILURES: i32 = 101;
 /// Exit code = 128 + signal number (e.g., 137 = 128 + 9 = SIGKILL).
 const EXIT_SIGNAL_BASE: i32 = 128;
 
-// ============================================================================
-// Sensitive Data Masking
-// ============================================================================
-
-/// Mask sensitive patterns in a command string before logging.
-///
-/// This prevents accidental exposure of API keys, passwords, and tokens
-/// that may be present in environment variables or command arguments.
-fn mask_sensitive_command(cmd: &str) -> String {
-    // Patterns to mask (case-insensitive matching would be better, but this is simple)
-    let patterns = [
-        // Environment variable patterns
-        ("CARGO_REGISTRY_TOKEN=", "CARGO_REGISTRY_TOKEN=***"),
-        ("GITHUB_TOKEN=", "GITHUB_TOKEN=***"),
-        ("GH_TOKEN=", "GH_TOKEN=***"),
-        ("DATABASE_URL=", "DATABASE_URL=***"),
-        ("DB_PASSWORD=", "DB_PASSWORD=***"),
-        ("API_KEY=", "API_KEY=***"),
-        ("API_SECRET=", "API_SECRET=***"),
-        ("SECRET_KEY=", "SECRET_KEY=***"),
-        ("PASSWORD=", "PASSWORD=***"),
-        ("PASS=", "PASS=***"),
-        ("TOKEN=", "TOKEN=***"),
-        ("AUTH_TOKEN=", "AUTH_TOKEN=***"),
-        ("ACCESS_TOKEN=", "ACCESS_TOKEN=***"),
-        ("PRIVATE_KEY=", "PRIVATE_KEY=***"),
-        ("AWS_SECRET_ACCESS_KEY=", "AWS_SECRET_ACCESS_KEY=***"),
-        ("AWS_ACCESS_KEY_ID=", "AWS_ACCESS_KEY_ID=***"),
-        ("STRIPE_SECRET_KEY=", "STRIPE_SECRET_KEY=***"),
-        ("OPENAI_API_KEY=", "OPENAI_API_KEY=***"),
-        ("ANTHROPIC_API_KEY=", "ANTHROPIC_API_KEY=***"),
-        // Command-line argument patterns (--token, --password, etc.)
-        ("--token ", "--token ***"),
-        ("--token=", "--token=***"),
-        ("--password ", "--password ***"),
-        ("--password=", "--password=***"),
-        ("--api-key ", "--api-key ***"),
-        ("--api-key=", "--api-key=***"),
-        ("--secret ", "--secret ***"),
-        ("--secret=", "--secret=***"),
-    ];
-
-    let mut result = cmd.to_string();
-    for (pattern, replacement) in patterns {
-        // Loop to handle multiple occurrences of the same pattern
-        // Track search position to avoid infinite loop (replacement contains pattern)
-        let mut search_start = 0;
-        while search_start < result.len() {
-            let Some(start) = result[search_start..].find(pattern) else {
-                break;
-            };
-            let abs_start = search_start + start;
-            let value_start = abs_start + pattern.len();
-            // Find end of value (next unquoted space or end of string)
-            let rest = &result[value_start..];
-            let value_end = rest
-                .find(|c: char| c.is_whitespace())
-                .map(|i| value_start + i)
-                .unwrap_or(result.len());
-
-            // Replace the value portion
-            let prefix = &result[..abs_start];
-            let suffix = &result[value_end..];
-            result = format!("{}{}{}", prefix, replacement, suffix);
-
-            // Move past the replacement to avoid re-matching
-            search_start = abs_start + replacement.len();
-        }
-    }
-
-    result
-}
+use rch_common::util::mask_sensitive_command;
 
 /// Run the hook, reading from stdin and writing to stdout.
 pub async fn run_hook() -> anyhow::Result<()> {
@@ -2650,6 +2579,21 @@ mod tests {
         }
     }
 
+    struct ConfigOverrideGuard;
+
+    impl ConfigOverrideGuard {
+        fn set(config: rch_common::RchConfig) -> Self {
+            crate::config::set_test_config_override(Some(config));
+            Self
+        }
+    }
+
+    impl Drop for ConfigOverrideGuard {
+        fn drop(&mut self) {
+            crate::config::set_test_config_override(None);
+        }
+    }
+
     async fn spawn_mock_daemon(socket_path: &str, response: SelectionResponse) {
         let _ = std::fs::remove_file(socket_path);
         let listener = UnixListener::bind(socket_path).expect("Failed to bind mock socket");
@@ -3239,6 +3183,11 @@ mod tests {
         let _lock = test_lock().lock().await;
         // Disable mock mode to test real fail-open behavior
         mock::set_mock_enabled_override(Some(false));
+
+        let mut config = rch_common::RchConfig::default();
+        config.general.socket_path = "/tmp/rch-test-no-daemon.sock".to_string();
+        let _ = std::fs::remove_file(&config.general.socket_path);
+        let _config_guard = ConfigOverrideGuard::set(config);
 
         // If hook input is invalid JSON, should allow (fail-open)
         // This tests the run_hook behavior implicitly through process_hook

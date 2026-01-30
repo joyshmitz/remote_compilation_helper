@@ -1,9 +1,14 @@
 //! Shared helper functions for RCH commands.
 
-use crate::error::SshError;
-use rch_common::{RequiredRuntime, WorkerConfig};
-use std::path::PathBuf;
+use crate::error::{DaemonError, SshError};
+use anyhow::{Context, Result};
+use directories::ProjectDirs;
+use rch_common::{RequiredRuntime, WorkerConfig, WorkerId};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+#[cfg(unix)]
+use tokio::net::UnixStream;
 
 // ============================================================================
 // Path helpers
@@ -406,4 +411,161 @@ mod tests {
         assert_eq!(urlencoding_encode("hello world"), "hello%20world");
         assert_eq!(urlencoding_encode("a/b?c=d"), "a%2Fb%3Fc%3Dd");
     }
+}
+
+// ============================================================================
+// Config directory helpers
+// ============================================================================
+
+/// Get the RCH configuration directory.
+///
+/// Uses XDG-compliant paths via the directories crate.
+pub fn config_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(dir) = test_config_dir_override() {
+        return Some(dir);
+    }
+    ProjectDirs::from("com", "rch", "rch").map(|dirs| dirs.config_dir().to_path_buf())
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CONFIG_DIR_OVERRIDE: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn test_config_dir_override() -> Option<PathBuf> {
+    TEST_CONFIG_DIR_OVERRIDE.with(|override_path| override_path.borrow().clone())
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_config_dir_override(path: Option<PathBuf>) {
+    TEST_CONFIG_DIR_OVERRIDE.with(|override_path| *override_path.borrow_mut() = path);
+}
+
+// ============================================================================
+// Workers configuration helpers
+// ============================================================================
+
+/// Load workers from configuration file.
+///
+/// Returns an empty vector if no workers are configured. Does not print
+/// any messages - callers should handle the empty case appropriately.
+pub fn load_workers_from_config() -> Result<Vec<WorkerConfig>> {
+    let config_path = config_dir()
+        .map(|d| d.join("workers.toml"))
+        .context("Could not determine config directory")?;
+
+    if !config_path.exists() {
+        return Ok(vec![]);
+    }
+
+    let contents = std::fs::read_to_string(&config_path)
+        .with_context(|| format!("Failed to read {:?}", config_path))?;
+
+    // Parse the TOML - expect [[workers]] array
+    let parsed: toml::Value =
+        toml::from_str(&contents).with_context(|| format!("Failed to parse {:?}", config_path))?;
+
+    let empty_array = vec![];
+    let workers_array = parsed
+        .get("workers")
+        .and_then(|w| w.as_array())
+        .unwrap_or(&empty_array);
+
+    let mut workers = Vec::new();
+    for entry in workers_array {
+        let enabled = entry
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        if !enabled {
+            continue;
+        }
+
+        let id = entry
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let host = entry
+            .get("host")
+            .and_then(|v| v.as_str())
+            .unwrap_or("localhost");
+        let user = entry
+            .get("user")
+            .and_then(|v| v.as_str())
+            .unwrap_or("ubuntu");
+        let identity_file = entry
+            .get("identity_file")
+            .and_then(|v| v.as_str())
+            .unwrap_or("~/.ssh/id_rsa");
+        let total_slots = entry
+            .get("total_slots")
+            .and_then(|v| v.as_integer())
+            .unwrap_or(8) as u32;
+        let priority = entry
+            .get("priority")
+            .and_then(|v| v.as_integer())
+            .unwrap_or(100) as u32;
+        let tags: Vec<String> = entry
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        workers.push(WorkerConfig {
+            id: WorkerId::new(id),
+            host: host.to_string(),
+            user: user.to_string(),
+            identity_file: identity_file.to_string(),
+            total_slots,
+            priority,
+            tags,
+        });
+    }
+
+    Ok(workers)
+}
+
+// ============================================================================
+// Daemon communication helpers
+// ============================================================================
+
+/// Helper to send command to daemon socket.
+#[cfg(not(unix))]
+pub async fn send_daemon_command(_command: &str) -> Result<String> {
+    Err(PlatformError::UnixOnly {
+        feature: "daemon commands".to_string(),
+    })?
+}
+
+/// Helper to send command to daemon socket.
+#[cfg(unix)]
+pub async fn send_daemon_command(command: &str) -> Result<String> {
+    let config = crate::config::load_config()?;
+    let expanded = shellexpand::tilde(&config.general.socket_path);
+    let socket_path = Path::new(expanded.as_ref());
+    if !socket_path.exists() {
+        return Err(DaemonError::SocketNotFound {
+            socket_path: socket_path.display().to_string(),
+        }
+        .into());
+    }
+
+    let stream = UnixStream::connect(socket_path).await?;
+    let (reader, mut writer) = stream.into_split();
+
+    writer.write_all(command.as_bytes()).await?;
+    writer.flush().await?;
+
+    let mut reader = BufReader::new(reader);
+    let mut response = String::new();
+    reader.read_to_string(&mut response).await?;
+
+    Ok(response)
 }

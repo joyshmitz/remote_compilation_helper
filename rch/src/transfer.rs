@@ -24,70 +24,6 @@ use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
 // =============================================================================
-// Sensitive Data Masking
-// =============================================================================
-
-/// Mask sensitive patterns in a command string before logging.
-///
-/// Prevents accidental exposure of API keys, passwords, and tokens.
-fn mask_sensitive_in_log(cmd: &str) -> String {
-    // Quick check: if no '=' sign, no env vars to mask
-    if !cmd.contains('=') && !cmd.contains("--token") && !cmd.contains("--password") {
-        return cmd.to_string();
-    }
-
-    let sensitive_prefixes = [
-        "TOKEN=",
-        "PASSWORD=",
-        "SECRET=",
-        "API_KEY=",
-        "PASS=",
-        "CARGO_REGISTRY_TOKEN=",
-        "GITHUB_TOKEN=",
-        "DATABASE_URL=",
-        "AWS_SECRET_ACCESS_KEY=",
-        "AWS_ACCESS_KEY_ID=",
-        "--token ",
-        "--token=",
-        "--password ",
-        "--password=",
-        "--api-key ",
-        "--api-key=",
-        "--secret ",
-        "--secret=",
-    ];
-
-    let mut result = cmd.to_string();
-    for prefix in sensitive_prefixes {
-        // Loop to handle multiple occurrences of the same pattern
-        // Track search position to avoid infinite loop (replacement contains pattern)
-        let mut search_start = 0;
-        let replacement = format!("{}***", prefix);
-        while search_start < result.len() {
-            let Some(start) = result[search_start..].find(prefix) else {
-                break;
-            };
-            let abs_start = search_start + start;
-            let value_start = abs_start + prefix.len();
-            let rest = &result[value_start..];
-            let value_end = rest
-                .find(|c: char| c.is_whitespace())
-                .map(|i| value_start + i)
-                .unwrap_or(result.len());
-            result = format!(
-                "{}{}{}",
-                &result[..abs_start],
-                replacement,
-                &result[value_end..]
-            );
-            // Move past the replacement to avoid re-matching
-            search_start = abs_start + replacement.len();
-        }
-    }
-    result
-}
-
-// =============================================================================
 // Retry Logic (bd-x1ek)
 // =============================================================================
 
@@ -934,7 +870,7 @@ impl TransferPipeline {
         info!(
             "Executing on {}: {}",
             worker.id,
-            mask_sensitive_in_log(command)
+            rch_common::util::mask_sensitive_command(command)
         );
 
         let mut client = SshClient::new(worker.clone(), self.ssh_options.clone());

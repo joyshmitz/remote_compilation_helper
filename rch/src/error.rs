@@ -890,6 +890,143 @@ impl std::fmt::Display for ArtifactRetrievalWarning {
 }
 
 // =============================================================================
+// Platform Errors
+// =============================================================================
+
+/// Errors related to platform-specific functionality.
+///
+/// Error code range: RCH-E600 to RCH-E610
+#[derive(Error, Diagnostic, Debug)]
+pub enum PlatformError {
+    /// Feature requires Unix-like platform (Linux, macOS, BSD).
+    #[error("{feature} is only supported on Unix-like platforms (Linux, macOS, BSD)")]
+    #[diagnostic(
+        code("RCH-E600"),
+        help(
+            "This feature requires Unix domain sockets or other Unix-specific APIs.\nConsider using WSL2 on Windows."
+        )
+    )]
+    UnixOnly { feature: String },
+
+    /// Feature requires Windows platform.
+    #[error("{feature} is only supported on Windows")]
+    #[diagnostic(
+        code("RCH-E601"),
+        help("This feature uses Windows-specific APIs that are not available on Unix.")
+    )]
+    WindowsOnly { feature: String },
+
+    /// Platform-specific binary not found.
+    #[error("{binary} binary not found for platform {platform}")]
+    #[diagnostic(
+        code("RCH-E602"),
+        help("Build the binary with: cargo build --release -p {binary}")
+    )]
+    BinaryNotFound { binary: String, platform: String },
+
+    /// Unix domain socket not supported on this platform.
+    #[error("Unix domain socket communication is not supported on this platform")]
+    #[diagnostic(
+        code("RCH-E603"),
+        help(
+            "Daemon communication requires Unix domain sockets.\nOn Windows, consider using WSL2 or a TCP-based alternative."
+        )
+    )]
+    UnixSocketUnsupported,
+}
+
+// =============================================================================
+// Binary/Deployment Errors
+// =============================================================================
+
+/// Errors related to binary deployment and version management.
+///
+/// Error code range: RCH-E800 to RCH-E810
+#[derive(Error, Diagnostic, Debug)]
+pub enum BinaryError {
+    /// Binary not found at expected location.
+    #[error("Could not find {name} binary")]
+    #[diagnostic(code("RCH-E800"), help("Build with: cargo build --release -p {name}"))]
+    NotFound { name: String },
+
+    /// Binary version check failed.
+    #[error("Binary at {path} returned non-zero exit code for --version")]
+    #[diagnostic(
+        code("RCH-E801"),
+        help("The binary may be corrupted or incompatible. Try rebuilding it.")
+    )]
+    VersionCheckFailed { path: String },
+
+    /// Binary version mismatch.
+    #[error("Version mismatch for {name}: local={local_version}, remote={remote_version}")]
+    #[diagnostic(code("RCH-E802"), help("Update the binary with: rch fleet deploy"))]
+    VersionMismatch {
+        name: String,
+        local_version: String,
+        remote_version: String,
+    },
+
+    /// Binary deployment failed.
+    #[error("Failed to deploy {name} to {worker_id}: {reason}")]
+    #[diagnostic(
+        code("RCH-E803"),
+        help("Check SSH connectivity: rch workers probe {worker_id}")
+    )]
+    DeploymentFailed {
+        name: String,
+        worker_id: String,
+        reason: String,
+    },
+}
+
+// =============================================================================
+// Fleet Management Errors
+// =============================================================================
+
+/// Errors related to fleet management operations.
+///
+/// Error code range: RCH-E700 to RCH-E710
+#[derive(Error, Diagnostic, Debug)]
+pub enum FleetError {
+    /// Fleet deployment failed.
+    #[error("Fleet deployment failed: {reason}")]
+    #[diagnostic(
+        code("RCH-E700"),
+        help("Check worker connectivity: rch workers probe --all")
+    )]
+    DeploymentFailed { reason: String },
+
+    /// Fleet rollback failed.
+    #[error("Fleet rollback failed for {worker_id}: {reason}")]
+    #[diagnostic(
+        code("RCH-E701"),
+        help("Check worker status and try manual intervention if needed")
+    )]
+    RollbackFailed { worker_id: String, reason: String },
+
+    /// No backup available for rollback.
+    #[error("No backup available for rollback on {worker_id}")]
+    #[diagnostic(code("RCH-E702"), help("Deploy a fresh binary: rch fleet deploy"))]
+    NoBackupAvailable { worker_id: String },
+
+    /// Fleet health check failed.
+    #[error("Fleet health check failed: {reason}")]
+    #[diagnostic(
+        code("RCH-E703"),
+        help("Check individual workers: rch workers probe --all")
+    )]
+    HealthCheckFailed { reason: String },
+
+    /// Unexpected output format from fleet operation.
+    #[error("Unexpected output format: {context}")]
+    #[diagnostic(
+        code("RCH-E704"),
+        help("The remote command returned unexpected output. Check worker compatibility.")
+    )]
+    UnexpectedOutput { context: String },
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -1609,7 +1746,8 @@ user = "test"
     #[test]
     fn test_error_categories_cover_ranges() {
         // Config: E001-E012, SSH: E100-E113, Worker: E200-E210,
-        // Daemon: E300-E308, Build: E400-E409, Hook: E500-E510
+        // Daemon: E300-E308, Build: E400-E409, Hook: E500-E510,
+        // Platform: E600-E610, Fleet: E700-E710, Binary: E800-E810
         let expected_ranges = [
             ("Config", 1, 12),
             ("SSH", 100, 113),
@@ -1617,6 +1755,9 @@ user = "test"
             ("Daemon", 300, 308),
             ("Build", 400, 409),
             ("Hook/Update", 500, 510),
+            ("Platform", 600, 610),
+            ("Fleet", 700, 710),
+            ("Binary", 800, 810),
         ];
 
         // Just verify the documented ranges are consistent

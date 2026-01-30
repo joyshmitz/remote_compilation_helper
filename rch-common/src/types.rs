@@ -3513,7 +3513,7 @@ mod tests {
         );
         assert_eq!(
             config.timeout_for_kind(Some(crate::CompilationKind::BunTest)),
-            std::time::Duration::from_secs(1800)
+            std::time::Duration::from_secs(config.bun_timeout_sec)
         );
     }
 

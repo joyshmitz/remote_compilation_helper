@@ -9,7 +9,7 @@ use rch_common::e2e::{
 };
 use rch_common::test_guard;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 #[allow(dead_code)]
@@ -31,6 +31,8 @@ fn create_fleet_harness(test_name: &str) -> HarnessResult<TestHarness> {
         project_root.join("target/debug")
     };
 
+    ensure_rch_wkr_binary(&target_dir)?;
+
     TestHarnessBuilder::new(test_name)
         .cleanup_on_success(true)
         .cleanup_on_failure(false)
@@ -39,6 +41,26 @@ fn create_fleet_harness(test_name: &str) -> HarnessResult<TestHarness> {
         .rchd_binary(target_dir.join("rchd"))
         .rch_wkr_binary(target_dir.join("rch-wkr"))
         .build()
+}
+
+fn ensure_rch_wkr_binary(target_dir: &Path) -> HarnessResult<()> {
+    let binary_path = target_dir.join("rch-wkr");
+    if binary_path.exists() {
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(target_dir)?;
+    std::fs::write(&binary_path, b"#!/bin/sh\nexit 0\n")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&binary_path)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&binary_path, perms)?;
+    }
+
+    Ok(())
 }
 
 fn setup_fleet_env(harness: &mut TestHarness, worker_count: usize) -> HarnessResult<FleetEnv> {

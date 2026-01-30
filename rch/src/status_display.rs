@@ -7,6 +7,8 @@
 #![allow(dead_code)]
 
 use crate::error::DaemonError;
+#[cfg(not(unix))]
+use crate::error::PlatformError;
 use crate::status_types::{DaemonFullStatusResponse, extract_json_body, format_duration};
 use crate::ui::theme::Theme;
 use anyhow::{Context, Result};
@@ -63,7 +65,9 @@ pub async fn query_daemon_full_status() -> Result<DaemonFullStatusResponse> {
 /// Send a status command to the daemon.
 #[cfg(not(unix))]
 async fn send_status_command() -> Result<String> {
-    anyhow::bail!("daemon status is only supported on Unix-like platforms");
+    Err(PlatformError::UnixOnly {
+        feature: "daemon status".to_string(),
+    })?
 }
 
 #[cfg(unix)]
@@ -132,7 +136,9 @@ pub async fn drain_worker(worker_id: &str) -> Result<()> {
 /// Send a worker drain command to the daemon (non-Unix fallback).
 #[cfg(not(unix))]
 pub async fn drain_worker(_worker_id: &str) -> Result<()> {
-    anyhow::bail!("worker drain is only supported on Unix-like platforms");
+    Err(PlatformError::UnixOnly {
+        feature: "worker drain".to_string(),
+    })?
 }
 
 /// Send a worker enable command to the daemon.
@@ -174,7 +180,9 @@ pub async fn enable_worker(worker_id: &str) -> Result<()> {
 /// Send a worker enable command to the daemon (non-Unix fallback).
 #[cfg(not(unix))]
 pub async fn enable_worker(_worker_id: &str) -> Result<()> {
-    anyhow::bail!("worker enable is only supported on Unix-like platforms");
+    Err(PlatformError::UnixOnly {
+        feature: "worker enable".to_string(),
+    })?
 }
 
 /// Cancel a build via the daemon (SIGTERM).
@@ -215,7 +223,9 @@ pub async fn cancel_build(build_id: &str) -> Result<()> {
 /// Cancel a build via the daemon (non-Unix fallback).
 #[cfg(not(unix))]
 pub async fn cancel_build(_build_id: &str) -> Result<()> {
-    anyhow::bail!("build cancel is only supported on Unix-like platforms");
+    Err(PlatformError::UnixOnly {
+        feature: "build cancel".to_string(),
+    })?
 }
 
 /// Force kill a build via the daemon (SIGKILL).
@@ -256,7 +266,9 @@ pub async fn force_kill_build(build_id: &str) -> Result<()> {
 /// Force kill a build via the daemon (non-Unix fallback).
 #[cfg(not(unix))]
 pub async fn force_kill_build(_build_id: &str) -> Result<()> {
-    anyhow::bail!("build force kill is only supported on Unix-like platforms");
+    Err(PlatformError::UnixOnly {
+        feature: "build force kill".to_string(),
+    })?
 }
 
 /// Render comprehensive status from daemon API response.
