@@ -9,6 +9,7 @@ use crate::fleet::progress::{DeployPhase, FleetProgress};
 use crate::ui::context::OutputContext;
 use crate::ui::theme::StatusIndicator;
 use anyhow::{bail, Context, Result};
+use rch_common::mock;
 use rch_common::{WorkerConfig, WorkerId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -421,6 +422,12 @@ impl FleetExecutor {
 
 /// Test SSH connectivity to a worker.
 async fn test_ssh_connectivity(worker: &WorkerConfig) -> Result<()> {
+    // Mock mode: skip actual SSH
+    if mock::is_mock_enabled() || mock::is_mock_worker(worker) {
+        debug!("Mock mode: skipping SSH connectivity test for {}", worker.id);
+        return Ok(());
+    }
+
     let mut cmd = Command::new("ssh");
     cmd.arg("-o").arg("BatchMode=yes");
     cmd.arg("-o").arg("ConnectTimeout=10");
@@ -441,6 +448,12 @@ async fn test_ssh_connectivity(worker: &WorkerConfig) -> Result<()> {
 
 /// Create the remote directory for rch-wkr binary.
 async fn create_remote_directory(worker: &WorkerConfig) -> Result<()> {
+    // Mock mode: skip actual SSH
+    if mock::is_mock_enabled() || mock::is_mock_worker(worker) {
+        debug!("Mock mode: skipping mkdir for {}", worker.id);
+        return Ok(());
+    }
+
     let target = format!("{}@{}", worker.user, worker.host);
     let remote_dir = ".local/bin";
 

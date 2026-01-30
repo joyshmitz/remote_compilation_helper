@@ -8579,7 +8579,6 @@ fn format_build_duration(secs: u64) -> String {
 /// This spawns `rch` in hook mode (no arguments) and passes a sample
 /// PreToolUse hook input, showing what the hook would do in response.
 pub async fn hook_test(ctx: &OutputContext) -> Result<()> {
-    use rch_common::{HookInput, ToolInput, HookOutput};
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
     use tokio::process::Command;
@@ -8590,21 +8589,21 @@ pub async fn hook_test(ctx: &OutputContext) -> Result<()> {
         println!("Testing RCH hook with sample 'cargo build' command...\n");
     }
 
-    // Create a sample hook input
-    let sample_input = HookInput {
-        tool_name: "Bash".to_string(),
-        tool_input: ToolInput {
-            command: "cargo build".to_string(),
-            description: Some("Build the Rust project".to_string()),
+    // Create a sample hook input as JSON directly
+    // (HookInput doesn't derive Serialize, so we build JSON manually)
+    let input_json = serde_json::json!({
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "cargo build",
+            "description": "Build the Rust project"
         },
-        session_id: Some("hook-test-session".to_string()),
-    };
-
-    let input_json = serde_json::to_string_pretty(&sample_input)?;
+        "session_id": "hook-test-session"
+    });
+    let input_json_str = serde_json::to_string_pretty(&input_json)?;
 
     if !ctx.is_json() {
         println!("Input (sent to hook):");
-        println!("{}\n", input_json);
+        println!("{}\n", input_json_str);
     }
 
     // Find the rch binary
@@ -8620,7 +8619,7 @@ pub async fn hook_test(ctx: &OutputContext) -> Result<()> {
 
     // Write input to stdin
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(input_json.as_bytes()).await?;
+        stdin.write_all(input_json_str.as_bytes()).await?;
         stdin.shutdown().await?;
     }
 
@@ -8635,26 +8634,27 @@ pub async fn hook_test(ctx: &OutputContext) -> Result<()> {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     if ctx.is_json() {
-        let result = if stdout.is_empty() {
-            // Empty stdout = allow
-            serde_json::json!({
-                "input": sample_input,
-                "decision": "allow",
-                "output": null,
-                "exit_code": output.status.code(),
-                "stderr": if stderr.is_empty() { None } else { Some(stderr.trim()) }
-            })
+        let output_json: Option<serde_json::Value> = if stdout.is_empty() {
+            None
         } else {
-            // Parse the hook output
-            let hook_output: Option<HookOutput> = serde_json::from_str(stdout.trim()).ok();
-            serde_json::json!({
-                "input": sample_input,
-                "decision": if hook_output.as_ref().map(|o| matches!(o, HookOutput::Deny(_))).unwrap_or(false) { "deny" } else { "allow" },
-                "output": hook_output,
-                "exit_code": output.status.code(),
-                "stderr": if stderr.is_empty() { None } else { Some(stderr.trim()) }
-            })
+            serde_json::from_str(stdout.trim()).ok()
         };
+
+        let decision = if stdout.is_empty() {
+            "allow"
+        } else if output_json.as_ref().map(|v| v.get("hookSpecificOutput").is_some()).unwrap_or(false) {
+            "deny"
+        } else {
+            "allow"
+        };
+
+        let result = serde_json::json!({
+            "input": input_json,
+            "decision": decision,
+            "output": output_json,
+            "exit_code": output.status.code(),
+            "stderr": if stderr.is_empty() { None::<&str> } else { Some(stderr.trim()) }
+        });
         let _ = ctx.json(&result);
         return Ok(());
     }
@@ -8673,27 +8673,28 @@ pub async fn hook_test(ctx: &OutputContext) -> Result<()> {
         println!("  - No workers are available");
         println!("  - The command wasn't classified as a compilation command");
     } else {
-        // Parse the hook output
-        match serde_json::from_str::<HookOutput>(stdout.trim()) {
-            Ok(HookOutput::Deny(deny)) => {
-                println!(
-                    "{} Hook decision: DENY (remote execution)",
-                    StatusIndicator::Success.display(style)
-                );
-                println!("\nThe hook intercepted the command for remote execution.");
-                println!("Modified command: {}", deny.command);
-                if let Some(output) = &deny.output {
-                    if !output.is_empty() {
-                        println!("Hook output: {}", output);
+        // Parse the hook output as JSON
+        match serde_json::from_str::<serde_json::Value>(stdout.trim()) {
+            Ok(output_json) => {
+                // Check if it's a deny response (has hookSpecificOutput)
+                if let Some(hook_output) = output_json.get("hookSpecificOutput") {
+                    println!(
+                        "{} Hook decision: DENY (intercepted)",
+                        StatusIndicator::Success.display(style)
+                    );
+                    println!("\nThe hook intercepted the command.");
+
+                    if let Some(reason) = hook_output.get("permissionDecisionReason").and_then(|r| r.as_str()) {
+                        println!("Reason: {}", reason);
                     }
+                } else {
+                    // Empty object {} = allow
+                    println!(
+                        "{} Hook decision: ALLOW (local execution)",
+                        StatusIndicator::Success.display(style)
+                    );
+                    println!("\nThe command would run locally.");
                 }
-            }
-            Ok(HookOutput::Allow) => {
-                println!(
-                    "{} Hook decision: ALLOW (local execution)",
-                    StatusIndicator::Success.display(style)
-                );
-                println!("\nThe command would run locally.");
             }
             Err(e) => {
                 println!(
