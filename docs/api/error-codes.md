@@ -6,12 +6,14 @@ This document provides a comprehensive reference for all error codes used in the
 
 | Range     | Category    | Description                          |
 |-----------|-------------|--------------------------------------|
-| E001-E099 | Config      | Configuration and setup errors       |
-| E100-E199 | Network     | Network and SSH connectivity         |
-| E200-E299 | Worker      | Worker selection and management      |
-| E300-E399 | Build       | Compilation and build errors         |
-| E400-E499 | Transfer    | File transfer and sync errors        |
-| E500-E599 | Internal    | Internal/unexpected errors           |
+| E001-E012 | Config      | Configuration and setup errors       |
+| E100-E113 | SSH         | SSH connectivity and authentication  |
+| E200-E210 | Worker      | Worker selection and management      |
+| E300-E308 | Daemon      | Daemon operations and communication  |
+| E400-E409 | Transfer    | Build execution and file transfer    |
+| E500-E510 | Hook/Update | Hook installation and self-update    |
+
+> **Note:** Error codes are defined in `rch/src/error.rs`. Some sections below may use legacy code numbers that differ from the actual implementation. See the source code for authoritative error codes.
 
 ## Configuration Errors (E001-E099)
 

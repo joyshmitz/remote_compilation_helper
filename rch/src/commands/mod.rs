@@ -13,7 +13,7 @@ pub mod types;
 // Re-export types for backward compatibility
 pub use types::*;
 
-use crate::error::{ConfigError, SshError};
+use crate::error::{ConfigError, DaemonError, SshError, WorkerError};
 use crate::status_types::{
     ActiveBuildFromApi, DaemonFullStatusResponse, SelfTestHistoryResponse, SelfTestRunResponse,
     SelfTestStatusResponse, SpeedScoreHistoryResponseFromApi, SpeedScoreListResponseFromApi,
@@ -1906,7 +1906,15 @@ async fn get_remote_version(worker: &WorkerConfig) -> Result<String> {
     let output = cmd.output().await.context("Failed to SSH to worker")?;
 
     if !output.status.success() {
-        bail!("rch-wkr not found on remote");
+        return Err(SshError::BinaryNotFound {
+            host: worker.host.clone(),
+            binary: "rch-wkr".to_string(),
+            install_hint: format!(
+                "Deploy the worker binary with: rch workers deploy {}",
+                worker.id
+            ),
+        }
+        .into());
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2682,7 +2690,12 @@ async fn install_remote_toolchain(worker: &WorkerConfig, toolchain: &str) -> Res
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("rustup install failed: {}", stderr.trim());
+        return Err(SshError::ToolchainInstallFailed {
+            host: worker.host.clone(),
+            toolchain: toolchain.to_string(),
+            message: stderr.trim().to_string(),
+        }
+        .into());
     }
 
     Ok(())
@@ -5341,7 +5354,12 @@ fn config_set_at(config_path: &Path, key: &str, value: &str, ctx: &OutputContext
         "compilation.confidence_threshold" => {
             let threshold = parse_f64(value, key)?;
             if !(0.0..=1.0).contains(&threshold) {
-                bail!("compilation.confidence_threshold must be between 0.0 and 1.0");
+                return Err(ConfigError::InvalidValue {
+                    field: "compilation.confidence_threshold".to_string(),
+                    reason: format!("value {} is out of range", threshold),
+                    suggestion: "Use a value between 0.0 and 1.0".to_string(),
+                }
+                .into());
             }
             config.compilation.confidence_threshold = threshold;
         }
@@ -5351,7 +5369,12 @@ fn config_set_at(config_path: &Path, key: &str, value: &str, ctx: &OutputContext
         "transfer.compression_level" => {
             let level = parse_u32(value, key)?;
             if level > 19 {
-                bail!("transfer.compression_level must be between 0 and 19");
+                return Err(ConfigError::InvalidValue {
+                    field: "transfer.compression_level".to_string(),
+                    reason: format!("value {} exceeds maximum of 19", level),
+                    suggestion: "Use a value between 0 and 19".to_string(),
+                }
+                .into());
             }
             config.transfer.compression_level = level;
         }
@@ -5382,7 +5405,12 @@ fn config_set_at(config_path: &Path, key: &str, value: &str, ctx: &OutputContext
     }
 
     if config.general.force_local && config.general.force_remote {
-        bail!("general.force_local and general.force_remote cannot both be true");
+        return Err(ConfigError::InvalidValue {
+            field: "general.force_local / general.force_remote".to_string(),
+            reason: "both options cannot be true simultaneously".to_string(),
+            suggestion: "Set only one of force_local or force_remote to true".to_string(),
+        }
+        .into());
     }
 
     let contents = toml::to_string_pretty(&config)?;
@@ -7098,7 +7126,10 @@ async fn send_daemon_command(command: &str) -> Result<String> {
     let expanded = shellexpand::tilde(&config.general.socket_path);
     let socket_path = Path::new(expanded.as_ref());
     if !socket_path.exists() {
-        bail!("Daemon socket not found at {:?}", socket_path);
+        return Err(DaemonError::SocketNotFound {
+            socket_path: socket_path.display().to_string(),
+        }
+        .into());
     }
 
     let stream = UnixStream::connect(socket_path).await?;
@@ -8190,7 +8221,10 @@ async fn queue_follow(ctx: &OutputContext) -> Result<()> {
     let expanded = shellexpand::tilde(&config.general.socket_path);
     let socket_path = Path::new(expanded.as_ref());
     if !socket_path.exists() {
-        bail!("Daemon socket not found at {:?}", socket_path);
+        return Err(DaemonError::SocketNotFound {
+            socket_path: socket_path.display().to_string(),
+        }
+        .into());
     }
 
     let stream = UnixStream::connect(socket_path).await?;

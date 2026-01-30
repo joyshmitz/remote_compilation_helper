@@ -965,13 +965,6 @@ mod tests {
     // =========================================================================
 
     #[test]
-    #[ignore = "WorkerError::ConnectionFailed variant pending in bd-3b94"]
-    fn test_worker_connection_failed_includes_remediation() {
-        // Test body temporarily disabled - enum variant pending in bd-3b94
-        todo!("Re-enable when WorkerError::ConnectionFailed is added")
-    }
-
-    #[test]
     fn test_worker_unhealthy_includes_worker_id() {
         let err = WorkerError::Unhealthy {
             worker_id: "slow-worker".to_string(),
@@ -985,13 +978,6 @@ mod tests {
         assert!(formatted.contains("slow-worker"));
         assert!(formatted.contains("rch workers probe"));
         assert_eq!(code, Some("RCH-E202".to_string()));
-    }
-
-    #[test]
-    #[ignore = "WorkerError::NotFound variant pending in bd-3b94"]
-    fn test_worker_not_found() {
-        // Test body temporarily disabled - enum variant pending in bd-3b94
-        todo!("Re-enable when WorkerError::NotFound is added")
     }
 
     // =========================================================================
@@ -1111,13 +1097,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "DaemonError::PortInUse variant pending in bd-3b94"]
-    fn test_daemon_port_in_use_suggests_alternative() {
-        // Test body temporarily disabled - enum variant pending in bd-3b94
-        todo!("Re-enable when DaemonError::PortInUse is added")
-    }
-
-    #[test]
     fn test_daemon_connection_failed() {
         let socket_path = rch_common::default_socket_path();
         let err = DaemonError::ConnectionFailed {
@@ -1152,20 +1131,6 @@ mod tests {
             "Should mention project root: {formatted}"
         );
         assert_eq!(code, Some("RCH-E409".to_string()));
-    }
-
-    #[test]
-    #[ignore = "TransferError::RsyncFailed variant pending in bd-3b94"]
-    fn test_rsync_failed_includes_exit_code() {
-        // Test body temporarily disabled - enum variant pending in bd-3b94
-        todo!("Re-enable when TransferError::RsyncFailed is added")
-    }
-
-    #[test]
-    #[ignore = "TransferError::SshAuthFailed variant pending in bd-3b94"]
-    fn test_ssh_auth_failed_includes_key_hint() {
-        // Test body temporarily disabled - enum variant pending in bd-3b94
-        todo!("Re-enable when TransferError::SshAuthFailed is added")
     }
 
     #[test]

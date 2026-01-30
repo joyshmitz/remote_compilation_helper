@@ -10,6 +10,20 @@ For full remediation details and the JSON error envelope, see `docs/api/error-co
 - Prefer using the structured remediation list when present (`ApiError.remediation`).
 - If you need a single next step, use `suggested_action` below.
 
+## Error Code Ranges (Authoritative)
+
+| Range     | Category    | Source Type in Code       |
+|-----------|-------------|---------------------------|
+| E001-E012 | Config      | `ConfigError`             |
+| E100-E113 | SSH         | `SshError`                |
+| E200-E210 | Worker      | `WorkerError`             |
+| E300-E308 | Daemon      | `DaemonError`             |
+| E400-E409 | Transfer    | `TransferError`           |
+| E500-E505 | Hook        | `HookError`               |
+| E506-E510 | Update      | `UpdateError`             |
+
+> **Note:** The table below may include legacy codes. For authoritative definitions, see `rch/src/error.rs`.
+
 ## Registry
 
 | code | category | variant | meaning | suggested_action |
