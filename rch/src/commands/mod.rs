@@ -9539,7 +9539,7 @@ pub async fn init_wizard(yes: bool, skip_test: bool, ctx: &OutputContext) -> Res
 mod tests {
     use super::helpers::{
         extract_version_numbers, major_minor_version, major_version, major_version_mismatch,
-        rust_version_mismatch, ssh_key_path,
+        rust_version_mismatch,
     };
     use super::*;
     use crate::status_types::format_bytes;
