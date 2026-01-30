@@ -586,9 +586,156 @@ build_from_source() {
 }
 
 download_binaries() {
-    # Return 1 to signal failure - caller handles fallback to source build
-    warn "Binary downloads not yet available."
-    return 1
+    # Try to download pre-built binaries first
+    # If not available, automatically fall back to building from source
+
+    info "Checking for pre-built binaries..."
+
+    # Try to fetch the latest release
+    local release_url="${GITHUB_API}/releases/latest"
+    local release_info
+    release_info=$(curl -sL --connect-timeout 10 "$release_url" 2>/dev/null || echo "")
+
+    if [[ -z "$release_info" ]] || ! echo "$release_info" | grep -q '"tag_name"'; then
+        warn "No pre-built binaries available yet"
+        info "Falling back to building from source..."
+        clone_and_build_from_source
+        return
+    fi
+
+    # Check if there are assets for our platform
+    local asset_name="rch-${TARGET}.tar.gz"
+    if ! echo "$release_info" | grep -q "$asset_name"; then
+        warn "No pre-built binary for $TARGET"
+        info "Falling back to building from source..."
+        clone_and_build_from_source
+        return
+    fi
+
+    # Download and install the binary
+    local tag_name
+    tag_name=$(echo "$release_info" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
+    local download_url="https://github.com/${GITHUB_REPO}/releases/download/${tag_name}/${asset_name}"
+
+    TEMP_DIR=$(mktemp -d)
+    trap 'rm -rf "$TEMP_DIR"; cleanup_lock' EXIT
+
+    info "Downloading $asset_name..."
+    if ! curl -fsSL $PROXY_ARGS "$download_url" -o "$TEMP_DIR/$asset_name" 2>/dev/null; then
+        warn "Download failed"
+        info "Falling back to building from source..."
+        clone_and_build_from_source
+        return
+    fi
+
+    # Extract and install
+    info "Extracting binaries..."
+    tar -xzf "$TEMP_DIR/$asset_name" -C "$TEMP_DIR"
+
+    if [[ "$MODE" == "worker" ]]; then
+        if [[ -f "$TEMP_DIR/$WORKER_BIN" ]]; then
+            install -m 755 "$TEMP_DIR/$WORKER_BIN" "$INSTALL_DIR/$WORKER_BIN"
+            success "Installed $WORKER_BIN"
+        else
+            warn "Worker binary not in release"
+            info "Falling back to building from source..."
+            clone_and_build_from_source
+            return
+        fi
+    else
+        for binary in "$HOOK_BIN" "$DAEMON_BIN"; do
+            if [[ -f "$TEMP_DIR/$binary" ]]; then
+                install -m 755 "$TEMP_DIR/$binary" "$INSTALL_DIR/$binary"
+                success "Installed $binary"
+            else
+                warn "$binary not in release"
+                info "Falling back to building from source..."
+                clone_and_build_from_source
+                return
+            fi
+        done
+    fi
+
+    success "Binary installation complete"
+}
+
+clone_and_build_from_source() {
+    # Clone the repository and build from source
+    # This is the fallback when pre-built binaries aren't available
+
+    ensure_command git
+
+    # Check for Rust toolchain
+    if ! command_exists cargo; then
+        info "Rust toolchain not found. Installing via rustup..."
+        if ! install_rust_toolchain; then
+            die "Failed to install Rust. Please install manually: https://rustup.rs"
+        fi
+    fi
+
+    TEMP_DIR=$(mktemp -d)
+    trap 'rm -rf "$TEMP_DIR"; cleanup_lock' EXIT
+
+    info "Cloning repository..."
+    if $USE_GUM; then
+        spin "Cloning RCH repository..." git clone --depth 1 "$REPO_URL" "$TEMP_DIR/rch"
+    else
+        git clone --depth 1 "$REPO_URL" "$TEMP_DIR/rch"
+    fi
+
+    cd "$TEMP_DIR/rch"
+
+    # Build release binaries
+    if $USE_GUM; then
+        spin "Building release binaries (this may take a few minutes)..." cargo build --release
+    else
+        info "Building release binaries (this may take a few minutes)..."
+        cargo build --release
+    fi
+
+    # Install binaries
+    local target_dir="$TEMP_DIR/rch/target/release"
+
+    if [[ "$MODE" == "worker" ]]; then
+        if [[ -f "$target_dir/$WORKER_BIN" ]]; then
+            install -m 755 "$target_dir/$WORKER_BIN" "$INSTALL_DIR/$WORKER_BIN"
+            success "Installed $WORKER_BIN"
+        else
+            die "Worker binary not found after build"
+        fi
+    else
+        for binary in "$HOOK_BIN" "$DAEMON_BIN"; do
+            if [[ -f "$target_dir/$binary" ]]; then
+                install -m 755 "$target_dir/$binary" "$INSTALL_DIR/$binary"
+                success "Installed $binary"
+            else
+                die "Binary not found after build: $binary"
+            fi
+        done
+    fi
+
+    success "Build from source complete"
+}
+
+install_rust_toolchain() {
+    # Install Rust via rustup if not present
+    if command_exists rustup; then
+        info "rustup found, ensuring nightly toolchain..."
+        rustup toolchain install nightly 2>/dev/null || true
+        return 0
+    fi
+
+    info "Installing Rust via rustup..."
+    if curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly; then
+        # Source cargo env for current session
+        if [[ -f "$HOME/.cargo/env" ]]; then
+            source "$HOME/.cargo/env"
+        fi
+        success "Rust installed successfully"
+        return 0
+    else
+        return 1
+    fi
 }
 
 
