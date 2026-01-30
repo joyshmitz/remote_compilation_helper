@@ -955,4 +955,101 @@ mod tests {
     fn min_disk_space_constant() {
         assert_eq!(MIN_DISK_SPACE_MB, 500);
     }
+
+    // ========================
+    // Parallel execution constants
+    // ========================
+
+    #[test]
+    fn max_concurrent_queries_constant() {
+        assert_eq!(MAX_CONCURRENT_QUERIES, 10);
+    }
+
+    #[test]
+    fn default_query_timeout_constant() {
+        assert_eq!(DEFAULT_QUERY_TIMEOUT_SECS, 30);
+    }
+
+    // ========================
+    // get_fleet_status tests
+    // ========================
+
+    #[tokio::test]
+    async fn test_fleet_status_empty_workers_returns_empty() {
+        use crate::ui::test_utils::OutputCapture;
+        use rch_common::FleetConfig;
+
+        let capture = OutputCapture::json();
+        let ctx = capture.context();
+        let config = FleetConfig::default();
+        let workers: Vec<&rch_common::WorkerConfig> = vec![];
+
+        let result = get_fleet_status(&workers, &*ctx, &config).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    // ========================
+    // WorkerStatus creation tests
+    // ========================
+
+    #[test]
+    fn worker_status_unreachable() {
+        let status = WorkerStatus {
+            worker_id: "test".to_string(),
+            reachable: false,
+            healthy: false,
+            version: None,
+            issues: vec!["Unreachable".to_string()],
+        };
+        assert!(!status.reachable);
+        assert!(!status.healthy);
+        assert!(status.version.is_none());
+        assert!(!status.issues.is_empty());
+    }
+
+    #[test]
+    fn worker_status_healthy() {
+        let status = WorkerStatus {
+            worker_id: "healthy-worker".to_string(),
+            reachable: true,
+            healthy: true,
+            version: Some("1.0.0".to_string()),
+            issues: vec![],
+        };
+        assert!(status.reachable);
+        assert!(status.healthy);
+        assert_eq!(status.version, Some("1.0.0".to_string()));
+        assert!(status.issues.is_empty());
+    }
+
+    #[test]
+    fn worker_status_reachable_but_unhealthy() {
+        let status = WorkerStatus {
+            worker_id: "degraded-worker".to_string(),
+            reachable: true,
+            healthy: false,
+            version: Some("0.9.0".to_string()),
+            issues: vec!["Low disk space: 100MB".to_string()],
+        };
+        assert!(status.reachable);
+        assert!(!status.healthy);
+        assert!(status.version.is_some());
+        assert!(!status.issues.is_empty());
+    }
+
+    #[test]
+    fn worker_status_timeout_issue() {
+        let timeout_secs = 30;
+        let status = WorkerStatus {
+            worker_id: "slow-worker".to_string(),
+            reachable: false,
+            healthy: false,
+            version: None,
+            issues: vec![format!("Query timed out after {}s", timeout_secs)],
+        };
+        assert!(!status.reachable);
+        assert!(!status.healthy);
+        assert!(status.issues[0].contains("timed out"));
+    }
 }
