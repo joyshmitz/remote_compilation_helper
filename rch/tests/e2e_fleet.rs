@@ -183,9 +183,7 @@ fn test_fleet_rollback_no_backup() {
         .info("TEST START: test_fleet_rollback_no_backup");
 
     // In mock mode, no backups exist - verify rollback correctly reports this
-    let result = harness
-        .exec_rch(["fleet", "rollback", "--json"])
-        .unwrap();
+    let result = harness.exec_rch(["fleet", "rollback", "--json"]).unwrap();
     harness
         .assert_success(&result, "rch fleet rollback --json")
         .unwrap();
