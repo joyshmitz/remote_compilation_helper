@@ -8,8 +8,14 @@
 //! - Command handlers are implemented directly in this module
 
 // Sub-modules
+mod daemon;
 mod helpers;
 pub mod types;
+
+// Re-export daemon commands for backward compatibility
+pub use daemon::{
+    daemon_logs, daemon_reload, daemon_restart, daemon_start, daemon_status, daemon_stop,
+};
 
 // Re-export types for backward compatibility
 pub use types::*;
@@ -1144,11 +1150,16 @@ pub async fn workers_benchmark(ctx: &OutputContext) -> Result<()> {
 // WorkerActionResponse is defined in types.rs
 
 /// Drain a worker (requires daemon).
-pub async fn workers_drain(worker_id: &str, ctx: &OutputContext) -> Result<()> {
+///
+/// If `skip_confirm` is false, prompts for confirmation before draining.
+pub async fn workers_drain(worker_id: &str, skip_confirm: bool, ctx: &OutputContext) -> Result<()> {
+    use dialoguer::Confirm;
+
     let style = ctx.theme();
 
     // Check if daemon is running
-    if !Path::new(&default_socket_path()).exists() {
+    let socket_path_str = default_socket_path();
+    if !Path::new(&socket_path_str).exists() {
         if ctx.is_json() {
             let _ = ctx.json(&ApiResponse::<()>::err(
                 "workers drain",
@@ -1166,6 +1177,27 @@ pub async fn workers_drain(worker_id: &str, ctx: &OutputContext) -> Result<()> {
             );
         }
         return Ok(());
+    }
+
+    // Prompt for confirmation unless skipped or in JSON mode
+    if !skip_confirm && !ctx.is_json() {
+        println!(
+            "{} This will stop routing new jobs to worker {}.",
+            StatusIndicator::Warning.display(style),
+            style.highlight(worker_id)
+        );
+        println!(
+            "  {} Active builds will be allowed to complete.",
+            StatusIndicator::Info.display(style)
+        );
+        let confirmed = Confirm::new()
+            .with_prompt("Drain this worker?")
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            println!("{} Aborted.", StatusIndicator::Info.display(style));
+            return Ok(());
+        }
     }
 
     // Send drain command to daemon
@@ -1312,12 +1344,17 @@ pub async fn workers_enable(worker_id: &str, ctx: &OutputContext) -> Result<()> 
 }
 
 /// Disable a worker (requires daemon).
+///
+/// If `skip_confirm` is false, prompts for confirmation before disabling.
 pub async fn workers_disable(
     worker_id: &str,
     reason: Option<String>,
     drain_first: bool,
+    skip_confirm: bool,
     ctx: &OutputContext,
 ) -> Result<()> {
+    use dialoguer::Confirm;
+
     let style = ctx.theme();
 
     if !Path::new(&default_socket_path()).exists() {
@@ -1334,6 +1371,34 @@ pub async fn workers_disable(
             );
         }
         return Ok(());
+    }
+
+    // Prompt for confirmation unless skipped or in JSON mode
+    if !skip_confirm && !ctx.is_json() {
+        println!(
+            "{} This will mark worker {} as offline.",
+            StatusIndicator::Warning.display(style),
+            style.highlight(worker_id)
+        );
+        if drain_first {
+            println!(
+                "  {} Active builds will complete before disabling.",
+                StatusIndicator::Info.display(style)
+            );
+        } else {
+            println!(
+                "  {} The worker will be immediately excluded from job assignment.",
+                StatusIndicator::Info.display(style)
+            );
+        }
+        let confirmed = Confirm::new()
+            .with_prompt("Disable this worker?")
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            println!("{} Aborted.", StatusIndicator::Info.display(style));
+            return Ok(());
+        }
     }
 
     // Build the request URL with optional reason and drain flag
@@ -3195,727 +3260,6 @@ impl ProbeInfo {
             self.cores, self.memory_gb, self.disk_gb, self.arch, rust
         )
     }
-}
-
-// =============================================================================
-// Daemon Commands
-// =============================================================================
-
-/// Check daemon status.
-pub fn daemon_status(ctx: &OutputContext) -> Result<()> {
-    let socket_path_str = default_socket_path();
-    let socket_path = Path::new(&socket_path_str);
-    let style = ctx.theme();
-
-    let running = socket_path.exists();
-    let uptime_seconds = if running {
-        std::fs::metadata(socket_path)
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.elapsed().ok())
-            .map(|d| d.as_secs())
-    } else {
-        None
-    };
-
-    if ctx.is_json() {
-        let _ = ctx.json(&ApiResponse::ok(
-            "daemon status",
-            DaemonStatusResponse {
-                running,
-                socket_path: socket_path_str.clone(),
-                uptime_seconds,
-            },
-        ));
-        return Ok(());
-    }
-
-    println!("{}", style.format_header("RCH Daemon Status"));
-    println!();
-
-    if running {
-        println!(
-            "  {} {} {}",
-            style.key("Status"),
-            style.muted(":"),
-            StatusIndicator::Success.with_label(style, "Running")
-        );
-        println!(
-            "  {} {} {}",
-            style.key("Socket"),
-            style.muted(":"),
-            style.value(&socket_path_str)
-        );
-
-        if let Some(secs) = uptime_seconds {
-            let hours = secs / 3600;
-            let mins = (secs % 3600) / 60;
-            println!(
-                "  {} {} ~{}h {}m",
-                style.key("Uptime"),
-                style.muted(":"),
-                hours,
-                mins
-            );
-        }
-    } else {
-        println!(
-            "  {} {} {}",
-            style.key("Status"),
-            style.muted(":"),
-            StatusIndicator::Error.with_label(style, "Not running")
-        );
-        println!(
-            "  {} {} {} {}",
-            style.key("Socket"),
-            style.muted(":"),
-            style.muted(&socket_path_str),
-            style.muted("(not found)")
-        );
-        println!();
-        println!(
-            "  {} Start with: {}",
-            StatusIndicator::Info.display(style),
-            style.highlight("rch daemon start")
-        );
-    }
-
-    Ok(())
-}
-
-// DaemonActionResponse is defined in types.rs
-
-/// Start the daemon.
-pub async fn daemon_start(ctx: &OutputContext) -> Result<()> {
-    let style = ctx.theme();
-    let socket_path_str = default_socket_path();
-    let socket_path = Path::new(&socket_path_str);
-
-    if socket_path.exists() {
-        if ctx.is_json() {
-            let _ = ctx.json(&ApiResponse::ok(
-                "daemon start",
-                DaemonActionResponse {
-                    action: "start".to_string(),
-                    success: false,
-                    socket_path: socket_path_str.clone(),
-                    message: Some("Daemon already running".to_string()),
-                },
-            ));
-        } else {
-            println!(
-                "{} Daemon appears to already be running.",
-                StatusIndicator::Warning.display(style)
-            );
-            println!(
-                "  {} {} {}",
-                style.key("Socket"),
-                style.muted(":"),
-                style.value(&socket_path_str)
-            );
-            println!(
-                "\n{} Use {} to restart it.",
-                StatusIndicator::Info.display(style),
-                style.highlight("rch daemon restart")
-            );
-        }
-        return Ok(());
-    }
-
-    // Check if rchd binary exists
-    let rchd_path = which_rchd();
-
-    if !ctx.is_json() {
-        println!("Starting RCH daemon...");
-    }
-    debug!("Using rchd binary: {:?}", rchd_path);
-
-    // Spawn rchd in background using nohup to detach from terminal
-    // This avoids needing unsafe code for setsid()
-    let mut cmd = Command::new("nohup");
-    cmd.arg(&rchd_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .stdin(Stdio::null())
-        .kill_on_drop(false);
-
-    match cmd.spawn() {
-        Ok(_child) => {
-            // Wait a moment for the socket to appear
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-            if socket_path.exists() {
-                if ctx.is_json() {
-                    let _ = ctx.json(&ApiResponse::ok(
-                        "daemon start",
-                        DaemonActionResponse {
-                            action: "start".to_string(),
-                            success: true,
-                            socket_path: socket_path_str.clone(),
-                            message: Some("Daemon started successfully".to_string()),
-                        },
-                    ));
-                } else {
-                    println!(
-                        "{}",
-                        StatusIndicator::Success.with_label(style, "Daemon started successfully.")
-                    );
-                    println!(
-                        "  {} {} {}",
-                        style.key("Socket"),
-                        style.muted(":"),
-                        style.value(&socket_path_str)
-                    );
-                }
-            } else if ctx.is_json() {
-                let _ = ctx.json(&ApiResponse::ok(
-                    "daemon start",
-                    DaemonActionResponse {
-                        action: "start".to_string(),
-                        success: false,
-                        socket_path: socket_path_str.clone(),
-                        message: Some("Process started but socket not found".to_string()),
-                    },
-                ));
-            } else {
-                println!(
-                    "{} Daemon process started but socket not found.",
-                    StatusIndicator::Warning.display(style)
-                );
-                println!(
-                    "  {} Check logs with: {}",
-                    StatusIndicator::Info.display(style),
-                    style.highlight("rch daemon logs")
-                );
-            }
-        }
-        Err(e) => {
-            if ctx.is_json() {
-                let _ = ctx.json(&ApiResponse::<()>::err(
-                    "daemon start",
-                    ApiError::internal(e.to_string()),
-                ));
-            } else {
-                println!(
-                    "{} Failed to start daemon: {}",
-                    StatusIndicator::Error.display(style),
-                    style.muted(&e.to_string())
-                );
-                println!(
-                    "\n{} Make sure {} is in your PATH or installed.",
-                    StatusIndicator::Info.display(style),
-                    style.highlight("rchd")
-                );
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Stop the daemon.
-///
-/// If `skip_confirm` is false and there are active builds, prompts for confirmation.
-pub async fn daemon_stop(skip_confirm: bool, ctx: &OutputContext) -> Result<()> {
-    use dialoguer::Confirm;
-
-    let style = ctx.theme();
-    let socket_path_str = default_socket_path();
-    let socket_path = Path::new(&socket_path_str);
-
-    if !socket_path.exists() {
-        if ctx.is_json() {
-            let _ = ctx.json(&ApiResponse::ok(
-                "daemon stop",
-                DaemonActionResponse {
-                    action: "stop".to_string(),
-                    success: true,
-                    socket_path: socket_path_str.clone(),
-                    message: Some("Daemon was not running".to_string()),
-                },
-            ));
-        } else {
-            println!(
-                "{} Daemon is not running {}",
-                StatusIndicator::Pending.display(style),
-                style.muted("(socket not found)")
-            );
-        }
-        return Ok(());
-    }
-
-    // Check for active builds and prompt for confirmation
-    if !skip_confirm
-        && !ctx.is_json()
-        && let Ok(response) = send_daemon_command("GET /status\n").await
-        && let Some(json) = extract_json_body(&response)
-        && let Ok(status) =
-            serde_json::from_str::<crate::status_types::DaemonFullStatusResponse>(json)
-    {
-        let active_count = status.active_builds.len();
-        if active_count > 0 {
-            println!(
-                "{} {} active build(s) will be interrupted.",
-                StatusIndicator::Warning.display(style),
-                style.highlight(&active_count.to_string())
-            );
-            let confirmed = Confirm::new()
-                .with_prompt("Stop the daemon anyway?")
-                .default(false)
-                .interact()?;
-            if !confirmed {
-                println!("{} Aborted.", StatusIndicator::Info.display(style));
-                return Ok(());
-            }
-        }
-    }
-
-    if !ctx.is_json() {
-        println!("Stopping RCH daemon...");
-    }
-
-    // Try graceful shutdown via socket
-    match send_daemon_command("POST /shutdown\n").await {
-        Ok(_) => {
-            // Wait for socket to disappear
-            for _ in 0..10 {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                if !socket_path.exists() {
-                    if ctx.is_json() {
-                        let _ = ctx.json(&ApiResponse::ok(
-                            "daemon stop",
-                            DaemonActionResponse {
-                                action: "stop".to_string(),
-                                success: true,
-                                socket_path: socket_path_str.clone(),
-                                message: Some("Daemon stopped".to_string()),
-                            },
-                        ));
-                    } else {
-                        println!(
-                            "{}",
-                            StatusIndicator::Success.with_label(style, "Daemon stopped.")
-                        );
-                    }
-                    return Ok(());
-                }
-            }
-            if ctx.is_json() {
-                let _ = ctx.json(&ApiResponse::ok(
-                    "daemon stop",
-                    DaemonActionResponse {
-                        action: "stop".to_string(),
-                        success: false,
-                        socket_path: socket_path_str.clone(),
-                        message: Some("Daemon may still be shutting down".to_string()),
-                    },
-                ));
-            } else {
-                println!(
-                    "{} Daemon may still be shutting down...",
-                    StatusIndicator::Warning.display(style)
-                );
-            }
-        }
-        Err(_) => {
-            if ctx.is_json() {
-                let _ = ctx.json(&ApiResponse::<()>::err(
-                    "daemon stop",
-                    ApiError::internal("Could not send shutdown command"),
-                ));
-            } else {
-                println!(
-                    "{} Could not send shutdown command.",
-                    StatusIndicator::Warning.display(style)
-                );
-                println!("Attempting to find and kill daemon process...");
-            }
-
-            // Try pkill
-            let output = Command::new("pkill").arg("-f").arg("rchd").output().await;
-
-            match output {
-                Ok(o) if o.status.success() => {
-                    // Remove stale socket
-                    let _ = std::fs::remove_file(socket_path);
-                    if ctx.is_json() {
-                        let _ = ctx.json(&ApiResponse::ok(
-                            "daemon stop",
-                            DaemonActionResponse {
-                                action: "stop".to_string(),
-                                success: true,
-                                socket_path: socket_path_str.clone(),
-                                message: Some("Daemon stopped via pkill".to_string()),
-                            },
-                        ));
-                    } else {
-                        println!(
-                            "{}",
-                            StatusIndicator::Success.with_label(style, "Daemon stopped.")
-                        );
-                    }
-                }
-                _ => {
-                    if ctx.is_json() {
-                        let _ = ctx.json(&ApiResponse::<()>::err(
-                            "daemon stop",
-                            ApiError::internal("Could not stop daemon"),
-                        ));
-                    } else {
-                        println!(
-                            "{} Could not stop daemon. You may need to kill it manually.",
-                            StatusIndicator::Error.display(style)
-                        );
-                        println!(
-                            "  {} Try: {}",
-                            StatusIndicator::Info.display(style),
-                            style.highlight("pkill -9 rchd")
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Restart the daemon.
-///
-/// If `skip_confirm` is false and there are active builds, prompts for confirmation.
-pub async fn daemon_restart(skip_confirm: bool, ctx: &OutputContext) -> Result<()> {
-    use dialoguer::Confirm;
-
-    let style = ctx.theme();
-
-    // Check for active builds and prompt for confirmation before restarting
-    let socket_path_str = default_socket_path();
-    let socket_path = Path::new(&socket_path_str);
-    if !skip_confirm
-        && !ctx.is_json()
-        && socket_path.exists()
-        && let Ok(response) = send_daemon_command("GET /status\n").await
-        && let Some(json) = extract_json_body(&response)
-        && let Ok(status) =
-            serde_json::from_str::<crate::status_types::DaemonFullStatusResponse>(json)
-    {
-        let active_count = status.active_builds.len();
-        if active_count > 0 {
-            println!(
-                "{} {} active build(s) will be interrupted.",
-                StatusIndicator::Warning.display(style),
-                style.highlight(&active_count.to_string())
-            );
-            let confirmed = Confirm::new()
-                .with_prompt("Restart the daemon anyway?")
-                .default(false)
-                .interact()?;
-            if !confirmed {
-                println!("{} Aborted.", StatusIndicator::Info.display(style));
-                return Ok(());
-            }
-        }
-    }
-
-    if !ctx.is_json() {
-        println!(
-            "{} Restarting RCH daemon...\n",
-            StatusIndicator::Info.display(style)
-        );
-    }
-    // Pass true for skip_confirm since we already prompted above
-    daemon_stop(true, ctx).await?;
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    daemon_start(ctx).await?;
-    Ok(())
-}
-
-// DaemonReloadResponse is defined in types.rs
-
-/// Reload daemon configuration without restart.
-pub async fn daemon_reload(ctx: &OutputContext) -> Result<()> {
-    let style = ctx.theme();
-
-    // Check if daemon is running
-    if !Path::new(&default_socket_path()).exists() {
-        if ctx.is_json() {
-            let _ = ctx.json(&ApiResponse::<()>::err(
-                "daemon reload",
-                ApiError::new(ErrorCode::InternalDaemonNotRunning, "Daemon is not running"),
-            ));
-        } else {
-            println!(
-                "{} Daemon is not running. Start it with {}",
-                StatusIndicator::Error.display(style),
-                style.highlight("rch daemon start")
-            );
-        }
-        return Ok(());
-    }
-
-    if !ctx.is_json() {
-        println!(
-            "{} Reloading daemon configuration...",
-            StatusIndicator::Info.display(style)
-        );
-    }
-
-    // Send reload command to daemon
-    match send_daemon_command("POST /reload\n").await {
-        Ok(response) => {
-            // Parse response JSON
-            if let Some(json) = response.strip_prefix("HTTP/1.1 200 OK\n\n") {
-                match serde_json::from_str::<serde_json::Value>(json) {
-                    Ok(value) => {
-                        let added = value["added"].as_u64().unwrap_or(0) as usize;
-                        let updated = value["updated"].as_u64().unwrap_or(0) as usize;
-                        let removed = value["removed"].as_u64().unwrap_or(0) as usize;
-                        let warnings: Vec<String> = value["warnings"]
-                            .as_array()
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|v| v.as_str().map(String::from))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-
-                        let has_changes = added > 0 || updated > 0 || removed > 0;
-
-                        if ctx.is_json() {
-                            let _ = ctx.json(&ApiResponse::ok(
-                                "daemon reload",
-                                DaemonReloadResponse {
-                                    success: true,
-                                    added,
-                                    updated,
-                                    removed,
-                                    warnings: warnings.clone(),
-                                    message: if has_changes {
-                                        Some(format!(
-                                            "Configuration reloaded: {} added, {} updated, {} removed",
-                                            added, updated, removed
-                                        ))
-                                    } else {
-                                        Some("No configuration changes detected".to_string())
-                                    },
-                                },
-                            ));
-                        } else {
-                            if has_changes {
-                                println!(
-                                    "{} Configuration reloaded",
-                                    StatusIndicator::Success.display(style)
-                                );
-                                println!(
-                                    "  {} workers added, {} updated, {} removed",
-                                    added, updated, removed
-                                );
-                            } else {
-                                println!(
-                                    "{} No configuration changes detected",
-                                    StatusIndicator::Info.display(style)
-                                );
-                            }
-
-                            for warning in &warnings {
-                                println!("{} {}", StatusIndicator::Warning.display(style), warning);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        if ctx.is_json() {
-                            let _ = ctx.json(&ApiResponse::<()>::err(
-                                "daemon reload",
-                                ApiError::internal(format!(
-                                    "Failed to parse reload response: {}",
-                                    e
-                                )),
-                            ));
-                        } else {
-                            println!(
-                                "{} Failed to parse reload response: {}",
-                                StatusIndicator::Error.display(style),
-                                e
-                            );
-                        }
-                    }
-                }
-            } else if response.contains("HTTP/1.1 500") {
-                let error_msg = response.lines().skip(2).collect::<Vec<_>>().join("\n");
-                if ctx.is_json() {
-                    let _ = ctx.json(&ApiResponse::<()>::err(
-                        "daemon reload",
-                        ApiError::internal(format!("Reload failed: {}", error_msg)),
-                    ));
-                } else {
-                    println!(
-                        "{} Reload failed: {}",
-                        StatusIndicator::Error.display(style),
-                        error_msg
-                    );
-                }
-            } else if ctx.is_json() {
-                let _ = ctx.json(&ApiResponse::<()>::err(
-                    "daemon reload",
-                    ApiError::internal("Unexpected response from daemon"),
-                ));
-            } else {
-                println!(
-                    "{} Unexpected response from daemon",
-                    StatusIndicator::Error.display(style)
-                );
-            }
-        }
-        Err(e) => {
-            if ctx.is_json() {
-                let _ = ctx.json(&ApiResponse::<()>::err(
-                    "daemon reload",
-                    ApiError::internal(format!("Failed to communicate with daemon: {}", e)),
-                ));
-            } else {
-                println!(
-                    "{} Failed to communicate with daemon: {}",
-                    StatusIndicator::Error.display(style),
-                    e
-                );
-            }
-        }
-    }
-
-    Ok(())
-}
-
-// DaemonLogsResponse is defined in types.rs
-
-/// Show daemon logs.
-pub fn daemon_logs(lines: usize, ctx: &OutputContext) -> Result<()> {
-    let style = ctx.theme();
-
-    // Try common log file locations first
-    let log_paths = vec![
-        PathBuf::from("/tmp/rchd.log"),
-        config_dir()
-            .map(|d| d.join("daemon.log"))
-            .unwrap_or_default(),
-        config_dir()
-            .map(|d| d.join("logs").join("daemon.log"))
-            .unwrap_or_default(),
-        dirs::cache_dir()
-            .map(|d| d.join("rch").join("daemon.log"))
-            .unwrap_or_default(),
-    ];
-
-    for path in &log_paths {
-        if path.exists() {
-            let content = std::fs::read_to_string(path)?;
-            let all_lines: Vec<&str> = content.lines().collect();
-            let start = all_lines.len().saturating_sub(lines);
-            let log_lines: Vec<String> = all_lines[start..].iter().map(|s| s.to_string()).collect();
-
-            if ctx.is_json() {
-                let _ = ctx.json(&ApiResponse::ok(
-                    "daemon logs",
-                    DaemonLogsResponse {
-                        log_file: Some(path.display().to_string()),
-                        lines: log_lines,
-                        found: true,
-                    },
-                ));
-            } else {
-                println!(
-                    "{} {} {}\n",
-                    style.key("Log file"),
-                    style.muted(":"),
-                    style.value(&path.display().to_string())
-                );
-
-                for line in &all_lines[start..] {
-                    println!("{}", line);
-                }
-            }
-
-            return Ok(());
-        }
-    }
-
-    // No log files found - try journald (for systemd service)
-    if let Ok(output) = std::process::Command::new("journalctl")
-        .args([
-            "--user",
-            "-u",
-            "rchd",
-            "-n",
-            &lines.to_string(),
-            "--no-pager",
-        ])
-        .output()
-        && output.status.success()
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let log_lines: Vec<String> = stdout.lines().map(|s| s.to_string()).collect();
-
-        // Check if we got actual log output (not just "No entries")
-        if !log_lines.is_empty()
-            && !stdout.contains("-- No entries --")
-            && !stdout.contains("No journal files were found")
-        {
-            if ctx.is_json() {
-                let _ = ctx.json(&ApiResponse::ok(
-                    "daemon logs",
-                    DaemonLogsResponse {
-                        log_file: Some("journalctl --user -u rchd".to_string()),
-                        lines: log_lines,
-                        found: true,
-                    },
-                ));
-            } else {
-                println!(
-                    "{} {} {}\n",
-                    style.key("Log source"),
-                    style.muted(":"),
-                    style.value("journalctl --user -u rchd")
-                );
-
-                for line in &log_lines {
-                    println!("{}", line);
-                }
-            }
-
-            return Ok(());
-        }
-    }
-
-    // No logs found anywhere
-    if ctx.is_json() {
-        let _ = ctx.json(&ApiResponse::ok(
-            "daemon logs",
-            DaemonLogsResponse {
-                log_file: None,
-                lines: vec![],
-                found: false,
-            },
-        ));
-    } else {
-        println!(
-            "{} No log file found.",
-            StatusIndicator::Warning.display(style)
-        );
-        println!("\n{}", style.key("Checked locations:"));
-        for path in &log_paths {
-            if !path.as_os_str().is_empty() {
-                println!("  {}", style.muted(&format!("• {}", path.display())));
-            }
-        }
-        println!("  {}", style.muted("• journalctl --user -u rchd"));
-        println!();
-        println!(
-            "{} If running via systemd, use: {}",
-            StatusIndicator::Info.display(style),
-            style.highlight("journalctl --user -u rchd -f")
-        );
-    }
-
-    Ok(())
 }
 
 // =============================================================================
@@ -6839,7 +6183,11 @@ pub fn hook_install(ctx: &OutputContext) -> Result<()> {
 }
 
 /// Uninstall the Claude Code hook.
-pub fn hook_uninstall(ctx: &OutputContext) -> Result<()> {
+///
+/// If `skip_confirm` is false, prompts for confirmation before uninstalling.
+pub fn hook_uninstall(skip_confirm: bool, ctx: &OutputContext) -> Result<()> {
+    use dialoguer::Confirm;
+
     let style = ctx.theme();
 
     let claude_config_dir = dirs::home_dir()
@@ -6865,6 +6213,26 @@ pub fn hook_uninstall(ctx: &OutputContext) -> Result<()> {
             );
         }
         return Ok(());
+    }
+
+    // Prompt for confirmation unless skipped or in JSON mode
+    if !skip_confirm && !ctx.is_json() {
+        println!(
+            "{} This will remove the RCH hook from Claude Code settings.",
+            StatusIndicator::Warning.display(style)
+        );
+        println!(
+            "  {} Compilation commands will no longer be offloaded to remote workers.",
+            StatusIndicator::Info.display(style)
+        );
+        let confirmed = Confirm::new()
+            .with_prompt("Remove RCH hook?")
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            println!("{} Aborted.", StatusIndicator::Info.display(style));
+            return Ok(());
+        }
     }
 
     let content = std::fs::read_to_string(&settings_path)?;
@@ -6975,30 +6343,14 @@ pub fn hook_status(ctx: &OutputContext) -> Result<()> {
     Ok(())
 }
 
-/// Helper to get rchd path.
-fn which_rchd() -> PathBuf {
-    // Try to find rchd in same directory as current executable
-    if let Ok(exe_path) = std::env::current_exe()
-        && let Some(dir) = exe_path.parent()
-    {
-        let rchd = dir.join("rchd");
-        if rchd.exists() {
-            return rchd;
-        }
-    }
-
-    // Fallback to path lookup
-    which::which("rchd").unwrap_or_else(|_| PathBuf::from("rchd"))
-}
-
 /// Helper to send command to daemon socket.
 #[cfg(not(unix))]
-async fn send_daemon_command(_command: &str) -> Result<String> {
+pub(crate) async fn send_daemon_command(_command: &str) -> Result<String> {
     bail!("daemon commands are only supported on Unix-like platforms");
 }
 
 #[cfg(unix)]
-async fn send_daemon_command(command: &str) -> Result<String> {
+pub(crate) async fn send_daemon_command(command: &str) -> Result<String> {
     let config = crate::config::load_config()?;
     let expanded = shellexpand::tilde(&config.general.socket_path);
     let socket_path = Path::new(expanded.as_ref());
