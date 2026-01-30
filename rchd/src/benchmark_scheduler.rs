@@ -2023,6 +2023,15 @@ Benchmark complete
     }
 
     #[test]
+    fn test_parse_benchmark_score_edge_cases() {
+        // Line too short after "score" - should not panic
+        assert_eq!(super::parse_benchmark_score(r#""score""#), None);
+        assert_eq!(super::parse_benchmark_score(r#""score":"#), None);
+        // Valid short format
+        assert_eq!(super::parse_benchmark_score(r#""score":5"#), Some(5.0));
+    }
+
+    #[test]
     fn test_is_retryable_error_timeouts() {
         assert!(super::is_retryable_error("connection timed out"));
         assert!(super::is_retryable_error("Timeout waiting for response"));

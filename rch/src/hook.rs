@@ -142,11 +142,11 @@ pub async fn run_hook() -> anyhow::Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
-    // Read all input from stdin
+    // Read input from stdin with a 10MB limit to prevent OOM
     let mut input = String::new();
-    for line in stdin.lock().lines() {
-        input.push_str(&line?);
-        input.push('\n');
+    {
+        use std::io::Read;
+        stdin.lock().take(10 * 1024 * 1024).read_to_string(&mut input)?;
     }
 
     let input = input.trim();
@@ -429,8 +429,13 @@ fn estimate_local_time_ms(remote_ms: u64, worker_speed_score: f64) -> Option<u64
     if remote_ms == 0 || worker_speed_score <= 0.0 {
         return None;
     }
-    let normalized = worker_speed_score.clamp(1.0, 100.0);
-    let estimate = (remote_ms as f64) * (100.0 / normalized);
+    // Don't clamp upper bound - allow scores > 100 (faster than baseline)
+    // Lower bound 1.0 prevents zero/negative logic issues
+    let normalized = worker_speed_score.max(1.0);
+    
+    // Formula: LocalTime = RemoteTime * (WorkerScore / BaselineScore)
+    // Example: Worker=200 (2x fast), Remote=5s. Local=5*(200/100)=10s.
+    let estimate = (remote_ms as f64) * (normalized / 100.0);
     Some(estimate.round().max(1.0) as u64)
 }
 

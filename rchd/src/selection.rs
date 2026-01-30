@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tracing::debug;
+use tracing::{debug, warn};
 
 const DEFAULT_NETWORK_SCORE: f64 = 0.5;
 const NETWORK_LATENCY_HALF_LIFE_MS: f64 = 200.0;

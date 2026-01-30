@@ -33,6 +33,34 @@ use uuid::Uuid;
 // Helper Functions
 // ============================================================================
 
+const MAX_LINE_SIZE: usize = 8192; // 8KB
+const MAX_BODY_SIZE: u64 = 10 * 1024 * 1024; // 10MB
+
+async fn read_line_with_limit<R: AsyncBufReadExt + Unpin>(
+    reader: &mut R,
+    buf: &mut String,
+    limit: usize,
+) -> Result<usize> {
+    let mut count = 0;
+    while count < limit {
+        let byte = reader.read_u8().await;
+        match byte {
+            Ok(b) => {
+                count += 1;
+                buf.push(b as char);
+                if b == b'\n' {
+                    return Ok(count);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(count);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(anyhow!("Request line exceeded limit of {} bytes", limit))
+}
+
 /// Format wait time in seconds to a human-readable string.
 fn format_wait_time(secs: u64) -> String {
     if secs < 60 {
@@ -481,7 +509,7 @@ pub async fn handle_connection(
     let mut line = String::new();
 
     // Read the request line
-    let n = reader.read_line(&mut line).await?;
+    let n = read_line_with_limit(&mut reader, &mut line, MAX_LINE_SIZE).await?;
     if n == 0 {
         return Ok(()); // Connection closed
     }
@@ -505,7 +533,7 @@ pub async fn handle_connection(
             // Use a short timeout to avoid blocking when no body is sent
             let mut body_line = String::new();
             if let Ok(Ok(_)) =
-                tokio::time::timeout(Duration::from_millis(50), reader.read_line(&mut body_line))
+                tokio::time::timeout(Duration::from_millis(50), read_line_with_limit(&mut reader, &mut body_line, MAX_LINE_SIZE))
                     .await
             {
                 let body = body_line.trim();
@@ -531,7 +559,7 @@ pub async fn handle_connection(
         Ok(ApiRequest::IngestTelemetry(source)) => {
             metrics::inc_requests("telemetry");
             let mut body = String::new();
-            reader.read_to_string(&mut body).await?;
+            reader.take(MAX_BODY_SIZE).read_to_string(&mut body).await?;
             let payload = body.trim();
 
             if payload.is_empty() {
@@ -566,7 +594,7 @@ pub async fn handle_connection(
         Ok(ApiRequest::TestRun) => {
             metrics::inc_requests("test-run");
             let mut body = String::new();
-            reader.read_to_string(&mut body).await?;
+            reader.take(MAX_BODY_SIZE).read_to_string(&mut body).await?;
             let payload = body.trim();
 
             if payload.is_empty() {
