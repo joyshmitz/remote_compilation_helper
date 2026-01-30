@@ -1538,6 +1538,7 @@ pub fn default_rust_artifact_patterns() -> Vec<String> {
     vec![
         "target/debug/**".to_string(),
         "target/release/**".to_string(),
+        "target/doc/**".to_string(),
         "target/.rustc_info.json".to_string(),
         "target/CACHEDIR.TAG".to_string(),
     ]

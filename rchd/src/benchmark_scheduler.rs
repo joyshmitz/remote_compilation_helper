@@ -398,30 +398,22 @@ impl BenchmarkScheduler {
     /// Detect performance drift by comparing current telemetry to benchmark-time conditions.
     async fn detect_drift(
         &self,
-        worker: &WorkerState,
+        _worker: &WorkerState,
         _score: &rch_telemetry::speedscore::SpeedScore,
     ) -> Option<f64> {
-        let config = worker.config.read().await;
-        let worker_id = config.id.to_string(); // Clone ID
-        let total_slots = config.total_slots;
-        drop(config); // Release lock
-
-        // Get current telemetry
-        let telemetry = self.telemetry.latest(&worker_id)?;
-
-        // Get the current load average (fifteen minute)
-        let current_load = telemetry.telemetry.cpu.load_average.fifteen_min;
-
-        // For now, use a simple heuristic:
-        // If load average is significantly different from what we'd expect
-        // for the number of cores, consider it drift.
-        let expected_load = total_slots as f64 * 0.3; // ~30% baseline
-        let drift = ((current_load - expected_load) / expected_load.max(0.1)).abs() * 100.0;
-
-        if drift > self.config.drift_threshold_pct {
-            return Some(drift);
-        }
-
+        // TODO: Implement robust drift detection (bd-219).
+        //
+        // The previous heuristic (comparing current load to a static 30% baseline)
+        // incorrectly flagged idle workers (0.0 load) as having 100% drift, causing
+        // constant re-benchmarking loops for idle fleets.
+        //
+        // Future implementation should:
+        // 1. Record load/conditions *during* the benchmark in SpeedScore.
+        // 2. Compare current conditions to those recorded conditions.
+        // 3. Only trigger if current conditions suggest the score is invalid
+        //    (e.g., load was low during benchmark, but is consistently high now).
+        //
+        // For now, we rely on `max_age` (periodic) and `ManualTrigger` for updates.
         None
     }
 

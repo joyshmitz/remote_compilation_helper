@@ -14,14 +14,19 @@
 //! The registry uses atomic writes with file locking to handle concurrent access.
 
 use crate::fleet::history::HistoryManager;
+use crate::fleet::ssh::SshExecutor;
 use crate::ui::context::OutputContext;
 use crate::ui::theme::StatusIndicator;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use futures::stream::{self, StreamExt};
 use rch_common::WorkerConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 // =============================================================================
@@ -41,6 +46,12 @@ pub const MAX_BACKUPS_PER_WORKER: usize = 3;
 
 /// Registry file name.
 const REGISTRY_FILE: &str = "registry.json";
+
+/// Timeout for rollback operations.
+const ROLLBACK_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Maximum concurrent rollback operations (cap to prevent resource exhaustion).
+const MAX_CONCURRENT_ROLLBACKS: usize = 10;
 
 /// Backup information for a worker's previous state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -273,69 +284,299 @@ impl RollbackManager {
     }
 
     /// Rollback workers to a specific or previous version.
+    ///
+    /// This function restores workers to a previous binary version by:
+    /// 1. Gracefully stopping any running rch-wkr process
+    /// 2. Looking up the backup for each worker (specific version or latest)
+    /// 3. Copying the backup binary back to the main rch-wkr location via SSH
+    /// 4. Optionally verifying the restored binary hash matches the backup record
+    /// 5. Verifying the version after restoration
+    /// 6. Restarting the rch-wkr service
+    ///
+    /// # Arguments
+    ///
+    /// * `workers` - List of workers to roll back
+    /// * `to_version` - Optional specific version to roll back to (uses previous if None)
+    /// * `parallelism` - Maximum number of concurrent rollback operations
+    /// * `verify` - If true, verify binary hash after restoration
+    /// * `ctx` - Output context for progress display
+    ///
+    /// # Returns
+    ///
+    /// A vector of `RollbackResult` for each worker, indicating success or failure.
     pub async fn rollback_workers(
         &self,
         workers: &[&WorkerConfig],
         to_version: Option<&str>,
-        _parallelism: usize,
-        _verify: bool,
+        parallelism: usize,
+        verify: bool,
         ctx: &OutputContext,
     ) -> Result<Vec<RollbackResult>> {
+        if workers.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Cap parallelism to prevent resource exhaustion
+        let max_concurrent = parallelism.min(MAX_CONCURRENT_ROLLBACKS).max(1);
+
+        info!(
+            workers = %workers.len(),
+            parallelism = %max_concurrent,
+            version = ?to_version,
+            verify = %verify,
+            "Starting parallel rollback operation"
+        );
+
+        let completed = Arc::new(AtomicUsize::new(0));
+        let total = workers.len();
+
+        // Clone to_version for use in async closures
+        let to_version_owned = to_version.map(|s| s.to_string());
+
+        // Process workers in parallel with bounded concurrency
+        let results: Vec<(usize, RollbackResult)> = stream::iter(workers.iter().enumerate())
+            .map(|(idx, worker)| {
+                let completed = completed.clone();
+                let to_version = to_version_owned.clone();
+
+                async move {
+                    let result = self
+                        .rollback_single_worker(worker, to_version.as_deref(), verify, ctx)
+                        .await;
+
+                    // Update progress
+                    let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                    debug!(
+                        progress = %format!("{}/{}", done, total),
+                        worker = %worker.id,
+                        success = %result.success,
+                        "Worker rollback complete"
+                    );
+
+                    (idx, result)
+                }
+            })
+            .buffer_unordered(max_concurrent)
+            .collect()
+            .await;
+
+        // Sort by original index to preserve order
+        let results: Vec<RollbackResult> = {
+            let mut sorted = results;
+            sorted.sort_by_key(|(idx, _)| *idx);
+            sorted.into_iter().map(|(_, result)| result).collect()
+        };
+
+        // Log summary
+        let success_count = results.iter().filter(|r| r.success).count();
+        let fail_count = results.len() - success_count;
+
+        info!(
+            total = %results.len(),
+            success = %success_count,
+            failed = %fail_count,
+            "Rollback operation complete"
+        );
+
+        Ok(results)
+    }
+
+    /// Perform a complete rollback for a single worker.
+    ///
+    /// This method handles the full rollback workflow:
+    /// 1. Determine target version (explicit or previous)
+    /// 2. Look up backup from registry
+    /// 3. Gracefully stop running rch-wkr
+    /// 4. Restore the backup binary
+    /// 5. Verify the restored version
+    /// 6. Restart rch-wkr
+    async fn rollback_single_worker(
+        &self,
+        worker: &WorkerConfig,
+        to_version: Option<&str>,
+        verify: bool,
+        ctx: &OutputContext,
+    ) -> RollbackResult {
         let style = ctx.theme();
-        let mut results = Vec::new();
+        let worker_id = &worker.id.0;
 
-        // Process workers (simplified - real impl would use parallelism)
-        for worker in workers {
-            let worker_id = &worker.id.0;
+        // Step 1: Determine target version
+        let target_version = match to_version {
+            Some(v) => v.to_string(),
+            None => match self.history.get_previous_version(worker_id) {
+                Ok(Some(v)) => v,
+                Ok(None) => {
+                    warn!(worker = %worker_id, "No previous version found for rollback");
+                    return RollbackResult {
+                        worker_id: worker_id.clone(),
+                        success: false,
+                        rolled_back_to: None,
+                        error: Some("No previous version found".to_string()),
+                    };
+                }
+                Err(e) => {
+                    error!(worker = %worker_id, error = %e, "Failed to get previous version");
+                    return RollbackResult {
+                        worker_id: worker_id.clone(),
+                        success: false,
+                        rolled_back_to: None,
+                        error: Some(format!("Failed to get previous version: {}", e)),
+                    };
+                }
+            },
+        };
 
-            // Determine target version
-            let target_version = if let Some(v) = to_version {
-                v.to_string()
-            } else {
-                match self.history.get_previous_version(worker_id)? {
-                    Some(v) => v,
-                    None => {
-                        results.push(RollbackResult {
+        // Step 2: Look up backup for this version
+        let backup = match self.get_backup(worker_id, &target_version) {
+            Some(b) => b,
+            None => {
+                // Try getting the latest backup if specific version not found
+                match self.get_latest_backup(worker_id) {
+                    Some(b) if b.version == target_version => b,
+                    _ => {
+                        error!(
+                            worker = %worker_id,
+                            version = %target_version,
+                            "No backup found for target version"
+                        );
+                        return RollbackResult {
                             worker_id: worker_id.clone(),
                             success: false,
                             rolled_back_to: None,
-                            error: Some("No previous version found".to_string()),
-                        });
-                        continue;
+                            error: Some(format!(
+                                "No backup found for version {}. Re-deploy the desired version instead.",
+                                target_version
+                            )),
+                        };
                     }
                 }
-            };
-
-            if !ctx.is_json() {
-                println!(
-                    "  {} Rolling back {} to v{}...",
-                    StatusIndicator::Pending.display(style),
-                    style.highlight(worker_id),
-                    target_version
-                );
             }
+        };
 
-            // Simulate rollback (real impl would SSH and restore)
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-            if !ctx.is_json() {
-                println!(
-                    "  {} {} rolled back to v{}",
-                    StatusIndicator::Success.display(style),
-                    style.highlight(worker_id),
-                    target_version
-                );
-            }
-
-            results.push(RollbackResult {
-                worker_id: worker_id.clone(),
-                success: true,
-                rolled_back_to: Some(target_version),
-                error: None,
-            });
+        if !ctx.is_json() {
+            println!(
+                "  {} Rolling back {} to v{}...",
+                StatusIndicator::Pending.display(style),
+                style.highlight(worker_id),
+                target_version
+            );
         }
 
-        Ok(results)
+        let ssh = SshExecutor::new(worker);
+
+        // Step 3: Gracefully stop running rch-wkr (if any)
+        debug!(worker = %worker_id, "Stopping rch-wkr before rollback");
+        if let Err(e) = ssh
+            .run_command("pkill -TERM rch-wkr 2>/dev/null || true")
+            .await
+        {
+            // Log but don't fail - process might not be running
+            debug!(worker = %worker_id, error = %e, "pkill returned error (process may not be running)");
+        }
+        // Allow brief time for graceful shutdown
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Step 4: Restore the backup
+        if let Err(e) = self
+            .restore_backup_with_verification(&backup, worker, verify)
+            .await
+        {
+            error!(
+                worker = %worker_id,
+                version = %target_version,
+                error = %e,
+                "Rollback failed"
+            );
+
+            if !ctx.is_json() {
+                println!(
+                    "  {} {} rollback failed: {}",
+                    StatusIndicator::Error.display(style),
+                    style.highlight(worker_id),
+                    e
+                );
+            }
+
+            return RollbackResult {
+                worker_id: worker_id.clone(),
+                success: false,
+                rolled_back_to: None,
+                error: Some(e.to_string()),
+            };
+        }
+
+        // Step 5: Verify the restored version
+        debug!(worker = %worker_id, version = %target_version, "Verifying restored version");
+        match ssh
+            .run_command(&format!("{} --version", REMOTE_RCH_PATH))
+            .await
+        {
+            Ok(output) if output.success() => {
+                let reported_version = output.stdout.trim();
+                if !reported_version.contains(&target_version) {
+                    warn!(
+                        worker = %worker_id,
+                        expected = %target_version,
+                        reported = %reported_version,
+                        "Version mismatch after rollback (may be OK if format differs)"
+                    );
+                } else {
+                    debug!(
+                        worker = %worker_id,
+                        version = %reported_version,
+                        "Post-rollback version check passed"
+                    );
+                }
+            }
+            Ok(output) => {
+                warn!(
+                    worker = %worker_id,
+                    stderr = %output.stderr.trim(),
+                    "Version check failed after rollback"
+                );
+            }
+            Err(e) => {
+                warn!(worker = %worker_id, error = %e, "Could not verify version after rollback");
+            }
+        }
+
+        // Step 6: Restart rch-wkr (best-effort)
+        debug!(worker = %worker_id, "Restarting rch-wkr after rollback");
+        if let Err(e) = ssh
+            .run_command(&format!(
+                "nohup {} serve >/dev/null 2>&1 &",
+                REMOTE_RCH_PATH
+            ))
+            .await
+        {
+            warn!(
+                worker = %worker_id,
+                error = %e,
+                "Failed to restart rch-wkr (may need manual intervention)"
+            );
+        }
+
+        if !ctx.is_json() {
+            println!(
+                "  {} {} rolled back to v{}",
+                StatusIndicator::Success.display(style),
+                style.highlight(worker_id),
+                target_version
+            );
+        }
+
+        info!(
+            worker = %worker_id,
+            version = %target_version,
+            "Rollback successful"
+        );
+
+        RollbackResult {
+            worker_id: worker_id.clone(),
+            success: true,
+            rolled_back_to: Some(target_version),
+            error: None,
+        }
     }
 
     /// Create a backup of a worker's current binary.
@@ -404,13 +645,138 @@ impl RollbackManager {
     }
 
     /// Restore a worker from backup.
-    pub async fn restore_backup(
+    ///
+    /// This function:
+    /// 1. Copies the backup binary back to the main rch-wkr location
+    /// 2. Sets executable permissions on the restored binary
+    /// 3. Optionally verifies the hash matches the recorded value
+    ///
+    /// # Arguments
+    ///
+    /// * `backup` - The backup record containing remote path and hash
+    /// * `worker` - The worker configuration for SSH connection
+    /// * `verify_hash` - If true, verify the restored binary matches the recorded hash
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - SSH connection fails
+    /// - The backup file doesn't exist on the worker
+    /// - File copy or permission setting fails
+    /// - Hash verification fails (when verify_hash is true)
+    pub async fn restore_backup(&self, backup: &WorkerBackup, worker: &WorkerConfig) -> Result<()> {
+        self.restore_backup_with_verification(backup, worker, false)
+            .await
+    }
+
+    /// Restore a worker from backup with optional hash verification.
+    pub async fn restore_backup_with_verification(
         &self,
-        _backup: &WorkerBackup,
-        _worker: &WorkerConfig,
+        backup: &WorkerBackup,
+        worker: &WorkerConfig,
+        verify_hash: bool,
     ) -> Result<()> {
-        // Real impl would SSH and restore binary
-        // Simulated for now
+        let ssh = SshExecutor::with_timeout(worker, ROLLBACK_TIMEOUT);
+        let worker_id = &worker.id.0;
+        let remote_backup_path = backup.remote_path.to_string_lossy();
+
+        info!(
+            worker = %worker_id,
+            backup_path = %remote_backup_path,
+            version = %backup.version,
+            "Restoring worker from backup"
+        );
+
+        // Step 1: Verify backup exists on remote
+        let check_cmd = format!("test -f {}", remote_backup_path);
+        let check_result = ssh
+            .run_command(&check_cmd)
+            .await
+            .context("Failed to check if backup exists")?;
+
+        if !check_result.success() {
+            bail!(
+                "Backup file {} does not exist on worker {}",
+                remote_backup_path,
+                worker_id
+            );
+        }
+
+        debug!(
+            worker = %worker_id,
+            backup_path = %remote_backup_path,
+            "Backup file exists, proceeding with restore"
+        );
+
+        // Step 2: Copy backup to main binary location
+        // Use cp with --preserve to maintain permissions and timestamps
+        let restore_cmd = format!(
+            "cp --preserve=mode,timestamps {} {}",
+            remote_backup_path, REMOTE_RCH_PATH
+        );
+        let restore_result = ssh
+            .run_command(&restore_cmd)
+            .await
+            .context("Failed to copy backup to main location")?;
+
+        if !restore_result.success() {
+            bail!(
+                "Failed to restore backup on worker {}: {}",
+                worker_id,
+                restore_result.stderr.trim()
+            );
+        }
+
+        // Step 3: Ensure executable permissions (redundant with --preserve but safe)
+        ssh.set_executable(REMOTE_RCH_PATH)
+            .await
+            .context("Failed to set executable permissions on restored binary")?;
+
+        info!(
+            worker = %worker_id,
+            version = %backup.version,
+            "Binary restored successfully"
+        );
+
+        // Step 4: Optionally verify hash
+        if verify_hash && backup.binary_hash != "unknown" {
+            debug!(
+                worker = %worker_id,
+                expected_hash = %backup.binary_hash,
+                "Verifying restored binary hash"
+            );
+
+            let hash_cmd = format!("sha256sum {} | cut -d' ' -f1", REMOTE_RCH_PATH);
+            let hash_result = ssh
+                .run_command(&hash_cmd)
+                .await
+                .context("Failed to compute hash of restored binary")?;
+
+            if !hash_result.success() {
+                warn!(
+                    worker = %worker_id,
+                    stderr = %hash_result.stderr.trim(),
+                    "Hash verification command failed, skipping verification"
+                );
+            } else {
+                let actual_hash = hash_result.stdout.trim();
+                if actual_hash != backup.binary_hash {
+                    bail!(
+                        "Hash mismatch after restore on worker {}: expected {}, got {}",
+                        worker_id,
+                        backup.binary_hash,
+                        actual_hash
+                    );
+                }
+
+                info!(
+                    worker = %worker_id,
+                    hash = %actual_hash,
+                    "Hash verification passed"
+                );
+            }
+        }
+
         Ok(())
     }
 }

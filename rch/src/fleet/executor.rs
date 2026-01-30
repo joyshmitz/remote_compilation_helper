@@ -2,10 +2,19 @@
 //!
 //! Handles parallel execution of deployments across workers
 //! with progress tracking and error handling.
+//!
+//! ## Backup During Deploy
+//!
+//! Before deploying a new binary, the executor creates a backup of the current
+//! binary on the worker. This enables rollback if the new version fails.
+//! Backup failures are non-fatal and never block deployment.
 
 use crate::fleet::audit::AuditLogger;
 use crate::fleet::plan::{DeploymentPlan, DeploymentStatus, DeploymentStrategy};
 use crate::fleet::progress::{DeployPhase, FleetProgress};
+use crate::fleet::rollback::{
+    MAX_BACKUPS_PER_WORKER, REMOTE_BACKUP_DIR, REMOTE_RCH_PATH, RollbackManager, WorkerBackup,
+};
 use crate::fleet::ssh::SshExecutor;
 use crate::ui::context::OutputContext;
 use crate::ui::theme::StatusIndicator;
@@ -16,7 +25,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 /// Result of a fleet deployment operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -350,6 +359,26 @@ impl FleetExecutor {
                     return (idx, worker_id, false, DeploymentStatus::Failed);
                 }
 
+                // Backup phase - create backup of current binary (best-effort, non-fatal)
+                // This runs before upload to capture the existing version
+                if let Ok(mut rollback_manager) = RollbackManager::new() {
+                    match backup_before_deploy(&worker_config, &mut rollback_manager).await {
+                        Ok(Some(backup)) => {
+                            debug!(
+                                worker = %worker_id,
+                                version = %backup.version,
+                                "Backup created, proceeding with deploy"
+                            );
+                        }
+                        Ok(None) => {
+                            debug!(worker = %worker_id, "No backup created (no existing version or skipped)");
+                        }
+                        Err(e) => {
+                            warn!(worker = %worker_id, error = %e, "Backup failed (continuing deploy)");
+                        }
+                    }
+                }
+
                 // Upload phase - create remote directory and copy binary
                 progress.set_phase(&worker_id, DeployPhase::Uploading).await;
 
@@ -487,6 +516,149 @@ async fn verify_installation(worker: &WorkerConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+// =============================================================================
+// Backup during deploy
+// =============================================================================
+
+/// Create backup of current binary before deploying new version.
+///
+/// This function is best-effort and non-fatal:
+/// - Returns `Ok(None)` if there's no existing binary to backup
+/// - Returns `Ok(None)` on any error (logged at WARN level)
+/// - Returns `Ok(Some(backup))` on success
+///
+/// The backup is registered in the local rollback registry for later rollback.
+/// Old backups exceeding MAX_BACKUPS_PER_WORKER are automatically pruned.
+pub async fn backup_before_deploy(
+    worker: &WorkerConfig,
+    rollback_manager: &mut RollbackManager,
+) -> Result<Option<WorkerBackup>> {
+    let ssh = SshExecutor::new(worker);
+
+    // 1. Get current version before deploying
+    debug!(worker = %worker.id, "Checking for existing version to backup");
+    let version_cmd = format!("{} --version 2>/dev/null", REMOTE_RCH_PATH);
+    let current_version = match ssh.run_command(&version_cmd).await {
+        Ok(output) if output.success() => output
+            .stdout
+            .trim()
+            .split_whitespace()
+            .nth(1)
+            .map(String::from),
+        Ok(_) => None,
+        Err(e) => {
+            debug!(worker = %worker.id, error = %e, "No existing rch-wkr found");
+            None
+        }
+    };
+
+    let version = match current_version {
+        Some(v) => v,
+        None => {
+            debug!(worker = %worker.id, "No existing version to backup");
+            return Ok(None);
+        }
+    };
+
+    info!(worker = %worker.id, version = %version, "Creating backup before deploy");
+
+    // 2. Create backup directory
+    let mkdir_cmd = format!("mkdir -p {}", REMOTE_BACKUP_DIR);
+    if let Err(e) = ssh.run_command(&mkdir_cmd).await {
+        warn!(worker = %worker.id, error = %e, "Failed to create backup directory");
+        return Ok(None); // Non-fatal
+    }
+
+    // 3. Check disk space before backup (prevent silent failures)
+    // Use portable df command that works on both Linux and macOS
+    let df_output = ssh
+        .run_command("df -Pm ~/.rch 2>/dev/null | tail -1 | awk '{print $4}'")
+        .await;
+    if let Ok(output) = df_output
+        && let Ok(mb) = output.stdout.trim().parse::<u64>()
+        && mb < 50
+    {
+        // Less than 50MB available
+        warn!(
+            worker = %worker.id,
+            available_mb = %mb,
+            "Low disk space, skipping backup"
+        );
+        return Ok(None);
+    }
+    // Ignore disk check errors - proceed with backup
+
+    // 4. Copy current binary to backup location
+    let remote_backup_path = format!("{}/rch-wkr-{}", REMOTE_BACKUP_DIR, version);
+    let copy_cmd = format!("cp {} {}", REMOTE_RCH_PATH, remote_backup_path);
+    if let Err(e) = ssh.run_command(&copy_cmd).await {
+        warn!(worker = %worker.id, error = %e, "Failed to copy binary to backup");
+        return Ok(None); // Non-fatal
+    }
+
+    // 5. Calculate hash for verification
+    let hash_cmd = format!(
+        "sha256sum {} 2>/dev/null | cut -d' ' -f1",
+        remote_backup_path
+    );
+    let binary_hash = match ssh.run_command(&hash_cmd).await {
+        Ok(output) if output.success() => {
+            let hash = output.stdout.trim().to_string();
+            if hash.len() == 64 {
+                hash
+            } else {
+                "unknown".to_string()
+            }
+        }
+        Ok(_) | Err(_) => {
+            warn!(worker = %worker.id, "Failed to calculate backup hash");
+            "unknown".to_string()
+        }
+    };
+
+    // 6. Create and register backup entry
+    let backup = rollback_manager.create_backup_entry(
+        &worker.id.0,
+        &version,
+        &remote_backup_path,
+        &binary_hash,
+    );
+
+    if let Err(e) = rollback_manager.save_backup_entry(&backup) {
+        warn!(worker = %worker.id, error = %e, "Failed to save backup entry to registry");
+        return Ok(None); // Non-fatal
+    }
+
+    // 7. Prune old backups (keep only MAX_BACKUPS_PER_WORKER)
+    // This is best-effort - failures don't affect the deploy
+    match rollback_manager.prune_old_backups(MAX_BACKUPS_PER_WORKER) {
+        Ok(removed) => {
+            for old_backup in removed {
+                debug!(
+                    worker = %worker.id,
+                    version = %old_backup.version,
+                    "Cleaning up old backup"
+                );
+                // Best-effort cleanup of remote file
+                let rm_cmd = format!("rm -f {}", old_backup.remote_path.display());
+                let _ = ssh.run_command(&rm_cmd).await;
+            }
+        }
+        Err(e) => {
+            warn!(worker = %worker.id, error = %e, "Failed to prune old backups");
+        }
+    }
+
+    info!(
+        worker = %worker.id,
+        version = %version,
+        hash = %binary_hash,
+        "Backup created successfully"
+    );
+
+    Ok(Some(backup))
 }
 
 #[cfg(test)]

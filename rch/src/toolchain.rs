@@ -68,9 +68,23 @@ fn parse_toolchain_file(path: &Path) -> Result<ToolchainInfo, ToolchainError> {
     parse_channel_string(channel)
 }
 
-/// Parse a legacy rust-toolchain file (plain text channel name).
+/// Parse a legacy rust-toolchain file (plain text channel name or TOML).
 fn parse_legacy_toolchain_file(path: &Path) -> Result<ToolchainInfo, ToolchainError> {
     let content = std::fs::read_to_string(path)?;
+
+    // rustup allows `rust-toolchain` (no extension) to be either TOML or plain text.
+    // Try TOML parsing first.
+    if let Ok(toml) = toml::from_str::<toml::Value>(&content) {
+        if let Some(channel) = toml
+            .get("toolchain")
+            .and_then(|t| t.get("channel"))
+            .and_then(|c| c.as_str())
+        {
+            return parse_channel_string(channel);
+        }
+    }
+
+    // Fallback: treat as plain text channel name (trim whitespace)
     let channel = content.trim();
     if channel.is_empty() {
         return Err(ToolchainError::InvalidFormat);

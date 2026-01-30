@@ -10,6 +10,7 @@ mod api;
 mod benchmark_queue;
 mod benchmark_scheduler;
 mod cache_cleanup;
+mod cleanup;
 mod config;
 mod events;
 mod health;
@@ -395,6 +396,10 @@ async fn main() -> Result<()> {
         version: env!("CARGO_PKG_VERSION"),
         pid: std::process::id(),
     };
+
+    // Start active build cleanup background task
+    let active_cleanup = cleanup::ActiveBuildCleanup::new(context.clone());
+    let _active_cleanup_handle = active_cleanup.start();
 
     let worker_status_panel = Arc::new(Mutex::new(
         WorkerStatusPanel::new()
