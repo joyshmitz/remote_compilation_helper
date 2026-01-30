@@ -617,7 +617,9 @@ pub async fn probe_worker_capabilities(
     match client.connect().await {
         Ok(()) => {
             // Try to run rch-wkr capabilities command
-            match client.execute("rch-wkr capabilities 2>/dev/null").await {
+            // Handle PATH vs ~/.local/bin lookup
+            let cmd = "if command -v rch-wkr >/dev/null 2>&1; then rch-wkr capabilities; else ~/.local/bin/rch-wkr capabilities; fi";
+            match client.execute(cmd).await {
                 Ok(result) => {
                     let _ = client.disconnect().await;
 

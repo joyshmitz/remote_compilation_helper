@@ -68,8 +68,37 @@ enum Commands {
         max_age_hours: u64,
     },
 
+    /// Collect a telemetry snapshot
+    Telemetry {
+        /// Output format (json or pretty)
+        #[arg(long, default_value = "json")]
+        format: OutputFormat,
+
+        /// Sampling window in milliseconds for rate-based metrics
+        #[arg(long, default_value_t = 200)]
+        sample_ms: u64,
+
+        /// Disable disk telemetry collection
+        #[arg(long)]
+        no_disk: bool,
+
+        /// Disable network telemetry collection
+        #[arg(long)]
+        no_network: bool,
+
+        /// Override worker ID (defaults to RCH_WORKER_ID or HOSTNAME)
+        #[arg(long)]
+        worker_id: Option<String>,
+    },
+
     /// Run a benchmark
     Benchmark,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy)]
+enum OutputFormat {
+    Json,
+    Pretty,
 }
 
 #[tokio::main]
@@ -158,6 +187,25 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Commands::Cleanup { max_age_hours } => cache::cleanup(max_age_hours).await,
+        Commands::Telemetry {
+            format,
+            sample_ms,
+            no_disk,
+            no_network,
+            worker_id,
+        } => {
+            use rch_telemetry::collect::{collect_telemetry, resolve_worker_id};
+            let worker_id = resolve_worker_id(worker_id);
+            let telemetry = collect_telemetry(sample_ms, !no_disk, !no_network, worker_id)?;
+
+            let output = match format {
+                OutputFormat::Json => telemetry.to_json()?,
+                OutputFormat::Pretty => telemetry.to_json_pretty()?,
+            };
+
+            println!("{}", output);
+            Ok(())
+        }
         Commands::Benchmark => run_benchmark().await,
     }
 }

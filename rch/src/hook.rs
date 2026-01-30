@@ -2145,7 +2145,7 @@ async fn execute_remote_compilation(
         project_id, worker_config.id
     ));
 
-    // Create transfer pipeline with color mode and command timeout
+    // Create transfer pipeline with color mode, command timeout, and compilation kind
     let command_timeout = compilation_config.timeout_for_kind(kind);
     let pipeline = TransferPipeline::new(
         project_root.clone(),
@@ -2155,7 +2155,8 @@ async fn execute_remote_compilation(
     )
     .with_color_mode(color_mode)
     .with_env_allowlist(env_allowlist)
-    .with_command_timeout(command_timeout);
+    .with_command_timeout(command_timeout)
+    .with_compilation_kind(kind);
 
     // Check if transfer should be skipped based on size/time estimation
     if let Some(skip_reason) = pipeline.should_skip_transfer(&worker_config).await {

@@ -334,9 +334,11 @@ pub async fn collect_telemetry_from_worker(
 ) -> anyhow::Result<WorkerTelemetry> {
     let config = worker.config.read().await;
     let worker_id = config.id.as_str();
+    // Use rch-wkr from PATH if available, otherwise fallback to ~/.local/bin/rch-wkr
+    // This handles non-interactive SSH sessions where ~/.local/bin might not be in PATH
     let command = format!(
-        "rch-telemetry collect --format json --worker-id {}",
-        worker_id
+        "if command -v rch-wkr >/dev/null 2>&1; then rch-wkr telemetry --format json --worker-id {}; else ~/.local/bin/rch-wkr telemetry --format json --worker-id {}; fi",
+        worker_id, worker_id
     );
 
     let options = SshOptions {

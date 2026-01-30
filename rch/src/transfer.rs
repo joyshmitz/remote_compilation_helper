@@ -347,6 +347,16 @@ impl TransferPipeline {
         self
     }
 
+    /// Set the compilation kind for command-specific handling.
+    ///
+    /// This enables the pipeline to apply appropriate wrappers for specific
+    /// command types. For example, bun test commands are wrapped with an
+    /// external timeout to protect against known CPU hang issues.
+    pub fn with_compilation_kind(mut self, kind: Option<CompilationKind>) -> Self {
+        self.compilation_kind = kind;
+        self
+    }
+
     fn build_env_prefix(&self) -> EnvPrefix {
         build_env_prefix(&self.env_allowlist, |key| {
             if let Some(ref overrides) = self.env_overrides
@@ -417,12 +427,51 @@ impl TransferPipeline {
         // Apply color mode environment variables
         let colored_command = wrap_command_with_color(&env_command, self.color_mode);
 
+        // Apply external process timeout wrapper for commands known to hang.
+        // Bun tests have known issues where they can hang at 100% CPU indefinitely:
+        // - https://github.com/oven-sh/bun/issues/21277 (sync loops block timeout)
+        // - https://github.com/oven-sh/bun/issues/6751 (multiple test files cause hangs)
+        // The `timeout` command provides a hard kill that works even for CPU-bound loops.
+        let timeout_wrapped_command = self.wrap_with_external_timeout(&colored_command);
+
         // Force LC_ALL=C to ensure English output for error parsing
         // Wrap command to run in project directory
         format!(
             "export LC_ALL=C; cd {} && {}",
-            escaped_remote_path, colored_command
+            escaped_remote_path, timeout_wrapped_command
         )
+    }
+
+    /// Wrap a command with an external timeout for known problematic command types.
+    ///
+    /// Bun test/typecheck commands can hang indefinitely at 100% CPU due to known
+    /// bugs (see https://github.com/oven-sh/bun/issues/21277 and 6751). The `timeout`
+    /// command provides a reliable kill mechanism that works even for CPU-bound loops
+    /// where Bun's internal --timeout flag doesn't work.
+    ///
+    /// Returns the original command unchanged for non-bun commands or when no
+    /// compilation kind is set.
+    fn wrap_with_external_timeout(&self, command: &str) -> String {
+        // Default timeout for bun commands: 10 minutes
+        // This is intentionally generous to avoid killing legitimate long-running tests
+        const BUN_TEST_TIMEOUT_SECS: u64 = 600;
+
+        match self.compilation_kind {
+            Some(CompilationKind::BunTest) | Some(CompilationKind::BunTypecheck) => {
+                info!(
+                    "Wrapping bun command with {}s external timeout for hang protection",
+                    BUN_TEST_TIMEOUT_SECS
+                );
+                // Use --signal=KILL to ensure the process dies even if stuck in a CPU loop.
+                // The --foreground flag ensures timeout works properly in non-interactive shells.
+                // --preserve-status ensures the exit code reflects whether timeout killed it.
+                format!(
+                    "timeout --signal=KILL --foreground --preserve-status {} {}",
+                    BUN_TEST_TIMEOUT_SECS, command
+                )
+            }
+            _ => command.to_string(),
+        }
     }
 
     // =========================================================================

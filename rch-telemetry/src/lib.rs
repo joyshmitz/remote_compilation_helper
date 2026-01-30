@@ -15,6 +15,7 @@ pub mod benchmarks;
 pub mod collect;
 pub mod protocol;
 pub mod speedscore;
+#[cfg(feature = "storage")]
 pub mod storage;
 
 pub use rch_common::{LogConfig, LogFormat, LoggingGuards, init_logging};
@@ -40,4 +41,5 @@ pub use protocol::{TestRunRecord, TestRunStats};
 pub use speedscore::{
     BenchmarkResults, SPEEDSCORE_VERSION, SpeedScore, SpeedScoreWeights, calculate_speedscore,
 };
+#[cfg(feature = "storage")]
 pub use storage::{MaintenanceStats, SpeedScoreHistoryPage, StorageStats, TelemetryStorage};
