@@ -308,6 +308,96 @@ fn classify_command_inner(cmd: &str, _depth: u8) -> Classification {
     classify_full(normalized)
 }
 
+/// Split a multi-command string on `&&`, `||`, and `;` while respecting quotes.
+///
+/// Returns `None` if no multi-command operators are found.
+/// Returns `Some(segments)` where each segment is a trimmed sub-command.
+#[allow(dead_code)] // Reserved for future multi-command classification
+fn split_multi_command(cmd: &str) -> Option<Vec<&str>> {
+    // Quick check: if no operators, return None early
+    if !cmd.contains("&&") && !cmd.contains("||") && !cmd.contains(';') {
+        return None;
+    }
+
+    let mut segments = Vec::new();
+    let mut current_start = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let chars: Vec<char> = cmd.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let c = chars[i];
+
+        if escaped {
+            escaped = false;
+            i += 1;
+            continue;
+        }
+
+        if c == '\\' {
+            escaped = true;
+            i += 1;
+            continue;
+        }
+
+        if c == '\'' && !in_double {
+            in_single = !in_single;
+        } else if c == '"' && !in_single {
+            in_double = !in_double;
+        } else if !in_single && !in_double {
+            // Check for operators
+            if c == ';' {
+                let segment = &cmd[current_start..byte_index(&chars, i)];
+                let trimmed = segment.trim();
+                if !trimmed.is_empty() {
+                    segments.push(trimmed);
+                }
+                current_start = byte_index(&chars, i + 1);
+            } else if c == '&' && i + 1 < chars.len() && chars[i + 1] == '&' {
+                let segment = &cmd[current_start..byte_index(&chars, i)];
+                let trimmed = segment.trim();
+                if !trimmed.is_empty() {
+                    segments.push(trimmed);
+                }
+                current_start = byte_index(&chars, i + 2);
+                i += 1; // Skip second '&'
+            } else if c == '|' && i + 1 < chars.len() && chars[i + 1] == '|' {
+                let segment = &cmd[current_start..byte_index(&chars, i)];
+                let trimmed = segment.trim();
+                if !trimmed.is_empty() {
+                    segments.push(trimmed);
+                }
+                current_start = byte_index(&chars, i + 2);
+                i += 1; // Skip second '|'
+            }
+        }
+
+        i += 1;
+    }
+
+    // Add final segment
+    let final_segment = &cmd[current_start..];
+    let trimmed = final_segment.trim();
+    if !trimmed.is_empty() {
+        segments.push(trimmed);
+    }
+
+    // Only return Some if we actually split something
+    if segments.len() > 1 {
+        Some(segments)
+    } else {
+        None
+    }
+}
+
+/// Convert char index to byte index for string slicing.
+#[allow(dead_code)] // Reserved for future multi-command classification
+fn byte_index(chars: &[char], char_idx: usize) -> usize {
+    chars.iter().take(char_idx).map(|c| c.len_utf8()).sum()
+}
+
 /// Classify a multi-command string by evaluating each sub-command independently.
 ///
 /// Returns compilation if ANY sub-command is compilation (highest confidence wins).
@@ -477,8 +567,7 @@ pub fn normalize_command(cmd: &str) -> Cow<'_, str> {
     // Strip common command prefixes/wrappers
     // Note: We match the command name, then ensure it's followed by whitespace
     let wrappers = [
-        "sudo", "env", "time", "nice", "ionice", "strace", "ltrace", "perf", "taskset",
-        "numactl",
+        "sudo", "env", "time", "nice", "ionice", "strace", "ltrace", "perf", "taskset", "numactl",
     ];
 
     loop {
@@ -2865,55 +2954,58 @@ mod tests {
             assert!(result.reason.contains("chained"));
         }
 
-            #[test]
-            fn test_classify_cd_and_make() {
-                let _guard = test_guard!();
-                let result = classify_command("cd /project && make -j8");
-                assert!(!result.is_compilation, "chained commands should be rejected");
-                assert!(result.reason.contains("chained"));
-            }
-            #[test]
-            fn test_classify_export_and_cargo_build() {
-                let _guard = test_guard!();
-                let result =
-                    classify_command("export RUSTFLAGS='-C opt-level=3' && cargo build --release");
-                assert!(
-                    !result.is_compilation,
-                    "chained commands should be rejected"
-                );
-                assert!(result.reason.contains("chained"));
-            }
-            #[test]
-            fn test_classify_mkdir_cmake_chain() {
-                let _guard = test_guard!();
-                let result =
-                    classify_command("mkdir -p build && cmake -B build && cmake --build build");
-                assert!(
-                    !result.is_compilation,
-                    "chained commands should be rejected"
-                );
-                assert!(result.reason.contains("chained"));
-            }
-            #[test]
-            fn test_classify_echo_and_cargo_test() {
-                let _guard = test_guard!();
-                let result = classify_command("echo 'Starting...' && cargo test");
-                assert!(
-                    !result.is_compilation,
-                    "chained commands should be rejected"
-                );
-                assert!(result.reason.contains("chained"));
-            }
-            #[test]
-            fn test_classify_semicolon_chain_with_compilation() {
-                let _guard = test_guard!();
-                let result = classify_command("cargo fmt; cargo build; cargo test");
-                assert!(
-                    !result.is_compilation,
-                    "chained commands should be rejected"
-                );
-                assert!(result.reason.contains("chained"));
-            }
+        #[test]
+        fn test_classify_cd_and_make() {
+            let _guard = test_guard!();
+            let result = classify_command("cd /project && make -j8");
+            assert!(
+                !result.is_compilation,
+                "chained commands should be rejected"
+            );
+            assert!(result.reason.contains("chained"));
+        }
+        #[test]
+        fn test_classify_export_and_cargo_build() {
+            let _guard = test_guard!();
+            let result =
+                classify_command("export RUSTFLAGS='-C opt-level=3' && cargo build --release");
+            assert!(
+                !result.is_compilation,
+                "chained commands should be rejected"
+            );
+            assert!(result.reason.contains("chained"));
+        }
+        #[test]
+        fn test_classify_mkdir_cmake_chain() {
+            let _guard = test_guard!();
+            let result =
+                classify_command("mkdir -p build && cmake -B build && cmake --build build");
+            assert!(
+                !result.is_compilation,
+                "chained commands should be rejected"
+            );
+            assert!(result.reason.contains("chained"));
+        }
+        #[test]
+        fn test_classify_echo_and_cargo_test() {
+            let _guard = test_guard!();
+            let result = classify_command("echo 'Starting...' && cargo test");
+            assert!(
+                !result.is_compilation,
+                "chained commands should be rejected"
+            );
+            assert!(result.reason.contains("chained"));
+        }
+        #[test]
+        fn test_classify_semicolon_chain_with_compilation() {
+            let _guard = test_guard!();
+            let result = classify_command("cargo fmt; cargo build; cargo test");
+            assert!(
+                !result.is_compilation,
+                "chained commands should be rejected"
+            );
+            assert!(result.reason.contains("chained"));
+        }
         // --- Classification integration: should classify as NON-COMPILATION ---
 
         #[test]
@@ -2971,22 +3063,23 @@ mod tests {
             assert!(!result.is_compilation, "piped command should be rejected");
         }
 
-            #[test]
-            fn test_classify_pipe_segment_and_operator() {
-                let _guard = test_guard!();
-                // Pipe within first segment, && separates from second
-                let result = classify_command("make 2>&1 | grep error && cargo build");
-                // Should be rejected due to chaining (&&) AND piping (|)
-                assert!(
-                    !result.is_compilation,
-                    "chained commands should be rejected"
-                );
-                // The reason will likely be "chained command (&&)" because check_structure checks separators first or pipes first?
-                // Let's check check_structure impl: pipes are checked AFTER backgrounding, separators are after pipes?
-                // Actually, check_structure checks pipes, then redirects, then chaining.
-                // So "piped command" might be the reason. Either is fine.
-                assert!(result.reason.contains("piped") || result.reason.contains("chained"));
-            }    }
+        #[test]
+        fn test_classify_pipe_segment_and_operator() {
+            let _guard = test_guard!();
+            // Pipe within first segment, && separates from second
+            let result = classify_command("make 2>&1 | grep error && cargo build");
+            // Should be rejected due to chaining (&&) AND piping (|)
+            assert!(
+                !result.is_compilation,
+                "chained commands should be rejected"
+            );
+            // The reason will likely be "chained command (&&)" because check_structure checks separators first or pipes first?
+            // Let's check check_structure impl: pipes are checked AFTER backgrounding, separators are after pipes?
+            // Actually, check_structure checks pipes, then redirects, then chaining.
+            // So "piped command" might be the reason. Either is fine.
+            assert!(result.reason.contains("piped") || result.reason.contains("chained"));
+        }
+    }
 
     // =========================================================================
     // WS2.4: Zero-allocation reject path tests (bd-3mog)
@@ -3301,7 +3394,7 @@ mod tests_bun_whitespace {
     #[test]
     fn test_bun_whitespace_resilience() {
         let _guard = test_guard!();
-        
+
         // Standard single space
         let result = classify_command("bun test");
         assert!(result.is_compilation, "bun test failed");
@@ -3326,22 +3419,28 @@ mod tests_bun_whitespace {
     #[test]
     fn test_bun_watch_with_whitespace() {
         let _guard = test_guard!();
-        
+
         // Watch with extra spaces
         let result = classify_command("bun  test  --watch");
-        assert!(!result.is_compilation, "bun test --watch should be rejected");
+        assert!(
+            !result.is_compilation,
+            "bun test --watch should be rejected"
+        );
         assert!(result.reason.contains("interactive"));
 
         // Watch with short flag and tabs
         let result = classify_command("bun\ttypecheck\t-w");
-        assert!(!result.is_compilation, "bun typecheck -w should be rejected");
+        assert!(
+            !result.is_compilation,
+            "bun typecheck -w should be rejected"
+        );
         assert!(result.reason.contains("interactive"));
     }
 
     #[test]
     fn test_bun_x_whitespace() {
         let _guard = test_guard!();
-        
+
         // bun x with extra spaces
         let result = classify_command("bun  x  vitest");
         assert!(!result.is_compilation, "bun x should be rejected");
@@ -3357,19 +3456,19 @@ mod tests_normalize_whitespace {
     #[test]
     fn test_wrapper_whitespace_resilience() {
         let _guard = test_guard!();
-        
+
         // Multiple spaces
         assert_eq!(normalize_command("sudo  cargo"), "cargo");
-        
+
         // Tabs
         assert_eq!(normalize_command("sudo\tcargo"), "cargo");
-        
+
         // Mixed wrappers with weird spacing
         assert_eq!(normalize_command("time\tsudo  cargo"), "cargo");
-        
+
         // Prefix matching safety
         assert_eq!(normalize_command("sudocargo"), "sudocargo");
-        
+
         // Bare wrapper (should become empty)
         assert_eq!(normalize_command("sudo"), "");
     }
@@ -3377,10 +3476,10 @@ mod tests_normalize_whitespace {
     #[test]
     fn test_env_var_whitespace() {
         let _guard = test_guard!();
-        
+
         // env with multiple spaces before VAR
         assert_eq!(normalize_command("env  RUST_BACKTRACE=1 cargo"), "cargo");
-        
+
         // env with tabs
         assert_eq!(normalize_command("env\tRUST_BACKTRACE=1\tcargo"), "cargo");
     }

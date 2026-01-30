@@ -41,24 +41,32 @@ async fn read_line_with_limit<R: AsyncBufReadExt + Unpin>(
     buf: &mut String,
     limit: usize,
 ) -> Result<usize> {
+    let mut bytes = Vec::new();
     let mut count = 0;
     while count < limit {
         let byte = reader.read_u8().await;
         match byte {
             Ok(b) => {
                 count += 1;
-                buf.push(b as char);
+                bytes.push(b);
                 if b == b'\n' {
-                    return Ok(count);
+                    break;
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Ok(count);
+                break;
             }
             Err(e) => return Err(e.into()),
         }
     }
-    Err(anyhow!("Request line exceeded limit of {} bytes", limit))
+    
+    if count >= limit && bytes.last() != Some(&b'\n') {
+         return Err(anyhow!("Request line exceeded limit of {} bytes", limit));
+    }
+    
+    let s = String::from_utf8(bytes).map_err(|e| anyhow!("Invalid UTF-8 in request: {}", e))?;
+    buf.push_str(&s);
+    Ok(count)
 }
 
 /// Format wait time in seconds to a human-readable string.
@@ -532,9 +540,11 @@ pub async fn handle_connection(
             // Read optional JSON body line for timing breakdown
             // Use a short timeout to avoid blocking when no body is sent
             let mut body_line = String::new();
-            if let Ok(Ok(_)) =
-                tokio::time::timeout(Duration::from_millis(50), read_line_with_limit(&mut reader, &mut body_line, MAX_LINE_SIZE))
-                    .await
+            if let Ok(Ok(_)) = tokio::time::timeout(
+                Duration::from_millis(50),
+                read_line_with_limit(&mut reader, &mut body_line, MAX_LINE_SIZE),
+            )
+            .await
             {
                 let body = body_line.trim();
                 if !body.is_empty()

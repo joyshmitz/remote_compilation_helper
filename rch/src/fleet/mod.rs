@@ -31,7 +31,10 @@ pub use plan::{
 pub use preflight::{PreflightIssue, PreflightResult, Severity};
 pub use progress::{DeployPhase, FleetProgress};
 pub use rollback::{RollbackManager, WorkerBackup};
-pub use ssh::{CommandOutput, FleetSshError, SshExecutor, parse_disk_space, parse_version_string};
+pub use ssh::{
+    CommandOutput, FleetSshError, MockCommandResult, MockConnectivity, MockSshExecutor,
+    SshExecutor, parse_disk_space, parse_version_string,
+};
 
 /// Deploy rch-wkr to workers.
 #[allow(clippy::too_many_arguments)]

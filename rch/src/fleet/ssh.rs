@@ -1127,4 +1127,179 @@ mod tests {
         let version = parse_version_string(output).unwrap();
         assert_eq!(version, "some tool version info");
     }
+
+    // =========================================================================
+    // MockSshExecutor tests
+    // =========================================================================
+
+    #[test]
+    fn mock_ssh_executor_default() {
+        let mock = MockSshExecutor::new();
+        assert!(matches!(mock.connectivity, MockConnectivity::Connected));
+        assert!(mock.command_results.is_empty());
+        assert!(mock.delay.is_none());
+    }
+
+    #[test]
+    fn mock_command_result_ok() {
+        let result = MockCommandResult::ok("test output");
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout, "test output");
+        assert!(result.stderr.is_empty());
+    }
+
+    #[test]
+    fn mock_command_result_err() {
+        let result = MockCommandResult::err(1, "error message");
+        assert_eq!(result.exit_code, 1);
+        assert!(result.stdout.is_empty());
+        assert_eq!(result.stderr, "error message");
+    }
+
+    #[tokio::test]
+    async fn mock_ssh_executor_all_healthy() {
+        let mock = MockSshExecutor::all_healthy();
+
+        // Connectivity should pass
+        assert!(mock.check_connectivity().await.is_ok());
+
+        // df command should return disk space
+        let output = mock.run_command("df -B1 /tmp").await.unwrap();
+        assert!(output.success());
+        assert!(output.stdout.contains("Available"));
+
+        // rsync should be found
+        let output = mock.run_command("which rsync").await.unwrap();
+        assert!(output.success());
+        assert!(output.stdout.contains("/usr/bin/rsync"));
+
+        // rch-wkr health should pass
+        let output = mock.run_command("rch-wkr health").await.unwrap();
+        assert!(output.success());
+    }
+
+    #[tokio::test]
+    async fn mock_ssh_executor_unreachable() {
+        let mock = MockSshExecutor::unreachable();
+
+        // Connectivity should fail
+        let result = mock.check_connectivity().await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            FleetSshError::HostUnreachable { .. }
+        ));
+
+        // Commands should also fail
+        let result = mock.run_command("echo hello").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn mock_ssh_executor_auth_failed() {
+        let mock = MockSshExecutor::auth_failed();
+
+        let result = mock.check_connectivity().await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            FleetSshError::AuthenticationFailed { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn mock_ssh_executor_timeout() {
+        let mock = MockSshExecutor::timeout();
+
+        let result = mock.check_connectivity().await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            FleetSshError::ConnectionTimeout { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn mock_ssh_executor_missing_rsync() {
+        let mock = MockSshExecutor::missing_rsync();
+
+        // rsync should not be found
+        let output = mock.run_command("which rsync").await.unwrap();
+        assert!(!output.success());
+        assert_eq!(output.exit_code, 1);
+
+        // But other tools should still work
+        let output = mock.run_command("which zstd").await.unwrap();
+        assert!(output.success());
+    }
+
+    #[tokio::test]
+    async fn mock_ssh_executor_missing_rch_wkr() {
+        let mock = MockSshExecutor::missing_rch_wkr();
+
+        let output = mock.run_command("rch-wkr --version").await.unwrap();
+        assert_eq!(output.exit_code, 127);
+        assert!(output.stderr.contains("command not found"));
+    }
+
+    #[tokio::test]
+    async fn mock_ssh_executor_low_disk_space() {
+        let mock = MockSshExecutor::low_disk_space(1_000_000_000); // 1GB
+
+        let output = mock.run_command("df -B1 /tmp").await.unwrap();
+        assert!(output.success());
+
+        let available = parse_disk_space(&output.stdout).unwrap();
+        assert_eq!(available, 1_000_000_000);
+    }
+
+    #[tokio::test]
+    async fn mock_ssh_executor_custom_command() {
+        let mock = MockSshExecutor::new()
+            .with_command("custom_cmd", MockCommandResult::ok("custom output"))
+            .with_command("failing_cmd", MockCommandResult::err(42, "custom error"));
+
+        let output = mock.run_command("custom_cmd arg1 arg2").await.unwrap();
+        assert!(output.success());
+        assert_eq!(output.stdout, "custom output");
+
+        let output = mock.run_command("failing_cmd").await.unwrap();
+        assert_eq!(output.exit_code, 42);
+        assert_eq!(output.stderr, "custom error");
+    }
+
+    #[tokio::test]
+    async fn mock_ssh_executor_run_command_raw() {
+        let mock = MockSshExecutor::new()
+            .with_command("good_cmd", MockCommandResult::ok("  trimmed  "))
+            .with_command("bad_cmd", MockCommandResult::err(1, "failed"));
+
+        // Success case returns trimmed stdout
+        let result = mock.run_command_raw("good_cmd").await.unwrap();
+        assert_eq!(result, "trimmed");
+
+        // Failure case returns error
+        let result = mock.run_command_raw("bad_cmd").await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn mock_connectivity_default() {
+        let connectivity = MockConnectivity::default();
+        assert!(matches!(connectivity, MockConnectivity::Connected));
+    }
+
+    #[test]
+    fn mock_ssh_executor_builder_chain() {
+        let mock = MockSshExecutor::new()
+            .with_connectivity(MockConnectivity::Connected)
+            .with_command("test", MockCommandResult::ok("result"))
+            .with_default_result(MockCommandResult::err(127, "not found"))
+            .with_delay(Duration::from_millis(100));
+
+        assert!(matches!(mock.connectivity, MockConnectivity::Connected));
+        assert!(mock.command_results.contains_key("test"));
+        assert_eq!(mock.default_result.exit_code, 127);
+        assert_eq!(mock.delay, Some(Duration::from_millis(100)));
+    }
 }

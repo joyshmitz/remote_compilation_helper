@@ -297,21 +297,21 @@ fn test_ws4_multi_command_classification_correctness() {
     // Multi-command with compilation: should detect compilation
     let test_cases: &[(&str, bool)] = &[
         // Pure compilation
-        ("cargo build && cargo test", true),
-        ("cargo build || echo failed", true),
-        ("cargo build; cargo test", true),
-        // Mixed: compilation + non-compilation → compilation wins
-        ("echo starting && cargo build", true),
-        ("cargo test && echo done", true),
-        ("ls && cargo build && pwd", true),
-        // Pure non-compilation
+        // Chained commands should be rejected (security policy)
+        ("cargo build && cargo test", false),
+        ("cargo build || echo failed", false),
+        ("cargo build; cargo test", false),
+        ("echo starting && cargo build", false),
+        ("cargo test && echo done", false),
+        ("ls && cargo build && pwd", false),
+        // Pure non-compilation (also rejected if chained)
         ("ls && pwd", false),
         ("echo hello; echo world", false),
         ("git status && git diff", false),
         ("cd /tmp || echo failed", false),
         // Edge cases
-        ("cargo build --release && cargo test -p my_crate", true),
-        ("make -j8 && echo done", true),
+        ("cargo build --release && cargo test -p my_crate", false),
+        ("make -j8 && echo done", false),
     ];
 
     let mut passed = 0;
@@ -351,9 +351,10 @@ fn test_ws4_long_multi_command_chain() {
 
     let result = classify_command(&long_chain);
     assert!(
-        result.is_compilation,
-        "long chain with cargo build at position 10 should be compilation"
+        !result.is_compilation,
+        "long chained command should be rejected"
     );
+    assert!(result.reason.contains("chained"));
 }
 
 // ============================================================================

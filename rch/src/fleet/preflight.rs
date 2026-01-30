@@ -1,9 +1,12 @@
 //! Preflight checks for worker deployments.
 
+use crate::fleet::ssh::SshExecutor;
 use crate::ui::context::OutputContext;
 use anyhow::Result;
 use rch_common::WorkerConfig;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Severity {
@@ -42,19 +45,193 @@ pub struct WorkerStatus {
 }
 
 pub async fn run_preflight(
-    _worker: &WorkerConfig,
+    worker: &WorkerConfig,
     _ctx: &OutputContext,
 ) -> Result<PreflightResult> {
-    // Simulate successful preflight - real impl would SSH
+    let mut issues = Vec::new();
+
+    // =========================================================================
+    // SSH Connectivity Check
+    // =========================================================================
+    debug!(
+        worker = %worker.id,
+        host = %worker.host,
+        "Checking SSH connectivity"
+    );
+
+    let ssh_executor = SshExecutor::new(worker)
+        .connect_timeout(Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS));
+
+    let ssh_result = ssh_executor.check_connectivity().await;
+
+    let ssh_ok = match &ssh_result {
+        Ok(connected) => {
+            if *connected {
+                info!(
+                    worker = %worker.id,
+                    ssh_ok = true,
+                    "SSH connectivity check passed"
+                );
+                true
+            } else {
+                warn!(
+                    worker = %worker.id,
+                    host = %worker.host,
+                    "SSH connectivity check returned false"
+                );
+                issues.push(PreflightIssue {
+                    severity: Severity::Error,
+                    check: "ssh".to_string(),
+                    message: format!("SSH connection to {} failed", worker.host),
+                    remediation: Some(format!(
+                        "Check: 1) Host is reachable: ping {} 2) SSH service running 3) Key auth: ssh -i {} {}@{}",
+                        worker.host, worker.identity_file, worker.user, worker.host
+                    )),
+                });
+                false
+            }
+        }
+        Err(e) => {
+            warn!(
+                worker = %worker.id,
+                host = %worker.host,
+                error = %e,
+                "SSH connectivity check failed"
+            );
+            issues.push(PreflightIssue {
+                severity: Severity::Error,
+                check: "ssh".to_string(),
+                message: format!("SSH connection to {} failed: {}", worker.host, e),
+                remediation: Some(format!(
+                    "Check: 1) Host is reachable: ping {} 2) SSH service running 3) Key auth: ssh -i {} {}@{}",
+                    worker.host, worker.identity_file, worker.user, worker.host
+                )),
+            });
+            false
+        }
+    };
+
+    info!(
+        worker = %worker.id,
+        ssh_ok = %ssh_ok,
+        "SSH connectivity check complete"
+    );
+
+    // =========================================================================
+    // Disk Space Check
+    // =========================================================================
+    let (disk_space_mb, disk_ok) = if ssh_ok {
+        debug!(worker = %worker.id, "Checking disk space");
+
+        // Portable df command that works on Linux and macOS
+        // -P: POSIX format (consistent columns)
+        // -m: 1MB blocks
+        // awk extracts available space (4th column)
+        let disk_cmd = "df -Pm /tmp 2>/dev/null | tail -1 | awk '{print $4}'";
+
+        match ssh_executor.run_command(disk_cmd).await {
+            Ok(output) => {
+                if output.success() {
+                    match output.stdout.trim().parse::<u64>() {
+                        Ok(mb) => {
+                            let ok = mb >= MIN_DISK_SPACE_MB;
+                            if !ok {
+                                warn!(
+                                    worker = %worker.id,
+                                    disk_mb = %mb,
+                                    threshold_mb = %MIN_DISK_SPACE_MB,
+                                    "Low disk space warning"
+                                );
+                                issues.push(PreflightIssue {
+                                    severity: Severity::Warning,
+                                    check: "disk_space".to_string(),
+                                    message: format!(
+                                        "Low disk space: {}MB available, {}MB required",
+                                        mb, MIN_DISK_SPACE_MB
+                                    ),
+                                    remediation: Some(format!(
+                                        "Free up disk space on {}: rm -rf /tmp/rch-* or expand volume",
+                                        worker.host
+                                    )),
+                                });
+                            }
+                            info!(
+                                worker = %worker.id,
+                                disk_mb = %mb,
+                                threshold_mb = %MIN_DISK_SPACE_MB,
+                                ok = %ok,
+                                "Disk space check complete"
+                            );
+                            (mb, ok)
+                        }
+                        Err(e) => {
+                            warn!(
+                                worker = %worker.id,
+                                error = %e,
+                                raw = %output.stdout.trim(),
+                                "Failed to parse disk space output"
+                            );
+                            issues.push(PreflightIssue {
+                                severity: Severity::Warning,
+                                check: "disk_space".to_string(),
+                                message: format!("Could not parse disk space: {}", e),
+                                remediation: None,
+                            });
+                            (0, false)
+                        }
+                    }
+                } else {
+                    warn!(
+                        worker = %worker.id,
+                        exit_code = %output.exit_code,
+                        stderr = %output.stderr.trim(),
+                        "Disk space command failed"
+                    );
+                    issues.push(PreflightIssue {
+                        severity: Severity::Warning,
+                        check: "disk_space".to_string(),
+                        message: format!("Disk space check failed with exit code {}", output.exit_code),
+                        remediation: None,
+                    });
+                    (0, false)
+                }
+            }
+            Err(e) => {
+                warn!(
+                    worker = %worker.id,
+                    error = %e,
+                    "Disk space check failed"
+                );
+                issues.push(PreflightIssue {
+                    severity: Severity::Warning,
+                    check: "disk_space".to_string(),
+                    message: format!("Disk space check failed: {}", e),
+                    remediation: None,
+                });
+                (0, false)
+            }
+        }
+    } else {
+        // SSH failed, can't check disk
+        debug!(worker = %worker.id, "Skipping disk space check - SSH not available");
+        (0, false)
+    };
+
+    // =========================================================================
+    // Other checks (stubs - to be implemented in subsequent beads)
+    // =========================================================================
+    // TODO(bd-3029.3): Implement rsync/zstd availability checks
+    // TODO(bd-3029.4): Implement rustup check and version detection
+
     Ok(PreflightResult {
-        ssh_ok: true,
-        disk_space_mb: 10000,
-        disk_ok: true,
-        rsync_ok: true,
-        zstd_ok: true,
-        rustup_ok: true,
+        ssh_ok,
+        disk_space_mb,
+        disk_ok,
+        rsync_ok: false,   // Stub: will be implemented in bd-3029.3
+        zstd_ok: false,    // Stub: will be implemented in bd-3029.3
+        rustup_ok: false,  // Stub: will be implemented in bd-3029.4
         current_version: None,
-        issues: vec![],
+        issues,
     })
 }
 
@@ -74,8 +251,12 @@ pub async fn get_fleet_status(
         .collect())
 }
 
-#[allow(dead_code)]
+/// Minimum disk space required in MB.
+#[allow(dead_code)] // Reserved for bd-3029.2 preflight disk check
 pub const MIN_DISK_SPACE_MB: u64 = 500;
+
+/// SSH connectivity check timeout in seconds (fast fail for preflight).
+pub const SSH_CONNECT_TIMEOUT_SECS: u64 = 5;
 
 #[cfg(test)]
 mod tests {

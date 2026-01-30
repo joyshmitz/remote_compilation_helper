@@ -22,6 +22,9 @@ const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Default command execution timeout.
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Maximum size for command output (stdout/stderr) to prevent OOM (10MB).
+const MAX_OUTPUT_SIZE: u64 = 10 * 1024 * 1024;
+
 // ============================================================================
 // Retry Classification
 // ============================================================================
@@ -417,9 +420,9 @@ impl SshClient {
 
             let stdout_fut = async {
                 if let Some(out) = stdout_handle {
-                    let mut reader = BufReader::new(out);
+                    let reader = BufReader::new(out);
                     let mut buf = String::new();
-                    reader.read_to_string(&mut buf).await?;
+                    reader.take(MAX_OUTPUT_SIZE).read_to_string(&mut buf).await?;
                     Ok::<String, anyhow::Error>(buf)
                 } else {
                     Ok(String::new())
@@ -428,9 +431,9 @@ impl SshClient {
 
             let stderr_fut = async {
                 if let Some(err) = stderr_handle {
-                    let mut reader = BufReader::new(err);
+                    let reader = BufReader::new(err);
                     let mut buf = String::new();
-                    reader.read_to_string(&mut buf).await?;
+                    reader.take(MAX_OUTPUT_SIZE).read_to_string(&mut buf).await?;
                     Ok::<String, anyhow::Error>(buf)
                 } else {
                     Ok(String::new())

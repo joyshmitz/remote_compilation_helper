@@ -37,9 +37,16 @@ fn mask_sensitive_in_log(cmd: &str) -> String {
     }
 
     let sensitive_prefixes = [
-        "TOKEN=", "PASSWORD=", "SECRET=", "API_KEY=", "PASS=",
-        "CARGO_REGISTRY_TOKEN=", "GITHUB_TOKEN=", "DATABASE_URL=",
-        "AWS_SECRET_ACCESS_KEY=", "AWS_ACCESS_KEY_ID=",
+        "TOKEN=",
+        "PASSWORD=",
+        "SECRET=",
+        "API_KEY=",
+        "PASS=",
+        "CARGO_REGISTRY_TOKEN=",
+        "GITHUB_TOKEN=",
+        "DATABASE_URL=",
+        "AWS_SECRET_ACCESS_KEY=",
+        "AWS_ACCESS_KEY_ID=",
     ];
 
     let mut result = cmd.to_string();
@@ -798,7 +805,11 @@ impl TransferPipeline {
         }
 
         // Mask sensitive data (API keys, tokens) before logging
-        info!("Executing on {}: {}", worker.id, mask_sensitive_in_log(command));
+        info!(
+            "Executing on {}: {}",
+            worker.id,
+            mask_sensitive_in_log(command)
+        );
 
         let mut client = SshClient::new(worker.clone(), self.ssh_options.clone());
         client.connect().await?;
@@ -875,7 +886,11 @@ impl TransferPipeline {
         let escaped_identity = escape(Cow::from(identity_file.as_ref()));
         let ssh_command = self.build_rsync_ssh_command(escaped_identity.as_ref());
 
-        cmd.arg("-az").arg("-e").arg(ssh_command);
+        // Use --safe-links to prevent symlink traversal attacks from malicious workers
+        cmd.arg("-az")
+            .arg("--safe-links")
+            .arg("-e")
+            .arg(ssh_command);
 
         // Add zstd compression
         if self.transfer_config.compression_level > 0 {
@@ -1403,9 +1418,10 @@ fn sanitize_project_id(name: &str) -> String {
 
     // Reject shell metacharacters that could cause injection
     // Allow: alphanumeric, underscore, hyphen, dot (but not leading dot for hidden files)
-    let is_safe = name.chars().all(|c| {
-        c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'
-    }) && !name.starts_with('.');
+    let is_safe = name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+        && !name.starts_with('.');
 
     if is_safe {
         name.to_string()

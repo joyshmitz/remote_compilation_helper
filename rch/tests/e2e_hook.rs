@@ -528,44 +528,47 @@ fn test_hook_ignores_background_commands() {
 }
 
 #[test]
-fn test_hook_classifies_chained_commands() {
+fn test_hook_rejects_chained_commands() {
     let _guard = test_guard!();
-    let harness = create_hook_harness("hook_classifies_chained").unwrap();
+    let harness = create_hook_harness("hook_rejects_chained").unwrap();
 
     harness
         .logger
-        .info("TEST START: test_hook_classifies_chained_commands");
+        .info("TEST START: test_hook_rejects_chained_commands");
 
-    // && chained - multi-command splitting detects compilation sub-commands
+    // && chained - should be rejected for safety
     let result = classify_and_log(&harness, "cargo build && cargo test");
     harness
         .assert(
-            result.is_compilation,
-            "&& chained with compilation sub-commands should be intercepted",
+            !result.is_compilation,
+            "&& chained commands should be rejected",
         )
         .unwrap();
+    assert!(result.reason.contains("chained"));
 
     // ; chained
     let result = classify_and_log(&harness, "cargo build; cargo test");
     harness
         .assert(
-            result.is_compilation,
-            "; chained with compilation sub-commands should be intercepted",
+            !result.is_compilation,
+            "; chained commands should be rejected",
         )
         .unwrap();
+    assert!(result.reason.contains("chained"));
 
     // || chained
     let result = classify_and_log(&harness, "cargo build || echo failed");
     harness
         .assert(
-            result.is_compilation,
-            "|| chained with compilation sub-commands should be intercepted",
+            !result.is_compilation,
+            "|| chained commands should be rejected",
         )
         .unwrap();
+    assert!(result.reason.contains("chained"));
 
     harness
         .logger
-        .info("TEST PASS: test_hook_classifies_chained_commands");
+        .info("TEST PASS: test_hook_rejects_chained_commands");
     harness.mark_passed();
 }
 

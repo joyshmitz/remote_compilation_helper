@@ -141,9 +141,10 @@ pub async fn start_server(
     state: HttpState,
 ) -> tokio::task::JoinHandle<Result<(), std::io::Error>> {
     let router = create_router(state);
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+    // Bind to localhost only for security
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
 
-    tracing::info!("Starting HTTP server for observability on port {}", port);
+    tracing::info!("Starting HTTP server for observability on {}", addr);
 
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(addr).await?;
