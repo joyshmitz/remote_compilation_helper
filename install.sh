@@ -322,15 +322,6 @@ cleanup_lock() {
     rm -f "$LOCK_FILE"
 }
 
-# Cleanup helper for clone directory (called from trap)
-cleanup_clone_dir() {
-    local dir="$1"
-    if [[ -n "$dir" ]] && [[ -d "$dir" ]]; then
-        # Safe recursive removal of temp clone directory
-        find "$dir" -delete 2>/dev/null || true
-    fi
-}
-
 # ============================================================================
 # Platform Detection
 # ============================================================================
