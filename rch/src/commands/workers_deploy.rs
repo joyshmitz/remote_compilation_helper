@@ -84,10 +84,7 @@ pub async fn workers_deploy_binary(
         workers.iter().collect()
     } else {
         let wid = worker_id.as_ref().unwrap();
-        workers
-            .iter()
-            .filter(|w| w.id.as_str() == wid)
-            .collect()
+        workers.iter().filter(|w| w.id.as_str() == wid).collect()
     };
 
     if target_workers.is_empty() {
@@ -127,7 +124,9 @@ pub async fn workers_deploy_binary(
     let mut results: Vec<DeployResult> = Vec::new();
 
     for worker in target_workers {
-        let result = deploy_binary_to_worker(worker, &local_binary, &local_version, force, dry_run, ctx).await;
+        let result =
+            deploy_binary_to_worker(worker, &local_binary, &local_version, force, dry_run, ctx)
+                .await;
         results.push(result);
     }
 
@@ -153,7 +152,9 @@ pub async fn workers_deploy_binary(
 pub(super) fn find_local_binary(name: &str) -> Result<PathBuf> {
     // Check if running from cargo target directory
     let exe = std::env::current_exe()?;
-    let exe_dir = exe.parent().ok_or_else(|| anyhow::anyhow!("Cannot get exe directory"))?;
+    let exe_dir = exe
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Cannot get exe directory"))?;
 
     // Check same directory as current executable
     let same_dir = exe_dir.join(name);
@@ -172,12 +173,7 @@ pub(super) fn find_local_binary(name: &str) -> Result<PathBuf> {
     }
 
     // Check common locations
-    let common_paths = [
-        "/usr/local/bin",
-        "/usr/bin",
-        "~/.cargo/bin",
-        "~/.local/bin",
-    ];
+    let common_paths = ["/usr/local/bin", "/usr/bin", "~/.cargo/bin", "~/.local/bin"];
 
     for base in common_paths {
         let expanded = shellexpand::tilde(base);

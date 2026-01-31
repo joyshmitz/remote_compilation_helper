@@ -1283,6 +1283,7 @@ mod tests {
     use rch_common::test_guard;
     use rch_common::{Classification, CompilationKind, RequiredRuntime, WorkerId};
     use rch_common::{SelectedWorker, SelectionReason};
+    use std::path::PathBuf;
 
     struct TestConfigDirGuard;
 
