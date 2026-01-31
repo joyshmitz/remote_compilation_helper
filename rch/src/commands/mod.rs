@@ -10,6 +10,8 @@
 // Sub-modules
 mod agents;
 mod config;
+mod config_doctor;
+mod config_init;
 mod daemon;
 mod helpers;
 mod hook;
@@ -48,9 +50,11 @@ pub use agents::{agents_install_hook, agents_list, agents_status, agents_uninsta
 
 // Re-export config commands for backward compatibility
 pub use config::{
-    ConfigDoctorResponse, config_diff, config_doctor, config_edit, config_export, config_get,
-    config_init, config_lint, config_reset, config_set, config_show, config_validate,
+    config_diff, config_edit, config_export, config_get, config_lint, config_reset, config_set,
+    config_show, config_validate,
 };
+pub use config_doctor::{config_doctor, ConfigDoctorResponse};
+pub use config_init::config_init;
 
 // Re-export speedscore command for backward compatibility
 pub use speedscore::speedscore;
@@ -76,7 +80,6 @@ pub(crate) use helpers::set_test_config_dir_override;
 pub use helpers::{config_dir, load_workers_from_config};
 
 // Re-export commonly used helpers
-use crate::error::DaemonError;
 #[cfg(not(unix))]
 use crate::error::PlatformError;
 use crate::status_types::{
@@ -86,8 +89,7 @@ use anyhow::{Context, Result};
 use helpers::{major_version_mismatch, rust_version_mismatch};
 use rch_common::WorkerCapabilities;
 use serde::Deserialize;
-use std::path::Path;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
@@ -377,38 +379,8 @@ async fn query_daemon_health(socket_path: &str) -> Result<DaemonHealthResponse> 
 
 // NOTE: build_dry_run_summary and diagnose moved to status.rs
 
-/// Helper to send command to daemon socket.
-#[cfg(not(unix))]
-pub(crate) async fn send_daemon_command(_command: &str) -> Result<String> {
-    Err(PlatformError::UnixOnly {
-        feature: "daemon commands".to_string(),
-    })?
-}
-
-#[cfg(unix)]
-pub(crate) async fn send_daemon_command(command: &str) -> Result<String> {
-    let config = crate::config::load_config()?;
-    let expanded = shellexpand::tilde(&config.general.socket_path);
-    let socket_path = Path::new(expanded.as_ref());
-    if !socket_path.exists() {
-        return Err(DaemonError::SocketNotFound {
-            socket_path: socket_path.display().to_string(),
-        }
-        .into());
-    }
-
-    let stream = UnixStream::connect(socket_path).await?;
-    let (reader, mut writer) = stream.into_split();
-
-    writer.write_all(command.as_bytes()).await?;
-    writer.flush().await?;
-
-    let mut reader = BufReader::new(reader);
-    let mut response = String::new();
-    reader.read_to_string(&mut response).await?;
-
-    Ok(response)
-}
+// Re-export send_daemon_command from helpers (single source of truth)
+pub(crate) use helpers::send_daemon_command;
 
 // NOTE: self_test, status_overview, and check moved to status.rs
 // NOTE: agents_list, agents_status, agents_install_hook, agents_uninstall_hook moved to agents.rs

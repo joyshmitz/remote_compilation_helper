@@ -6,7 +6,7 @@
 use crate::ui::context::OutputContext;
 use anyhow::Result;
 
-use super::config::config_init;
+use super::config_init::config_init;
 use super::daemon::daemon_start;
 use super::hook;
 use super::workers::workers_probe;
