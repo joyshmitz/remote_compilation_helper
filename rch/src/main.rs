@@ -2436,7 +2436,10 @@ async fn handle_web(port: u16, no_open: bool, prod: bool, ctx: &OutputContext) -
         .current_dir(&web_dir)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
-        .status()?;
+        .status()
+        .map_err(|e| error::WebError::ServerStartFailed {
+            reason: format!("failed to execute {}: {}", cmd_name, e),
+        })?;
 
     if !status.success() {
         return Err(error::WebError::ServerExitedWithError {

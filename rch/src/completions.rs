@@ -168,11 +168,9 @@ pub fn install_completions(
     }
 
     // Write the completion script
-    fs::write(&paths.script_path, &script_content).with_context(|| {
-        format!(
-            "Failed to write completion script to {}",
-            paths.script_path.display()
-        )
+    fs::write(&paths.script_path, &script_content).map_err(|e| CompletionError::WriteFailed {
+        path: paths.script_path.display().to_string(),
+        source: e,
     })?;
     result.script_written = true;
 

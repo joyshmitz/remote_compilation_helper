@@ -1395,7 +1395,10 @@ pub fn config_edit(project: bool, user: bool, workers: bool, ctx: &OutputContext
     let status = std::process::Command::new(&editor)
         .arg(&file_path)
         .status()
-        .with_context(|| format!("Failed to launch editor: {}", editor))?;
+        .map_err(|e| EditorError::LaunchFailed {
+            editor: editor.clone(),
+            source: e,
+        })?;
 
     if !status.success() {
         return Err(EditorError::ExitedWithError {
