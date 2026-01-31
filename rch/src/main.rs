@@ -2439,7 +2439,10 @@ async fn handle_web(port: u16, no_open: bool, prod: bool, ctx: &OutputContext) -
         .status()?;
 
     if !status.success() {
-        anyhow::bail!("Web server exited with error");
+        return Err(error::WebError::ServerExitedWithError {
+            exit_code: status.code(),
+        }
+        .into());
     }
 
     Ok(())
@@ -2488,14 +2491,7 @@ fn find_web_directory() -> Result<PathBuf> {
         }
     }
 
-    anyhow::bail!(
-        "Could not find web dashboard directory. \n\
-         Expected to find it at one of:\n  \
-         - ./web\n  \
-         - ~/.local/share/rch/web\n  \
-         - /usr/local/share/rch/web\n\n\
-         If you installed from source, run 'rch web' from the project root."
-    )
+    Err(error::WebError::DashboardNotFound.into())
 }
 
 /// Open a URL in the default browser
@@ -4097,7 +4093,10 @@ mod tests {
 
         if let Err(e) = result {
             let msg = e.to_string();
-            assert!(msg.contains("Could not find web dashboard"));
+            assert!(
+                msg.contains("Web dashboard directory not found"),
+                "Error message should indicate dashboard not found: {msg}"
+            );
         }
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

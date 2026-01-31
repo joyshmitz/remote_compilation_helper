@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use rch_common::{ApiResponse, ConfigValueSource, RchConfig};
 use std::path::{Path, PathBuf};
 
-use crate::error::ConfigError;
+use crate::error::{ConfigError, EditorError};
 use crate::ui::context::OutputContext;
 use crate::ui::theme::StatusIndicator;
 use crate::{config, ui};
@@ -1398,7 +1398,10 @@ pub fn config_edit(project: bool, user: bool, workers: bool, ctx: &OutputContext
         .with_context(|| format!("Failed to launch editor: {}", editor))?;
 
     if !status.success() {
-        anyhow::bail!("Editor exited with non-zero status: {:?}", status.code());
+        return Err(EditorError::ExitedWithError {
+            exit_code: status.code(),
+        }
+        .into());
     }
 
     println!();
