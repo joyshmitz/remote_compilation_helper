@@ -19,8 +19,9 @@ use crate::ui::progress::MultiProgressManager;
 use crate::ui::theme::StatusIndicator;
 
 use super::helpers::{
-    classify_ssh_error, default_socket_path, format_ssh_report, indent_lines, major_version_mismatch,
-    runtime_label, rust_version_mismatch, send_daemon_command, urlencoding_encode,
+    classify_ssh_error, default_socket_path, format_ssh_report, indent_lines,
+    major_version_mismatch, runtime_label, rust_version_mismatch, send_daemon_command,
+    urlencoding_encode,
 };
 use super::helpers::{config_dir, load_workers_from_config};
 use super::types::{
