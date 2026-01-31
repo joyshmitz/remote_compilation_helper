@@ -2688,6 +2688,9 @@ mod tests {
     #[tokio::test]
     async fn test_compilation_detected() {
         let _lock = test_lock().lock().await;
+        // Enable mock mode for deterministic testing
+        mock::set_mock_enabled_override(Some(true));
+
         let input = HookInput {
             tool_name: "Bash".to_string(),
             tool_input: ToolInput {
@@ -2697,9 +2700,12 @@ mod tests {
             session_id: None,
         };
 
-        // Currently allows because remote execution not implemented
+        // With mock mode enabled, remote execution succeeds and denies local execution
         let output = process_hook(input).await;
-        assert!(output.is_allow());
+        assert!(!output.is_allow(), "Expected deny after successful remote compilation");
+
+        // Reset mock override
+        mock::set_mock_enabled_override(None);
     }
 
     // ========================================================================
