@@ -1651,6 +1651,7 @@ fn handle_schema_request(command: &Option<Commands>) -> Result<()> {
             eprintln!("  rch --schema config diff       # ConfigDiffResponse");
             eprintln!("  rch --schema config show       # ConfigShowResponse");
             eprintln!("  rch --schema config get        # ConfigGetResponse");
+            eprintln!("  rch --schema config reset      # ConfigResetResponse");
             eprintln!("  rch --schema config validate   # ConfigValidationResponse");
             eprintln!("  rch --schema workers list      # WorkersListResponse");
             eprintln!("  rch --schema daemon status     # DaemonStatusResponse");
@@ -3106,6 +3107,20 @@ mod tests {
                 assert_eq!(value, "debug");
             }
             _ => panic!("Expected config set command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_config_reset() {
+        let _guard = test_guard!();
+        let cli = Cli::try_parse_from(["rch", "config", "reset", "general.enabled"]).unwrap();
+        match cli.command {
+            Some(Commands::Config {
+                action: ConfigAction::Reset { key },
+            }) => {
+                assert_eq!(key, "general.enabled");
+            }
+            _ => panic!("Expected config reset command"),
         }
     }
 

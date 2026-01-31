@@ -310,7 +310,7 @@ pub struct ConfigSetResponse {
 }
 
 /// Configuration reset response for JSON output.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ConfigResetResponse {
     pub key: String,
     pub value: String,

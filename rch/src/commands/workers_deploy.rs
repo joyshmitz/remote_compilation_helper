@@ -3,7 +3,6 @@
 //! This module contains commands for deploying the rch-wkr binary to
 //! remote workers via SCP.
 
-use crate::error::SshError;
 use crate::ui::context::OutputContext;
 use crate::ui::theme::StatusIndicator;
 use anyhow::{Context, Result};
@@ -367,7 +366,7 @@ pub(super) async fn get_remote_version(worker: &WorkerConfig) -> Result<String> 
 }
 
 /// Deploy binary via SCP to remote worker.
-async fn deploy_via_scp(worker: &WorkerConfig, local_binary: &Path) -> Result<String> {
+pub(super) async fn deploy_via_scp(worker: &WorkerConfig, local_binary: &Path) -> Result<String> {
     // Try /usr/local/bin first, then fall back to ~/.local/bin
     let remote_paths = ["/usr/local/bin/rch-wkr", "~/.local/bin/rch-wkr"];
 

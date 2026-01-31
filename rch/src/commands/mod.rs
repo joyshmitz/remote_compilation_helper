@@ -59,6 +59,9 @@ pub use workers_init::{workers_discover, workers_init};
 // Re-export workers deploy command for backward compatibility
 pub use workers_deploy::workers_deploy_binary;
 
+// Import workers_deploy helper functions for internal use
+use workers_deploy::{deploy_via_scp, find_local_binary, get_binary_version, get_remote_version};
+
 // Re-export types for backward compatibility
 pub use types::*;
 
@@ -77,17 +80,15 @@ use crate::status_types::{
 use crate::ui::context::OutputContext;
 use crate::ui::progress::Spinner;
 use crate::ui::theme::StatusIndicator;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use helpers::{major_version_mismatch, rust_version_mismatch};
 use rch_common::{ApiError, ApiResponse, ErrorCode, WorkerCapabilities, WorkerConfig};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::path::Path;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::UnixStream;
 use tokio::process::Command;
-use tracing::debug;
 
 use crate::hook::{query_daemon, release_worker};
 use crate::transfer::project_id_from_path;
@@ -315,9 +316,7 @@ fn summarize_capabilities(capabilities: &WorkerCapabilities) -> String {
 // Note: config_dir, load_workers_from_config, and test config overrides are defined
 // in helpers.rs and re-exported via `pub use helpers::*` above.
 
-
 // NOTE: workers_deploy_binary and helpers moved to workers_deploy.rs
-
 
 /// Synchronize Rust toolchain to workers.
 ///
@@ -1792,6 +1791,19 @@ mod tests {
         let json = serde_json::to_value(&response).unwrap();
         assert_eq!(json["key"], "general.log_level");
         assert_eq!(json["value"], "debug");
+    }
+
+    #[test]
+    fn config_reset_response_serializes() {
+        let _guard = test_guard!();
+        let response = ConfigResetResponse {
+            key: "general.enabled".to_string(),
+            value: "true".to_string(),
+            config_path: "/home/user/.config/rch/config.toml".to_string(),
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["key"], "general.enabled");
+        assert_eq!(json["value"], "true");
     }
 
     #[test]
