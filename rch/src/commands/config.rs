@@ -433,7 +433,7 @@ pub fn config_show(show_sources: bool, ctx: &OutputContext) -> Result<()> {
 }
 
 /// Determine the source of each configuration value using tracked sources.
-fn collect_value_sources(
+pub(super) fn collect_value_sources(
     config: &RchConfig,
     sources: &config::ConfigSourceMap,
 ) -> Vec<ConfigValueSourceInfo> {
@@ -1029,7 +1029,10 @@ fn collect_config_values(use_defaults: bool, style: &ui::theme::Theme) -> Result
 }
 
 /// Collect worker definitions interactively or with defaults.
-fn collect_worker_values(use_defaults: bool, style: &ui::theme::Theme) -> Result<Vec<WizardWorker>> {
+fn collect_worker_values(
+    use_defaults: bool,
+    style: &ui::theme::Theme,
+) -> Result<Vec<WizardWorker>> {
     use dialoguer::{Confirm, Input};
 
     if use_defaults {
