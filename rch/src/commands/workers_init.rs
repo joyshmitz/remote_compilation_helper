@@ -144,7 +144,10 @@ pub async fn workers_init(yes: bool, ctx: &OutputContext) -> Result<()> {
     println!();
 
     // Step 3: Check for Rust installation
-    println!("{}", style.highlight("Step 3/5: Checking Rust Installation"));
+    println!(
+        "{}",
+        style.highlight("Step 3/5: Checking Rust Installation")
+    );
     print!(
         "  {} Checking for Rust... ",
         StatusIndicator::Info.display(style)
@@ -277,12 +280,14 @@ pub async fn workers_init(yes: bool, ctx: &OutputContext) -> Result<()> {
     workers.push(new_worker);
 
     // Save to file
-    let config_path = config_dir()?.join("workers.toml");
+    let config_path = config_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?
+        .join("workers.toml");
 
     // Build TOML content
     let mut toml_content = String::new();
     for w in &workers {
-        toml_content.push_str(&format!("[[workers]]\n"));
+        toml_content.push_str("[[workers]]\n");
         toml_content.push_str(&format!("id = \"{}\"\n", w.id));
         toml_content.push_str(&format!("host = \"{}\"\n", w.host));
         toml_content.push_str(&format!("user = \"{}\"\n", w.user));
@@ -290,8 +295,14 @@ pub async fn workers_init(yes: bool, ctx: &OutputContext) -> Result<()> {
         toml_content.push_str(&format!("total_slots = {}\n", w.total_slots));
         toml_content.push_str(&format!("priority = {}\n", w.priority));
         if !w.tags.is_empty() {
-            toml_content
-                .push_str(&format!("tags = [{}]\n", w.tags.iter().map(|t| format!("\"{}\"", t)).collect::<Vec<_>>().join(", ")));
+            toml_content.push_str(&format!(
+                "tags = [{}]\n",
+                w.tags
+                    .iter()
+                    .map(|t| format!("\"{}\"", t))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
         toml_content.push('\n');
     }
@@ -347,8 +358,8 @@ pub async fn workers_init(yes: bool, ctx: &OutputContext) -> Result<()> {
 /// Discover potential workers from SSH config and shell aliases.
 pub async fn workers_discover(
     probe: bool,
-    add: bool,
-    yes: bool,
+    _add: bool,
+    _yes: bool,
     ctx: &OutputContext,
 ) -> Result<()> {
     let style = ctx.theme();
@@ -427,7 +438,7 @@ pub async fn workers_discover(
     println!();
 
     for (i, (host, info)) in probed_hosts.iter().enumerate() {
-        let status = if let Some(ref probe_info) = info {
+        let status = if let Some(_probe_info) = info {
             StatusIndicator::Success.display(style)
         } else if probe {
             StatusIndicator::Error.display(style)
@@ -446,13 +457,9 @@ pub async fn workers_discover(
         if let Some(ref identity) = host.identity_file {
             println!("      {} {}", style.muted("Key:"), style.value(identity));
         }
-        println!(
-            "      {} {:?}",
-            style.muted("Source:"),
-            host.source
-        );
+        println!("      {} {:?}", style.muted("Source:"), host.source);
 
-        if let Some(ref probe_info) = info {
+        if let Some(probe_info) = info {
             println!(
                 "      {} {}",
                 style.muted("System:"),
@@ -542,6 +549,7 @@ echo "ARCH:$(uname -m 2>/dev/null || echo unknown)""#;
             &host.user,
             key_path,
             message,
+            Duration::from_secs(10), // ConnectTimeout used in probe
         );
         return Err(ssh_error.into());
     }
@@ -564,10 +572,10 @@ echo "ARCH:$(uname -m 2>/dev/null || echo unknown)""#;
             disk_gb = val.trim().parse().unwrap_or(0);
         } else if let Some(val) = line.strip_prefix("ARCH:") {
             arch = val.trim().to_string();
-        } else if let Some(val) = line.strip_prefix("RUST:") {
-            if val.trim() != "none" {
-                rust_version = Some(val.trim().to_string());
-            }
+        } else if let Some(val) = line.strip_prefix("RUST:")
+            && val.trim() != "none"
+        {
+            rust_version = Some(val.trim().to_string());
         }
     }
 

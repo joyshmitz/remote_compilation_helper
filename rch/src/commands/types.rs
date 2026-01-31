@@ -182,6 +182,15 @@ pub struct ConfigValueSourceInfo {
     pub source: String,
 }
 
+/// Configuration get response for JSON output.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ConfigGetResponse {
+    pub key: String,
+    pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
 /// Configuration export response for JSON output.
 #[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]

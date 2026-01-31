@@ -965,6 +965,14 @@ enum ConfigAction {
         #[arg(long)]
         sources: bool,
     },
+    /// Get a single configuration value
+    Get {
+        /// Configuration key (e.g., general.enabled)
+        key: String,
+        /// Show where the value comes from (env, project, user, default)
+        #[arg(long)]
+        sources: bool,
+    },
     /// Initialize configuration files with optional interactive wizard
     #[command(after_help = r#"EXAMPLES:
     rch config init                    # Create config files with defaults
@@ -1024,6 +1032,7 @@ impl ConfigAction {
     fn as_str(&self) -> &'static str {
         match self {
             ConfigAction::Show { .. } => "show",
+            ConfigAction::Get { .. } => "get",
             ConfigAction::Init { .. } => "init",
             ConfigAction::Validate => "validate",
             ConfigAction::Set { .. } => "set",
@@ -1549,8 +1558,9 @@ fn handle_schema_command(action: SchemaAction, ctx: &OutputContext) -> Result<()
 /// Handle --schema flag: output JSON Schema for the specified command's JSON output format.
 fn handle_schema_request(command: &Option<Commands>) -> Result<()> {
     use commands::{
-        ConfigDiffResponse, ConfigLintResponse, ConfigShowResponse, ConfigValidationResponse,
-        DaemonStatusResponse, DiagnoseResponse, HookActionResponse, WorkersListResponse,
+        ConfigDiffResponse, ConfigGetResponse, ConfigLintResponse, ConfigShowResponse,
+        ConfigValidationResponse, DaemonStatusResponse, DiagnoseResponse, HookActionResponse,
+        WorkersListResponse,
     };
 
     let schema_json = match command {
@@ -1565,6 +1575,10 @@ fn handle_schema_request(command: &Option<Commands>) -> Result<()> {
             }
             ConfigAction::Show { .. } => {
                 let schema = schema_for!(ConfigShowResponse);
+                serde_json::to_string_pretty(&schema)?
+            }
+            ConfigAction::Get { .. } => {
+                let schema = schema_for!(ConfigGetResponse);
                 serde_json::to_string_pretty(&schema)?
             }
             ConfigAction::Validate => {
@@ -1629,6 +1643,7 @@ fn handle_schema_request(command: &Option<Commands>) -> Result<()> {
             eprintln!("  rch --schema config lint       # ConfigLintResponse");
             eprintln!("  rch --schema config diff       # ConfigDiffResponse");
             eprintln!("  rch --schema config show       # ConfigShowResponse");
+            eprintln!("  rch --schema config get        # ConfigGetResponse");
             eprintln!("  rch --schema config validate   # ConfigValidationResponse");
             eprintln!("  rch --schema workers list      # WorkersListResponse");
             eprintln!("  rch --schema daemon status     # DaemonStatusResponse");
@@ -2091,6 +2106,9 @@ async fn handle_config(action: ConfigAction, ctx: &OutputContext) -> Result<()> 
     match action {
         ConfigAction::Show { sources } => {
             commands::config_show(sources, ctx)?;
+        }
+        ConfigAction::Get { key, sources } => {
+            commands::config_get(&key, sources, ctx)?;
         }
         ConfigAction::Init {
             wizard,
@@ -2931,6 +2949,37 @@ mod tests {
                 assert!(sources);
             }
             _ => panic!("Expected config show command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_config_get() {
+        let _guard = test_guard!();
+        let cli = Cli::try_parse_from(["rch", "config", "get", "general.enabled"]).unwrap();
+        match cli.command {
+            Some(Commands::Config {
+                action: ConfigAction::Get { key, sources },
+            }) => {
+                assert_eq!(key, "general.enabled");
+                assert!(!sources);
+            }
+            _ => panic!("Expected config get command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_config_get_sources() {
+        let _guard = test_guard!();
+        let cli =
+            Cli::try_parse_from(["rch", "config", "get", "general.enabled", "--sources"]).unwrap();
+        match cli.command {
+            Some(Commands::Config {
+                action: ConfigAction::Get { key, sources },
+            }) => {
+                assert_eq!(key, "general.enabled");
+                assert!(sources);
+            }
+            _ => panic!("Expected config get command"),
         }
     }
 

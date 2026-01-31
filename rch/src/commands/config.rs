@@ -12,10 +12,10 @@ use crate::{config, ui};
 use super::helpers::{config_dir, load_workers_from_config};
 use super::types::{
     ConfigCircuitSection, ConfigCompilationSection, ConfigDiffEntry, ConfigDiffResponse,
-    ConfigEnvironmentSection, ConfigGeneralSection, ConfigInitResponse, ConfigLintResponse,
-    ConfigOutputSection, ConfigSelfHealingSection, ConfigSetResponse, ConfigShowResponse,
-    ConfigTransferSection, ConfigValidationIssue, ConfigValidationResponse, ConfigValueSourceInfo,
-    LintIssue, LintSeverity,
+    ConfigEnvironmentSection, ConfigGeneralSection, ConfigGetResponse, ConfigInitResponse,
+    ConfigLintResponse, ConfigOutputSection, ConfigSelfHealingSection, ConfigSetResponse,
+    ConfigShowResponse, ConfigTransferSection, ConfigValidationIssue, ConfigValidationResponse,
+    ConfigValueSourceInfo, LintIssue, LintSeverity,
 };
 
 fn print_file_validation(
@@ -428,6 +428,60 @@ pub fn config_show(show_sources: bool, ctx: &OutputContext) -> Result<()> {
         );
     }
     println!("{}", style.muted("# 4. Built-in defaults"));
+
+    Ok(())
+}
+
+/// Get a single configuration value.
+pub fn config_get(key: &str, show_sources: bool, ctx: &OutputContext) -> Result<()> {
+    let style = ctx.theme();
+
+    let normalized_key = match key {
+        "first_run_complete" => "output.first_run_complete",
+        _ => key,
+    };
+
+    let loaded = config::load_config_with_sources()?;
+    let values = collect_value_sources(&loaded.config, &loaded.sources);
+    let entry = values.iter().find(|value| value.key == normalized_key);
+
+    let entry = match entry {
+        Some(value) => value,
+        None => {
+            let supported = values
+                .iter()
+                .map(|value| value.key.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(ConfigError::InvalidValue {
+                field: key.to_string(),
+                reason: "unknown configuration key".to_string(),
+                suggestion: format!("Supported keys: {}", supported),
+            }
+            .into());
+        }
+    };
+
+    if ctx.is_json() {
+        let response = ConfigGetResponse {
+            key: entry.key.clone(),
+            value: entry.value.clone(),
+            source: show_sources.then(|| entry.source.clone()),
+        };
+        let _ = ctx.json(&ApiResponse::ok("config get", response));
+        return Ok(());
+    }
+
+    if show_sources {
+        println!(
+            "{} {} {}",
+            style.value(&entry.value),
+            style.muted("# from"),
+            style.muted(&entry.source)
+        );
+    } else {
+        println!("{}", entry.value);
+    }
 
     Ok(())
 }

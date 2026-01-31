@@ -17,12 +17,12 @@ use rch_common::{ApiResponse, CommandPriority, RequiredRuntime};
 use std::path::Path;
 use tracing::debug;
 
+use super::config::collect_value_sources;
 use super::helpers::{humanize_duration, runtime_label, urlencoding_encode};
 use super::types::{
     DiagnoseDaemonStatus, DiagnoseDecision, DiagnoseResponse, DiagnoseThreshold,
     DiagnoseWorkerSelection, DryRunPipelineStep, DryRunSummary,
 };
-use super::config::collect_value_sources;
 use super::{
     collect_local_capability_warnings, has_any_capabilities, load_workers_from_config,
     probe_local_capabilities, project_id_from_path, query_daemon, query_daemon_health,
