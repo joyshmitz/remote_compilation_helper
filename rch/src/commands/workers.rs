@@ -39,7 +39,7 @@ use crate::hook::required_runtime_for_kind;
 // Workers-Specific Helper Functions
 // =============================================================================
 
-fn has_any_capabilities(capabilities: &WorkerCapabilities) -> bool {
+pub(super) fn has_any_capabilities(capabilities: &WorkerCapabilities) -> bool {
     capabilities.rustc_version.is_some()
         || capabilities.bun_version.is_some()
         || capabilities.node_version.is_some()
@@ -49,7 +49,7 @@ fn has_any_capabilities(capabilities: &WorkerCapabilities) -> bool {
 /// Probe local runtime capabilities by running version commands in parallel.
 /// Uses tokio async to spawn all 4 version checks concurrently, reducing total
 /// latency from ~200ms (sequential) to ~50ms (parallel).
-async fn probe_local_capabilities() -> WorkerCapabilities {
+pub(super) async fn probe_local_capabilities() -> WorkerCapabilities {
     async fn run_version(cmd: &str, args: &[&str]) -> Option<String> {
         let output = tokio::process::Command::new(cmd)
             .args(args)
@@ -84,7 +84,7 @@ async fn probe_local_capabilities() -> WorkerCapabilities {
     caps
 }
 
-fn collect_local_capability_warnings(
+pub(super) fn collect_local_capability_warnings(
     workers: &[WorkerCapabilitiesFromApi],
     local: &WorkerCapabilities,
 ) -> Vec<String> {
@@ -229,8 +229,8 @@ fn collect_local_capability_warnings(
     warnings
 }
 
-#[allow(dead_code)]
-fn summarize_capabilities(capabilities: &WorkerCapabilities) -> String {
+#[cfg(test)]
+pub(super) fn summarize_capabilities(capabilities: &WorkerCapabilities) -> String {
     let mut parts = Vec::new();
     if let Some(rustc) = capabilities.rustc_version.as_ref() {
         parts.push(format!("rustc {}", rustc));
@@ -253,7 +253,9 @@ fn summarize_capabilities(capabilities: &WorkerCapabilities) -> String {
 }
 
 /// Query the daemon for worker capabilities.
-async fn query_workers_capabilities(refresh: bool) -> Result<WorkerCapabilitiesResponseFromApi> {
+pub(super) async fn query_workers_capabilities(
+    refresh: bool,
+) -> Result<WorkerCapabilitiesResponseFromApi> {
     let command = if refresh {
         "GET /workers/capabilities?refresh=true\n"
     } else {
@@ -1360,12 +1362,3 @@ pub async fn workers_disable(
     Ok(())
 }
 
-// =============================================================================
-// TODO: Move remaining workers_* functions from mod.rs here
-// =============================================================================
-// Remaining functions to extract:
-// - workers_deploy_binary
-// - workers_sync_toolchain
-// - workers_setup
-// - workers_init
-// - workers_discover

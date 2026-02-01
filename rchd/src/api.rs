@@ -7,17 +7,20 @@
 use crate::DaemonContext;
 use crate::alerts::AlertInfo;
 use crate::events::EventBus;
-use crate::health::{HealthConfig, probe_worker_capabilities};
 use crate::metrics;
 use crate::metrics::budget::{self, BudgetStatusResponse};
 use crate::reload;
 use crate::telemetry::collect_telemetry_from_worker;
+use crate::workers::{
+    WorkerCapabilitiesResponse, get_workers_capabilities, handle_worker_disable,
+    handle_worker_drain, handle_worker_enable,
+};
 use anyhow::{Result, anyhow};
 use chrono::{Duration as ChronoDuration, Utc};
 use rch_common::{
     ApiError, BuildRecord, BuildStats, CircuitBreakerConfig, CircuitState, CommandPriority,
     ErrorCode, ReleaseRequest, RequiredRuntime, SavedTimeStats, SelectedWorker, SelectionReason,
-    SelectionRequest, SelectionResponse, WorkerCapabilities, WorkerId, WorkerStatus,
+    SelectionRequest, SelectionResponse, WorkerId, WorkerStatus,
 };
 use rch_telemetry::protocol::{TelemetrySource, TestRunRecord, TestRunStats, WorkerTelemetry};
 use rch_telemetry::speedscore::SpeedScore;
@@ -249,21 +252,6 @@ pub struct WorkerStatusInfo {
     pub failure_history: Vec<bool>,
 }
 
-/// Worker capabilities information.
-#[derive(Debug, Serialize)]
-pub struct WorkerCapabilitiesInfo {
-    pub id: String,
-    pub host: String,
-    pub user: String,
-    pub capabilities: WorkerCapabilities,
-}
-
-/// Worker capabilities response.
-#[derive(Debug, Serialize)]
-pub struct WorkerCapabilitiesResponse {
-    pub workers: Vec<WorkerCapabilitiesInfo>,
-}
-
 /// Active build information (placeholder).
 #[derive(Debug, Serialize)]
 pub struct ActiveBuild {
@@ -413,22 +401,6 @@ pub struct CancelledBuildInfo {
     pub worker_id: String,
     pub project_id: String,
     pub slots_released: u32,
-}
-
-/// Response for worker state changes (drain/enable/disable).
-#[derive(Debug, Serialize)]
-pub struct WorkerStateResponse {
-    pub status: String,
-    pub worker_id: String,
-    pub action: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub new_status: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub active_slots: Option<u32>,
 }
 
 // ============================================================================
@@ -1687,34 +1659,7 @@ async fn handle_workers_capabilities(
     ctx: &DaemonContext,
     refresh: bool,
 ) -> ApiResponse<WorkerCapabilitiesResponse> {
-    let workers = ctx.pool.all_workers().await;
-    let mut entries = Vec::with_capacity(workers.len());
-    let timeout = HealthConfig::default().check_timeout;
-
-    for worker in workers {
-        if refresh && let Some(capabilities) = probe_worker_capabilities(&worker, timeout).await {
-            worker.set_capabilities(capabilities).await;
-        }
-
-        let (id, host, user) = {
-            let config = worker.config.read().await;
-            (
-                config.id.to_string(),
-                config.host.clone(),
-                config.user.clone(),
-            )
-        };
-        let capabilities = worker.capabilities().await;
-
-        entries.push(WorkerCapabilitiesInfo {
-            id,
-            host,
-            user,
-            capabilities,
-        });
-    }
-
-    ApiResponse::Ok(WorkerCapabilitiesResponse { workers: entries })
+    ApiResponse::Ok(get_workers_capabilities(ctx, refresh).await)
 }
 
 async fn handle_benchmark_trigger(
@@ -2338,121 +2283,6 @@ async fn handle_cancel_all_builds(ctx: &DaemonContext, force: bool) -> CancelAll
     }
 }
 
-/// Handle a worker drain request.
-async fn handle_worker_drain(ctx: &DaemonContext, worker_id: &WorkerId) -> WorkerStateResponse {
-    match ctx.pool.get(worker_id).await {
-        Some(worker) => {
-            let active_slots = worker.used_slots();
-            worker.drain().await;
-            WorkerStateResponse {
-                status: "ok".to_string(),
-                worker_id: worker_id.to_string(),
-                action: "drain".to_string(),
-                new_status: Some("draining".to_string()),
-                reason: None,
-                message: Some(format!(
-                    "Worker is draining. {} slot(s) currently in use.",
-                    active_slots
-                )),
-                active_slots: Some(active_slots),
-            }
-        }
-        None => WorkerStateResponse {
-            status: "error".to_string(),
-            worker_id: worker_id.to_string(),
-            action: "drain".to_string(),
-            new_status: None,
-            reason: None,
-            message: Some(format!("Worker '{}' not found", worker_id)),
-            active_slots: None,
-        },
-    }
-}
-
-/// Handle a worker enable request.
-async fn handle_worker_enable(ctx: &DaemonContext, worker_id: &WorkerId) -> WorkerStateResponse {
-    match ctx.pool.get(worker_id).await {
-        Some(worker) => {
-            let old_status = worker.status().await;
-            worker.enable().await;
-            WorkerStateResponse {
-                status: "ok".to_string(),
-                worker_id: worker_id.to_string(),
-                action: "enable".to_string(),
-                new_status: Some("healthy".to_string()),
-                reason: None,
-                message: Some(format!("Worker enabled (was {:?})", old_status)),
-                active_slots: None,
-            }
-        }
-        None => WorkerStateResponse {
-            status: "error".to_string(),
-            worker_id: worker_id.to_string(),
-            action: "enable".to_string(),
-            new_status: None,
-            reason: None,
-            message: Some(format!("Worker '{}' not found", worker_id)),
-            active_slots: None,
-        },
-    }
-}
-
-/// Handle a worker disable request.
-async fn handle_worker_disable(
-    ctx: &DaemonContext,
-    worker_id: &WorkerId,
-    reason: Option<String>,
-    drain_first: bool,
-) -> WorkerStateResponse {
-    match ctx.pool.get(worker_id).await {
-        Some(worker) => {
-            let active_slots = worker.used_slots();
-
-            if drain_first && active_slots > 0 {
-                // Start draining - will be fully disabled when slots reach 0
-                worker.drain().await;
-                WorkerStateResponse {
-                    status: "ok".to_string(),
-                    worker_id: worker_id.to_string(),
-                    action: "disable".to_string(),
-                    new_status: Some("draining".to_string()),
-                    reason: reason.clone(),
-                    message: Some(format!(
-                        "Worker is draining before disable. {} slot(s) in use. Reason: {}",
-                        active_slots,
-                        reason.as_deref().unwrap_or("none provided")
-                    )),
-                    active_slots: Some(active_slots),
-                }
-            } else {
-                // Disable immediately
-                worker.disable(reason.clone()).await;
-                WorkerStateResponse {
-                    status: "ok".to_string(),
-                    worker_id: worker_id.to_string(),
-                    action: "disable".to_string(),
-                    new_status: Some("disabled".to_string()),
-                    reason: reason.clone(),
-                    message: Some(format!(
-                        "Worker disabled. Reason: {}",
-                        reason.as_deref().unwrap_or("none provided")
-                    )),
-                    active_slots: Some(active_slots),
-                }
-            }
-        }
-        None => WorkerStateResponse {
-            status: "error".to_string(),
-            worker_id: worker_id.to_string(),
-            action: "disable".to_string(),
-            new_status: None,
-            reason,
-            message: Some(format!("Worker '{}' not found", worker_id)),
-            active_slots: None,
-        },
-    }
-}
-
 /// Handle a status request.
 async fn handle_status(ctx: &DaemonContext) -> Result<DaemonFullStatus> {
     let workers = ctx.pool.all_workers().await;
@@ -2637,10 +2467,10 @@ mod tests {
     use crate::selection::WorkerSelector;
     use crate::self_test::{SelfTestHistory, SelfTestService};
     use crate::telemetry::TelemetryStore;
-    use crate::workers::WorkerPool;
+    use crate::workers::{WorkerCapabilitiesInfo, WorkerPool, WorkerStateResponse};
     use crate::{benchmark_queue::BenchmarkQueue, events::EventBus};
     use chrono::Duration as ChronoDuration;
-    use rch_common::SelfTestConfig;
+    use rch_common::{SelfTestConfig, WorkerCapabilities};
     use rch_common::test_guard;
     use std::sync::Arc;
     use std::time::{Duration, Instant};

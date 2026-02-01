@@ -3,12 +3,13 @@
 //! This module contains commands for diagnosing RCH behavior, running self-tests,
 //! and checking overall system status.
 
-use crate::hook::required_runtime_for_kind;
+use crate::hook::{query_daemon, release_worker, required_runtime_for_kind};
 use crate::status_types::{
     DaemonFullStatusResponse, SelfTestHistoryResponse, SelfTestRunResponse, SelfTestStatusResponse,
     extract_json_body,
 };
 use crate::toolchain::detect_toolchain;
+use crate::transfer::project_id_from_path;
 use crate::ui::context::OutputContext;
 use crate::ui::progress::Spinner;
 use crate::ui::theme::StatusIndicator;
@@ -23,11 +24,11 @@ use super::types::{
     DiagnoseDaemonStatus, DiagnoseDecision, DiagnoseResponse, DiagnoseThreshold,
     DiagnoseWorkerSelection, DryRunPipelineStep, DryRunSummary,
 };
-use super::{
-    collect_local_capability_warnings, has_any_capabilities, load_workers_from_config,
-    probe_local_capabilities, project_id_from_path, query_daemon, query_daemon_health,
-    query_workers_capabilities, release_worker, send_daemon_command,
+use super::workers::{
+    collect_local_capability_warnings, has_any_capabilities, probe_local_capabilities,
+    query_workers_capabilities,
 };
+use super::{load_workers_from_config, query_daemon_health, send_daemon_command};
 
 // =============================================================================
 // Diagnose Command

@@ -2,10 +2,13 @@
 
 #![allow(dead_code)] // Scaffold code - methods will be used in future beads
 
+use crate::DaemonContext;
+use crate::health::{HealthConfig, probe_worker_capabilities};
 use rch_common::{
     CircuitBreakerConfig, CircuitState, CircuitStats, WorkerCapabilities, WorkerConfig, WorkerId,
     WorkerStatus,
 };
+use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -550,6 +553,198 @@ impl WorkerPool {
 impl Default for WorkerPool {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ============================================================================
+// Worker API Response Types
+// ============================================================================
+
+/// Worker capabilities information.
+#[derive(Debug, Serialize)]
+pub struct WorkerCapabilitiesInfo {
+    pub id: String,
+    pub host: String,
+    pub user: String,
+    pub capabilities: WorkerCapabilities,
+}
+
+/// Worker capabilities response.
+#[derive(Debug, Serialize)]
+pub struct WorkerCapabilitiesResponse {
+    pub workers: Vec<WorkerCapabilitiesInfo>,
+}
+
+/// Response for worker state changes (drain/enable/disable).
+#[derive(Debug, Serialize)]
+pub struct WorkerStateResponse {
+    pub status: String,
+    pub worker_id: String,
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_slots: Option<u32>,
+}
+
+// ============================================================================
+// Worker API Handlers
+// ============================================================================
+
+/// Collect worker capabilities, optionally refreshing via SSH probe.
+pub async fn get_workers_capabilities(
+    ctx: &DaemonContext,
+    refresh: bool,
+) -> WorkerCapabilitiesResponse {
+    let workers = ctx.pool.all_workers().await;
+    let mut entries = Vec::with_capacity(workers.len());
+    let timeout = HealthConfig::default().check_timeout;
+
+    for worker in workers {
+        if refresh && let Some(capabilities) = probe_worker_capabilities(&worker, timeout).await {
+            worker.set_capabilities(capabilities).await;
+        }
+
+        let (id, host, user) = {
+            let config = worker.config.read().await;
+            (
+                config.id.to_string(),
+                config.host.clone(),
+                config.user.clone(),
+            )
+        };
+        let capabilities = worker.capabilities().await;
+
+        entries.push(WorkerCapabilitiesInfo {
+            id,
+            host,
+            user,
+            capabilities,
+        });
+    }
+
+    WorkerCapabilitiesResponse { workers: entries }
+}
+
+/// Handle a worker drain request.
+pub async fn handle_worker_drain(ctx: &DaemonContext, worker_id: &WorkerId) -> WorkerStateResponse {
+    match ctx.pool.get(worker_id).await {
+        Some(worker) => {
+            let active_slots = worker.used_slots();
+            worker.drain().await;
+            WorkerStateResponse {
+                status: "ok".to_string(),
+                worker_id: worker_id.to_string(),
+                action: "drain".to_string(),
+                new_status: Some("draining".to_string()),
+                reason: None,
+                message: Some(format!(
+                    "Worker is draining. {} slot(s) currently in use.",
+                    active_slots
+                )),
+                active_slots: Some(active_slots),
+            }
+        }
+        None => WorkerStateResponse {
+            status: "error".to_string(),
+            worker_id: worker_id.to_string(),
+            action: "drain".to_string(),
+            new_status: None,
+            reason: None,
+            message: Some(format!("Worker '{}' not found", worker_id)),
+            active_slots: None,
+        },
+    }
+}
+
+/// Handle a worker enable request.
+pub async fn handle_worker_enable(
+    ctx: &DaemonContext,
+    worker_id: &WorkerId,
+) -> WorkerStateResponse {
+    match ctx.pool.get(worker_id).await {
+        Some(worker) => {
+            let old_status = worker.status().await;
+            worker.enable().await;
+            WorkerStateResponse {
+                status: "ok".to_string(),
+                worker_id: worker_id.to_string(),
+                action: "enable".to_string(),
+                new_status: Some("healthy".to_string()),
+                reason: None,
+                message: Some(format!("Worker enabled (was {:?})", old_status)),
+                active_slots: None,
+            }
+        }
+        None => WorkerStateResponse {
+            status: "error".to_string(),
+            worker_id: worker_id.to_string(),
+            action: "enable".to_string(),
+            new_status: None,
+            reason: None,
+            message: Some(format!("Worker '{}' not found", worker_id)),
+            active_slots: None,
+        },
+    }
+}
+
+/// Handle a worker disable request.
+pub async fn handle_worker_disable(
+    ctx: &DaemonContext,
+    worker_id: &WorkerId,
+    reason: Option<String>,
+    drain_first: bool,
+) -> WorkerStateResponse {
+    match ctx.pool.get(worker_id).await {
+        Some(worker) => {
+            let active_slots = worker.used_slots();
+
+            if drain_first && active_slots > 0 {
+                // Start draining - will be fully disabled when slots reach 0
+                worker.drain().await;
+                WorkerStateResponse {
+                    status: "ok".to_string(),
+                    worker_id: worker_id.to_string(),
+                    action: "disable".to_string(),
+                    new_status: Some("draining".to_string()),
+                    reason: reason.clone(),
+                    message: Some(format!(
+                        "Worker is draining before disable. {} slot(s) in use. Reason: {}",
+                        active_slots,
+                        reason.as_deref().unwrap_or("none provided")
+                    )),
+                    active_slots: Some(active_slots),
+                }
+            } else {
+                // Disable immediately
+                worker.disable(reason.clone()).await;
+                WorkerStateResponse {
+                    status: "ok".to_string(),
+                    worker_id: worker_id.to_string(),
+                    action: "disable".to_string(),
+                    new_status: Some("disabled".to_string()),
+                    reason: reason.clone(),
+                    message: Some(format!(
+                        "Worker disabled. Reason: {}",
+                        reason.as_deref().unwrap_or("none provided")
+                    )),
+                    active_slots: Some(active_slots),
+                }
+            }
+        }
+        None => WorkerStateResponse {
+            status: "error".to_string(),
+            worker_id: worker_id.to_string(),
+            action: "disable".to_string(),
+            new_status: None,
+            reason,
+            message: Some(format!("Worker '{}' not found", worker_id)),
+            active_slots: None,
+        },
     }
 }
 

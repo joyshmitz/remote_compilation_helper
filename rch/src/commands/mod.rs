@@ -82,252 +82,18 @@ pub use helpers::{config_dir, load_workers_from_config};
 // Re-export commonly used helpers
 #[cfg(not(unix))]
 use crate::error::PlatformError;
-use crate::status_types::{
-    WorkerCapabilitiesFromApi, WorkerCapabilitiesResponseFromApi, extract_json_body,
-};
-use anyhow::{Context, Result};
-use helpers::{major_version_mismatch, rust_version_mismatch};
-use rch_common::WorkerCapabilities;
+use anyhow::Result;
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
-use crate::hook::{query_daemon, release_worker};
-use crate::transfer::project_id_from_path;
-
 // Note: Response types (WorkerInfo, WorkersListResponse, etc.) are now in types.rs
 // and re-exported via `pub use types::*` at the top of this module.
 // Helper functions (runtime_label, version helpers, SSH helpers, etc.) are in helpers.rs.
+// Worker-specific helpers (has_any_capabilities, probe_local_capabilities,
+// collect_local_capability_warnings, etc.) are in workers.rs.
 
-fn has_any_capabilities(capabilities: &WorkerCapabilities) -> bool {
-    capabilities.rustc_version.is_some()
-        || capabilities.bun_version.is_some()
-        || capabilities.node_version.is_some()
-        || capabilities.npm_version.is_some()
-}
-
-/// Probe local runtime capabilities by running version commands in parallel.
-/// Uses tokio async to spawn all 4 version checks concurrently, reducing total
-/// latency from ~200ms (sequential) to ~50ms (parallel).
-async fn probe_local_capabilities() -> WorkerCapabilities {
-    async fn run_version(cmd: &str, args: &[&str]) -> Option<String> {
-        let output = tokio::process::Command::new(cmd)
-            .args(args)
-            .output()
-            .await
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let trimmed = stdout.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    }
-
-    // Run all version checks in parallel
-    let (rustc, bun, node, npm) = tokio::join!(
-        run_version("rustc", &["--version"]),
-        run_version("bun", &["--version"]),
-        run_version("node", &["--version"]),
-        run_version("npm", &["--version"]),
-    );
-
-    let mut caps = WorkerCapabilities::new();
-    caps.rustc_version = rustc;
-    caps.bun_version = bun;
-    caps.node_version = node;
-    caps.npm_version = npm;
-    caps
-}
-
-fn collect_local_capability_warnings(
-    workers: &[WorkerCapabilitiesFromApi],
-    local: &WorkerCapabilities,
-) -> Vec<String> {
-    let mut warnings = Vec::new();
-
-    if let Some(local_rust) = local.rustc_version.as_ref() {
-        let missing: Vec<String> = workers
-            .iter()
-            .filter(|worker| !worker.capabilities.has_rust())
-            .map(|worker| worker.id.clone())
-            .collect();
-        if !missing.is_empty() {
-            warnings.push(format!(
-                "Workers missing Rust runtime (local: {}): {}",
-                local_rust,
-                missing.join(", ")
-            ));
-        }
-
-        let mismatched: Vec<String> = workers
-            .iter()
-            .filter_map(|worker| {
-                let remote = worker.capabilities.rustc_version.as_ref()?;
-                if rust_version_mismatch(local_rust, remote) {
-                    Some(format!("{} ({})", worker.id, remote))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !mismatched.is_empty() {
-            warnings.push(format!(
-                "Rust version mismatch vs local {}: {}",
-                local_rust,
-                mismatched.join(", ")
-            ));
-        }
-    }
-
-    if let Some(local_bun) = local.bun_version.as_ref() {
-        let missing: Vec<String> = workers
-            .iter()
-            .filter(|worker| !worker.capabilities.has_bun())
-            .map(|worker| worker.id.clone())
-            .collect();
-        if !missing.is_empty() {
-            warnings.push(format!(
-                "Workers missing Bun runtime (local: {}): {}",
-                local_bun,
-                missing.join(", ")
-            ));
-        }
-
-        let mismatched: Vec<String> = workers
-            .iter()
-            .filter_map(|worker| {
-                let remote = worker.capabilities.bun_version.as_ref()?;
-                if major_version_mismatch(local_bun, remote) {
-                    Some(format!("{} ({})", worker.id, remote))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !mismatched.is_empty() {
-            warnings.push(format!(
-                "Bun major version mismatch vs local {}: {}",
-                local_bun,
-                mismatched.join(", ")
-            ));
-        }
-    }
-
-    if let Some(local_node) = local.node_version.as_ref() {
-        let missing: Vec<String> = workers
-            .iter()
-            .filter(|worker| !worker.capabilities.has_node())
-            .map(|worker| worker.id.clone())
-            .collect();
-        if !missing.is_empty() {
-            warnings.push(format!(
-                "Workers missing Node runtime (local: {}): {}",
-                local_node,
-                missing.join(", ")
-            ));
-        }
-
-        let mismatched: Vec<String> = workers
-            .iter()
-            .filter_map(|worker| {
-                let remote = worker.capabilities.node_version.as_ref()?;
-                if major_version_mismatch(local_node, remote) {
-                    Some(format!("{} ({})", worker.id, remote))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !mismatched.is_empty() {
-            warnings.push(format!(
-                "Node major version mismatch vs local {}: {}",
-                local_node,
-                mismatched.join(", ")
-            ));
-        }
-    }
-
-    if let Some(local_npm) = local.npm_version.as_ref() {
-        let missing: Vec<String> = workers
-            .iter()
-            .filter(|worker| worker.capabilities.npm_version.is_none())
-            .map(|worker| worker.id.clone())
-            .collect();
-        if !missing.is_empty() {
-            warnings.push(format!(
-                "Workers missing npm runtime (local: {}): {}",
-                local_npm,
-                missing.join(", ")
-            ));
-        }
-
-        let mismatched: Vec<String> = workers
-            .iter()
-            .filter_map(|worker| {
-                let remote = worker.capabilities.npm_version.as_ref()?;
-                if major_version_mismatch(local_npm, remote) {
-                    Some(format!("{} ({})", worker.id, remote))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !mismatched.is_empty() {
-            warnings.push(format!(
-                "npm major version mismatch vs local {}: {}",
-                local_npm,
-                mismatched.join(", ")
-            ));
-        }
-    }
-
-    warnings
-}
-
-#[cfg(test)]
-fn summarize_capabilities(capabilities: &WorkerCapabilities) -> String {
-    let mut parts = Vec::new();
-    if let Some(rustc) = capabilities.rustc_version.as_ref() {
-        parts.push(format!("rustc {}", rustc));
-    }
-    if let Some(bun) = capabilities.bun_version.as_ref() {
-        parts.push(format!("bun {}", bun));
-    }
-    if let Some(node) = capabilities.node_version.as_ref() {
-        parts.push(format!("node {}", node));
-    }
-    if let Some(npm) = capabilities.npm_version.as_ref() {
-        parts.push(format!("npm {}", npm));
-    }
-
-    if parts.is_empty() {
-        "unknown".to_string()
-    } else {
-        parts.join(", ")
-    }
-}
-
-// Note: All response types (DiagnoseResponse, HookActionResponse, etc.) are defined
-// in types.rs and re-exported via `pub use types::*` above.
-
-// Note: config_dir, load_workers_from_config, and test config overrides are defined
-// in helpers.rs and re-exported via `pub use helpers::*` above.
-
-// NOTE: workers_deploy_binary and helpers moved to workers_deploy.rs
-// NOTE: workers_sync_toolchain, workers_setup, and toolchain helpers moved to workers_setup.rs
-
-// NOTE: workers_init and workers_discover moved to workers_init.rs
-
-// =============================================================================
-// Config Commands
-// =============================================================================
-// NOTE: Config commands moved to config.rs
 // =============================================================================
 // Diagnose Command
 // =============================================================================
@@ -382,31 +148,6 @@ async fn query_daemon_health(socket_path: &str) -> Result<DaemonHealthResponse> 
 // Re-export send_daemon_command from helpers (single source of truth)
 pub(crate) use helpers::send_daemon_command;
 
-// NOTE: self_test, status_overview, and check moved to status.rs
-// NOTE: agents_list, agents_status, agents_install_hook, agents_uninstall_hook moved to agents.rs
-
-// =============================================================================
-// SpeedScore Commands
-// =============================================================================
-
-/// Query the daemon for worker capabilities.
-async fn query_workers_capabilities(refresh: bool) -> Result<WorkerCapabilitiesResponseFromApi> {
-    let command = if refresh {
-        "GET /workers/capabilities?refresh=true\n"
-    } else {
-        "GET /workers/capabilities\n"
-    };
-    let response = send_daemon_command(command).await?;
-    let json = extract_json_body(&response)
-        .ok_or_else(|| anyhow::anyhow!("Invalid response format from daemon"))?;
-    let capabilities: WorkerCapabilitiesResponseFromApi =
-        serde_json::from_str(json).context("Failed to parse worker capabilities response")?;
-    Ok(capabilities)
-}
-
-// NOTE: SpeedScore commands moved to speedscore.rs
-// NOTE: init_wizard moved to init.rs
-
 // =============================================================================
 // Unit Tests
 // =============================================================================
@@ -419,12 +160,15 @@ mod tests {
         urlencoding_encode,
     };
     use super::status::{build_diagnose_decision, build_dry_run_summary};
+    use super::workers::{
+        collect_local_capability_warnings, has_any_capabilities, summarize_capabilities,
+    };
     use super::*;
-    use crate::status_types::format_bytes;
+    use crate::status_types::{format_bytes, WorkerCapabilitiesFromApi};
     use crate::ui::context::{OutputConfig, OutputContext, OutputMode};
     use crate::ui::writer::SharedOutputBuffer;
     use rch_common::test_guard;
-    use rch_common::{ApiError, ApiResponse, ErrorCode, WorkerConfig};
+    use rch_common::{ApiError, ApiResponse, ErrorCode, WorkerCapabilities, WorkerConfig};
     use rch_common::{Classification, CompilationKind, RequiredRuntime, WorkerId};
     use rch_common::{SelectedWorker, SelectionReason};
     use serde::Serialize;
