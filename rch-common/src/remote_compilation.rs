@@ -356,7 +356,7 @@ impl RemoteCompilationTest {
             .arg(".git/")
             .arg("-e")
             .arg(format!(
-                "ssh -i {} -o StrictHostKeyChecking=no -o BatchMode=yes",
+                "ssh -i {} -o StrictHostKeyChecking=accept-new -o BatchMode=yes",
                 escaped_identity
             ))
             .arg(format!("{}/", self.test_project.display()))
@@ -472,7 +472,7 @@ impl RemoteCompilationTest {
         cmd.arg("-az")
             .arg("-e")
             .arg(format!(
-                "ssh -i {} -o StrictHostKeyChecking=no -o BatchMode=yes",
+                "ssh -i {} -o StrictHostKeyChecking=accept-new -o BatchMode=yes",
                 escaped_identity
             ))
             .arg(&remote_target)

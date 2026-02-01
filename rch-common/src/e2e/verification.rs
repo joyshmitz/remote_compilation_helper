@@ -367,7 +367,7 @@ impl RemoteCompilationTest {
             "-i",
             &identity_file,
             "-o",
-            "StrictHostKeyChecking=no",
+            "StrictHostKeyChecking=accept-new",
             "-o",
             "BatchMode=yes",
             &format!("{}@{}", self.worker.user, self.worker.host),
@@ -397,7 +397,7 @@ impl RemoteCompilationTest {
             "-i",
             &identity_file,
             "-o",
-            "StrictHostKeyChecking=no",
+            "StrictHostKeyChecking=accept-new",
             "-o",
             "BatchMode=yes",
             &format!("{}@{}", self.worker.user, self.worker.host),
@@ -416,7 +416,7 @@ impl RemoteCompilationTest {
             "--delete",
             "-e",
             &format!(
-                "ssh -i {} -o StrictHostKeyChecking=no -o BatchMode=yes",
+                "ssh -i {} -o StrictHostKeyChecking=accept-new -o BatchMode=yes",
                 identity_file
             ),
         ]);
@@ -473,7 +473,7 @@ impl RemoteCompilationTest {
             &self.config.rsync_compression.to_string(),
             "-e",
             &format!(
-                "ssh -i {} -o StrictHostKeyChecking=no -o BatchMode=yes",
+                "ssh -i {} -o StrictHostKeyChecking=accept-new -o BatchMode=yes",
                 identity_file
             ),
         ]);

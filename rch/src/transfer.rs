@@ -497,7 +497,7 @@ impl TransferPipeline {
             .arg("--stats")
             .arg("-e")
             .arg(format!(
-                "ssh -i {} -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5",
+                "ssh -i {} -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=5",
                 escaped_identity
             ));
 
@@ -1024,7 +1024,7 @@ impl TransferPipeline {
 
     fn build_rsync_ssh_command(&self, escaped_identity: &str) -> String {
         let mut command = format!(
-            "ssh -i {} -o StrictHostKeyChecking=no -o BatchMode=yes",
+            "ssh -i {} -o StrictHostKeyChecking=accept-new -o BatchMode=yes",
             escaped_identity
         );
 

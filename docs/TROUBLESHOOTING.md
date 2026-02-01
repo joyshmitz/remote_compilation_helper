@@ -109,8 +109,8 @@ ssh -v -i ~/.ssh/your_key user@worker-host "echo OK"
 | Wrong SSH key | Update `identity_file` in workers.toml |
 | SSH agent not running | `eval $(ssh-agent) && ssh-add` |
 | Firewall blocking | Check port 22 or custom SSH port |
-| Host key changed | `ssh-keygen -R worker-host` |
-| Known hosts issue | Add `StrictHostKeyChecking=no` for first connection |
+| Host key changed | `ssh-keygen -R worker-host` then reconnect |
+| Known hosts not in file | rch uses `accept-new` so first connections auto-add |
 
 ### 4. Slow Sync / First Build Very Slow
 
