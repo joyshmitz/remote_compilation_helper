@@ -71,51 +71,97 @@ fn start_daemon_with_socket(
     harness.start_daemon(&args)
 }
 
-/// Send a request to the daemon via Unix socket and get the response.
-fn send_socket_request(socket_path: &std::path::Path, request: &str) -> std::io::Result<String> {
-    // De-flake: on heavily loaded systems, the daemon can accept then close before writing.
-    // Retry a few times to avoid spurious empty responses.
-    let mut last_error = None;
-    for attempt in 0..5 {
-        let result: std::io::Result<String> = (|| {
-            let mut stream = UnixStream::connect(socket_path)?;
-            stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-            stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+/// Send a single request to the daemon via Unix socket (no retries).
+fn send_socket_request_once(socket_path: &std::path::Path, request: &str) -> std::io::Result<String> {
+    let mut stream = UnixStream::connect(socket_path)?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
-            // Send request
-            writeln!(stream, "{}", request)?;
-            stream.flush()?;
+    // Send request
+    writeln!(stream, "{}", request)?;
+    stream.flush()?;
 
-            // Read response
-            let mut reader = BufReader::new(stream);
-            let mut response = String::new();
-            loop {
-                let mut line = String::new();
-                match reader.read_line(&mut line) {
-                    Ok(0) => break, // EOF
-                    Ok(_) => response.push_str(&line),
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(e) => return Err(e),
-                }
-            }
-
-            Ok(response)
-        })();
-
-        match result {
-            Ok(response) if !response.is_empty() => return Ok(response),
-            Ok(_) => {}
-            Err(err) => last_error = Some(err),
+    // Read response
+    let mut reader = BufReader::new(stream);
+    let mut response = String::new();
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => break, // EOF
+            Ok(_) => response.push_str(&line),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) => return Err(e),
         }
+    }
 
-        if attempt < 4 {
-            std::thread::sleep(Duration::from_millis(50));
+    if response.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "empty daemon response",
+        ));
+    }
+
+    Ok(response)
+}
+
+/// Send a request to the daemon with exponential backoff retries.
+///
+/// Uses exponential backoff (10ms -> 20ms -> 40ms -> ... -> 500ms max) which:
+/// - Gives fast responses when daemon is ready
+/// - Provides sufficient time for slow startups under load
+/// - Caps total retry time at ~5 seconds
+fn send_socket_request(socket_path: &std::path::Path, request: &str) -> std::io::Result<String> {
+    let start = std::time::Instant::now();
+    let max_wait = Duration::from_secs(5);
+    let mut delay = Duration::from_millis(10);
+    let max_delay = Duration::from_millis(500);
+    let mut last_error = None;
+
+    while start.elapsed() < max_wait {
+        match send_socket_request_once(socket_path, request) {
+            Ok(response) => return Ok(response),
+            Err(e) => {
+                last_error = Some(e);
+                std::thread::sleep(delay);
+                delay = (delay * 2).min(max_delay);
+            }
         }
     }
 
     Err(last_error.unwrap_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "empty daemon response")
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("daemon not responding after {:?}", max_wait),
+        )
     }))
+}
+
+/// Wait for daemon to be fully ready (responding to health checks).
+///
+/// This is more robust than just waiting for socket connectivity because:
+/// - Socket can be connectable while daemon is still initializing
+/// - Health endpoint validates the daemon's request handling is working
+fn wait_for_daemon_ready(socket_path: &std::path::Path, timeout: Duration) -> std::io::Result<()> {
+    let start = std::time::Instant::now();
+    let mut delay = Duration::from_millis(10);
+    let max_delay = Duration::from_millis(500);
+
+    while start.elapsed() < timeout {
+        match send_socket_request_once(socket_path, "GET /health") {
+            Ok(response) if response.contains("200 OK") || response.contains("healthy") => {
+                return Ok(());
+            }
+            Ok(_) | Err(_) => {
+                std::thread::sleep(delay);
+                delay = (delay * 2).min(max_delay);
+            }
+        }
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!("daemon health check failed after {:?}", timeout),
+    ))
 }
 
 /// Extract JSON body from HTTP response.
@@ -621,11 +667,12 @@ fn test_daemon_verbose_mode() {
 
     // Start daemon in verbose mode
     start_daemon_with_socket(&harness, &socket_path, &["--verbose"]).unwrap();
-    harness
-        .wait_for_socket(&socket_path, Duration::from_secs(10))
-        .unwrap();
 
-    // Verify daemon is working
+    // Wait for daemon to be fully ready (not just socket connectable)
+    // This prevents flaky failures when daemon is still initializing
+    wait_for_daemon_ready(&socket_path, Duration::from_secs(10)).unwrap();
+
+    // Verify daemon responds correctly
     let response = send_socket_request(&socket_path, "GET /health").unwrap();
     assert!(response.contains("200 OK"), "Got: {}", response);
 
