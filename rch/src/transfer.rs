@@ -6,7 +6,7 @@
 use crate::error::TransferError;
 use anyhow::{Context, Result};
 use rch_common::mock::{self, MockConfig, MockRsync, MockRsyncConfig, MockSshClient};
-use rch_common::ssh::{EnvPrefix, build_env_prefix, is_retryable_transport_error};
+use rch_common::ssh_utils::{EnvPrefix, build_env_prefix, is_retryable_transport_error};
 use rch_common::{
     ColorMode, CommandResult, CompilationKind, RetryConfig, SshClient, SshOptions, ToolchainInfo,
     TransferConfig, WorkerConfig, wrap_command_with_color, wrap_command_with_toolchain,

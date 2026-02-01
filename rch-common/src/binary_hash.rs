@@ -47,11 +47,30 @@ fn compute_full_hash(path: &Path) -> Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+/// Check if a section name represents code or read-only data.
+///
+/// Supports both ELF (.text, .rodata) and Mach-O (__text, __const) section names.
+fn is_code_section(name: &str) -> bool {
+    // ELF section names
+    name == ".text"
+        || name == ".rodata"
+        || name.starts_with(".text.")
+        || name.starts_with(".rodata.")
+        // Mach-O section names (lowercase, within __TEXT segment)
+        || name == "__text"
+        || name == "__const"
+        || name == "__cstring"
+        || name == "__stubs"
+        || name == "__stub_helper"
+}
+
 /// Compute hash of code sections only using BLAKE3.
 ///
 /// This hash focuses on executable code and read-only data sections,
 /// ignoring non-deterministic metadata. This provides a more reliable
 /// comparison between builds of the same source code.
+///
+/// Supports both ELF (Linux) and Mach-O (macOS) binary formats.
 fn compute_code_hash(data: &[u8]) -> Result<String> {
     let file = object::File::parse(data).context("Failed to parse binary format")?;
     let mut hasher = Hasher::new();
@@ -61,11 +80,8 @@ fn compute_code_hash(data: &[u8]) -> Result<String> {
     for section in file.sections() {
         let name = section.name().unwrap_or("");
 
-        // Include .text (code), .rodata (read-only data), and subsections
-        if (name == ".text"
-            || name == ".rodata"
-            || name.starts_with(".text.")
-            || name.starts_with(".rodata."))
+        // Include code sections from both ELF and Mach-O formats
+        if is_code_section(name)
             && let Ok(section_data) = section.data()
         {
             hasher.update(section_data);
@@ -80,21 +96,37 @@ fn compute_code_hash(data: &[u8]) -> Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+/// Check if a section name represents the main text/code section.
+fn is_text_section(name: &str) -> bool {
+    // ELF and Mach-O text sections
+    name == ".text" || name == "__text"
+}
+
+/// Check if a section name represents debug information.
+fn is_debug_section(name: &str) -> bool {
+    // ELF debug sections
+    name.starts_with(".debug")
+        // Mach-O debug sections (DWARF)
+        || name.starts_with("__debug")
+        || name == "__DWARF"
+}
+
 /// Extract metadata about the binary.
 ///
 /// Returns (text_section_size, has_debug_info).
+/// Supports both ELF (Linux) and Mach-O (macOS) binary formats.
 fn extract_metadata(data: &[u8]) -> Result<(u64, bool)> {
     let file = object::File::parse(data).context("Failed to parse binary for metadata")?;
 
     let text_size: u64 = file
         .sections()
-        .filter(|s| s.name().unwrap_or("") == ".text")
+        .filter(|s| is_text_section(s.name().unwrap_or("")))
         .map(|s| s.size())
         .sum();
 
     let has_debug = file
         .sections()
-        .any(|s| s.name().unwrap_or("").starts_with(".debug"));
+        .any(|s| is_debug_section(s.name().unwrap_or("")));
 
     Ok((text_size, has_debug))
 }

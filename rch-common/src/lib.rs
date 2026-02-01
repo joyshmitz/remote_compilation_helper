@@ -25,9 +25,11 @@ mod proptest_tests;
 pub mod protocol;
 pub mod remote_compilation;
 pub mod remote_verification;
+#[cfg(unix)]
 pub mod ssh;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod ssh_timeout_test;
+pub mod ssh_utils;
 pub mod test_change;
 pub mod testing;
 pub mod toolchain;
@@ -49,7 +51,14 @@ pub use patterns::{
     classify_command, classify_command_detailed, split_shell_commands,
 };
 pub use protocol::{HookInput, HookOutput, ToolInput};
-pub use ssh::{CommandResult, KnownHostsPolicy, SshClient, SshOptions, SshPool};
+// Platform-independent SSH utilities (available everywhere)
+pub use ssh_utils::{
+    CommandResult, EnvPrefix, build_env_prefix, is_retryable_transport_error,
+    is_retryable_transport_error_text, shell_escape_value,
+};
+// Unix-only SSH client (uses openssh crate)
+#[cfg(unix)]
+pub use ssh::{KnownHostsPolicy, SshClient, SshOptions, SshPool};
 pub use test_change::{TestChangeGuard, TestCodeChange};
 pub use toolchain::{ToolchainInfo, wrap_command_with_color, wrap_command_with_toolchain};
 pub use types::{

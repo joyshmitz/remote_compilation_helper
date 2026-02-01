@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use crate::error::FleetError;
 use rch_common::WorkerConfig;
 use rch_common::mock;
-use rch_common::ssh::shell_escape_value;
+use rch_common::ssh_utils::shell_escape_value;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{Duration, Instant};

@@ -201,7 +201,7 @@ impl CacheCleanupScheduler {
         // Build cleanup command
         // Uses find to delete directories older than max_age_hours
         let remote_base = &self.config.remote_base;
-        let escaped_base = rch_common::ssh::shell_escape_value(remote_base)
+        let escaped_base = rch_common::ssh_utils::shell_escape_value(remote_base)
             .ok_or_else(|| anyhow::anyhow!("Invalid remote_base: contains control characters"))?;
         let max_age_minutes = self.config.max_cache_age_hours.saturating_mul(60);
         let cleanup_cmd = format!(

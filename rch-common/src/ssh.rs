@@ -2,11 +2,12 @@
 //!
 //! Provides connection management, command execution, and pooling support
 //! for the remote compilation pipeline.
+//!
+//! This module is only available on Unix platforms (requires openssh crate).
 
 use crate::types::{WorkerConfig, WorkerId};
 use anyhow::{Context, Result};
 use openssh::{ControlPersist, KnownHosts, Session, SessionBuilder, Stdio};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -16,6 +17,12 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
+// Re-export platform-independent utilities for backwards compatibility
+pub use crate::ssh_utils::{
+    CommandResult, EnvPrefix, build_env_prefix, is_retryable_transport_error,
+    is_retryable_transport_error_text, is_valid_env_key, shell_escape_value,
+};
+
 /// Default SSH connection timeout.
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -24,186 +31,6 @@ const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Maximum size for command output (stdout/stderr) to prevent OOM (10MB).
 const MAX_OUTPUT_SIZE: u64 = 10 * 1024 * 1024;
-
-// ============================================================================
-// Retry Classification
-// ============================================================================
-
-/// True if an SSH/transport error looks retryable (transient network / transport).
-///
-/// This is intentionally conservative: false negatives are acceptable (fail-open
-/// to local execution), false positives can cause needless retries.
-pub fn is_retryable_transport_error(err: &anyhow::Error) -> bool {
-    let mut parts = Vec::new();
-    for cause in err.chain() {
-        parts.push(cause.to_string());
-    }
-    is_retryable_transport_error_text(&parts.join(": "))
-}
-
-/// Message-only variant of [`is_retryable_transport_error`] (useful for tests).
-pub fn is_retryable_transport_error_text(message: &str) -> bool {
-    let message = message.to_lowercase();
-
-    // Fail-fast: non-retryable authentication / host trust issues.
-    if message.contains("permission denied")
-        || message.contains("host key verification failed")
-        || message.contains("could not resolve hostname")
-        || message.contains("no such file or directory")
-        || message.contains("identity file")
-        || message.contains("keyfile")
-        || message.contains("invalid format")
-        || message.contains("unknown option")
-    {
-        return false;
-    }
-
-    // Common transient transport failures.
-    message.contains("connection timed out")
-        || message.contains("timed out")
-        || message.contains("connection reset")
-        || message.contains("broken pipe")
-        || message.contains("connection refused")
-        || message.contains("network is unreachable")
-        || message.contains("no route to host")
-        || message.contains("connection closed")
-        || message.contains("connection lost")
-        || message.contains("ssh_exchange_identification")
-        || message.contains("kex_exchange_identification")
-        || message.contains("temporary failure in name resolution")
-}
-
-/// Result of a remote command execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CommandResult {
-    /// Exit code of the command.
-    pub exit_code: i32,
-    /// Standard output.
-    pub stdout: String,
-    /// Standard error.
-    pub stderr: String,
-    /// Execution duration in milliseconds.
-    pub duration_ms: u64,
-}
-
-impl CommandResult {
-    /// Check if the command succeeded (exit code 0).
-    pub fn success(&self) -> bool {
-        self.exit_code == 0
-    }
-}
-
-/// Environment variable prefix for remote command execution.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EnvPrefix {
-    /// Shell-safe prefix (includes trailing space when non-empty).
-    pub prefix: String,
-    /// Keys applied to the command.
-    pub applied: Vec<String>,
-    /// Keys rejected due to invalid name or unsafe value.
-    pub rejected: Vec<String>,
-}
-
-/// Build a shell-safe environment variable prefix from an allowlist.
-///
-/// - Missing variables are ignored silently.
-/// - Unsafe values (newline, carriage return, NUL) are rejected.
-/// - Invalid keys are rejected.
-pub fn build_env_prefix<F>(allowlist: &[String], mut get_env: F) -> EnvPrefix
-where
-    F: FnMut(&str) -> Option<String>,
-{
-    let mut parts = Vec::new();
-    let mut applied = Vec::new();
-    let mut rejected = Vec::new();
-
-    for raw_key in allowlist {
-        let key = raw_key.trim();
-        if key.is_empty() {
-            continue;
-        }
-        if !is_valid_env_key(key) {
-            info!(
-                "Rejecting env var '{}': invalid key name (must start with letter/underscore, contain only alphanumeric/underscore)",
-                key
-            );
-            rejected.push(key.to_string());
-            continue;
-        }
-        let Some(value) = get_env(key) else {
-            // Variable not set - this is normal, don't log
-            continue;
-        };
-        let Some(escaped) = shell_escape_value(&value) else {
-            info!(
-                "Rejecting env var '{}': value contains unsafe characters (newline, carriage return, or NUL)",
-                key
-            );
-            rejected.push(key.to_string());
-            continue;
-        };
-        parts.push(format!("{}={}", key, escaped));
-        applied.push(key.to_string());
-    }
-
-    let prefix = if parts.is_empty() {
-        String::new()
-    } else {
-        format!("{} ", parts.join(" "))
-    };
-
-    EnvPrefix {
-        prefix,
-        applied,
-        rejected,
-    }
-}
-
-fn is_valid_env_key(key: &str) -> bool {
-    let mut chars = key.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !(first == '_' || first.is_ascii_alphabetic()) {
-        return false;
-    }
-    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
-}
-
-/// Escape a string for use in a shell command.
-///
-/// Wraps the string in single quotes and escapes internal single quotes.
-/// Returns None if the string contains unsafe control characters (newline, carriage return, NUL).
-pub fn shell_escape_value(value: &str) -> Option<String> {
-    // Reject values with control characters that could break shell parsing
-    // Note: These are logged at the call site with the variable name for debugging
-    if value.contains('\n') || value.contains('\r') || value.contains('\0') {
-        return None;
-    }
-
-    if value.is_empty() {
-        return Some("''".to_string());
-    }
-
-    let needs_quotes = value
-        .chars()
-        .any(|c| !c.is_ascii_alphanumeric() && c != '_');
-    if !needs_quotes {
-        return Some(value.to_string());
-    }
-
-    let mut escaped = String::with_capacity(value.len() + 2);
-    escaped.push('\'');
-    for ch in value.chars() {
-        if ch == '\'' {
-            escaped.push_str("'\\''");
-        } else {
-            escaped.push(ch);
-        }
-    }
-    escaped.push('\'');
-    Some(escaped)
-}
 
 /// SSH connection options.
 #[derive(Debug, Clone)]

@@ -17,6 +17,7 @@ concurrency:
 permissions:
   contents: read
   pull-requests: write  # For benchmark comments
+  checks: write  # For security audit check runs
 
 env:
   CARGO_TERM_COLOR: always
@@ -405,24 +406,25 @@ jobs:
       - name: Generate LCOV coverage
         env:
           RCH_MOCK_SSH: '1'
-        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+        # Exclude true-e2e feature which requires pre-built binaries
+        run: cargo llvm-cov --features rich-ui --workspace --lcov --output-path lcov.info
       - name: Generate HTML coverage report
         env:
           RCH_MOCK_SSH: '1'
-        run: cargo llvm-cov --all-features --workspace --html --output-dir coverage-html
+        run: cargo llvm-cov --features rich-ui --workspace --html --output-dir coverage-html
       - name: Generate per-crate coverage summary
         env:
           RCH_MOCK_SSH: '1'
         run: |
           echo "## Coverage Summary" > coverage-summary.md
           echo "" >> coverage-summary.md
-          cargo llvm-cov --all-features --workspace --text 2>&1 | tee -a coverage-summary.md
+          cargo llvm-cov --features rich-ui --workspace --text 2>&1 | tee -a coverage-summary.md
       - name: Check coverage threshold
         env:
           RCH_MOCK_SSH: '1'
         # Fail if line coverage drops below 65% (goal: 75%)
         # See bead remote_compilation_helper-pacy for progress tracking
-        run: cargo llvm-cov --all-features --workspace --fail-under-lines 65
+        run: cargo llvm-cov --features rich-ui --workspace --fail-under-lines 65
       - uses: codecov/codecov-action@v4
         with:
           files: lcov.info
