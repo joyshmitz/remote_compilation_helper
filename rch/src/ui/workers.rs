@@ -6,9 +6,9 @@
 use crate::status_types::WorkerStatusFromApi;
 use crate::ui::console::RchConsole;
 
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::prelude::*;
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::renderables::{Column, Row, Table};
 
 use rch_common::ui::{Icons, OutputContext, RchTheme};
@@ -47,7 +47,7 @@ impl<'a> WorkerTable<'a> {
             return;
         }
 
-        #[cfg(feature = "rich-ui")]
+        #[cfg(all(feature = "rich-ui", unix))]
         if console.is_rich() {
             self.render_rich(console);
             return;
@@ -57,7 +57,7 @@ impl<'a> WorkerTable<'a> {
     }
 
     /// Render rich output using rich_rust.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn render_rich(&self, console: &RchConsole) {
         if self.workers.is_empty() {
             self.render_empty_rich(console);
@@ -105,7 +105,7 @@ impl<'a> WorkerTable<'a> {
     }
 
     /// Render empty state with rich formatting.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn render_empty_rich(&self, console: &RchConsole) {
         let info = Icons::info(self.context);
         let content = format!(
@@ -120,7 +120,7 @@ impl<'a> WorkerTable<'a> {
     }
 
     /// Format status for rich display.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn format_status_rich(&self, worker: &WorkerStatusFromApi) -> String {
         match worker.status.as_str() {
             "healthy" | "online" => format!("{} Online", Icons::status_healthy(self.context)),
@@ -153,7 +153,7 @@ impl<'a> WorkerTable<'a> {
     }
 
     /// Render summary footer.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn render_summary_rich(&self, console: &RchConsole) {
         let online = self
             .workers

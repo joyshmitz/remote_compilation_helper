@@ -6,9 +6,9 @@
 use crate::status_types::{DaemonFullStatusResponse, format_duration};
 use crate::ui::console::RchConsole;
 
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::prelude::*;
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::renderables::{Column, Row, Table};
 
 use rch_common::ui::{Icons, OutputContext, RchTheme};
@@ -46,7 +46,7 @@ impl<'a> StatusTable<'a> {
             return;
         }
 
-        #[cfg(feature = "rich-ui")]
+        #[cfg(all(feature = "rich-ui", unix))]
         if console.is_rich() {
             self.render_rich(console);
             return;
@@ -56,7 +56,7 @@ impl<'a> StatusTable<'a> {
     }
 
     /// Render rich output using rich_rust.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn render_rich(&self, console: &RchConsole) {
         // Status header panel
         self.render_status_panel(console);
@@ -81,7 +81,7 @@ impl<'a> StatusTable<'a> {
     }
 
     /// Render the main status panel with connection info.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn render_status_panel(&self, console: &RchConsole) {
         let daemon = &self.status.daemon;
         let check = Icons::check(self.context);
@@ -143,7 +143,7 @@ impl<'a> StatusTable<'a> {
     }
 
     /// Render active jobs as a table.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn render_jobs_table(&self, console: &RchConsole) {
         let mut table = Table::new()
             .title("Active Jobs")
@@ -177,7 +177,7 @@ impl<'a> StatusTable<'a> {
     }
 
     /// Render issues panel.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn render_issues_panel(&self, console: &RchConsole) {
         let warning = Icons::warning(self.context);
 
@@ -209,7 +209,7 @@ impl<'a> StatusTable<'a> {
     }
 
     /// Render alerts panel.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn render_alerts_panel(&self, console: &RchConsole) {
         let mut lines = Vec::new();
         for alert in &self.status.alerts {
@@ -352,7 +352,7 @@ pub fn render_daemon_offline(console: &RchConsole) {
     let ctx = console.context();
     let cross = Icons::cross(ctx);
 
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     if console.is_rich() {
         let content = format!(
             "{} Daemon is not running\n\nStart with: rch daemon start",

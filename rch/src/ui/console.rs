@@ -31,9 +31,9 @@
 //! }
 //! ```
 
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::prelude::*;
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::renderables::Renderable;
 
 use rch_common::ui::{Icons, OutputContext, RchTheme};
@@ -48,7 +48,7 @@ use rch_common::ui::{Icons, OutputContext, RchTheme};
 /// - Respects NO_COLOR and FORCE_COLOR
 pub struct RchConsole {
     /// The underlying rich_rust Console (only when rich-ui feature enabled).
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     inner: Console,
 
     /// Detected output context.
@@ -66,17 +66,17 @@ impl RchConsole {
     /// Create with explicit context (useful for testing).
     #[must_use]
     pub fn with_context(context: OutputContext) -> Self {
-        #[cfg(feature = "rich-ui")]
+        #[cfg(all(feature = "rich-ui", unix))]
         let inner = Self::build_console(context);
 
         Self {
-            #[cfg(feature = "rich-ui")]
+            #[cfg(all(feature = "rich-ui", unix))]
             inner,
             context,
         }
     }
 
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn build_console(context: OutputContext) -> Console {
         Console::builder()
             .force_terminal(context.supports_rich())
@@ -116,11 +116,11 @@ impl RchConsole {
     /// Get terminal width (or default 80).
     #[must_use]
     pub fn width(&self) -> usize {
-        #[cfg(feature = "rich-ui")]
+        #[cfg(all(feature = "rich-ui", unix))]
         {
             self.inner.width()
         }
-        #[cfg(not(feature = "rich-ui"))]
+        #[cfg(not(all(feature = "rich-ui", unix)))]
         {
             terminal_size::terminal_size()
                 .map(|(w, _)| w.0 as usize)
@@ -135,7 +135,7 @@ impl RchConsole {
     /// Print with markup parsing (only if interactive).
     ///
     /// Does nothing in machine/plain modes.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     pub fn print_rich(&self, content: &str) {
         if self.context.supports_rich() {
             self.inner.print(content);
@@ -145,7 +145,7 @@ impl RchConsole {
     /// Print a renderable (table, panel, etc.).
     ///
     /// Does nothing in machine/plain modes.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     pub fn print_renderable<R: Renderable>(&self, renderable: &R) {
         if self.context.supports_rich() {
             self.inner.print_renderable(renderable);
@@ -156,7 +156,7 @@ impl RchConsole {
     ///
     /// Falls back to dashes in non-rich modes.
     pub fn rule(&self, title: Option<&str>) {
-        #[cfg(feature = "rich-ui")]
+        #[cfg(all(feature = "rich-ui", unix))]
         if self.context.supports_rich() {
             self.inner.rule(title);
             return;
@@ -177,11 +177,11 @@ impl RchConsole {
     /// Print a blank line.
     pub fn line(&self) {
         if !self.context.is_machine() {
-            #[cfg(feature = "rich-ui")]
+            #[cfg(all(feature = "rich-ui", unix))]
             {
                 self.inner.line();
             }
-            #[cfg(not(feature = "rich-ui"))]
+            #[cfg(not(all(feature = "rich-ui", unix)))]
             {
                 eprintln!();
             }
@@ -198,7 +198,7 @@ impl RchConsole {
     /// - In plain mode: prints plain content
     /// - In machine mode: prints nothing
     pub fn print_or_plain(&self, _rich: &str, plain: &str) {
-        #[cfg(feature = "rich-ui")]
+        #[cfg(all(feature = "rich-ui", unix))]
         if self.context.supports_rich() {
             self.inner.print(_rich);
             return;
@@ -221,7 +221,7 @@ impl RchConsole {
     /// Print error with rich panel or plain fallback.
     ///
     /// Always prints (errors should show even in machine mode to stderr).
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     pub fn print_error(&self, title: &str, message: &str) {
         if self.context.supports_rich() {
             let icon = Icons::cross(self.context);
@@ -239,7 +239,7 @@ impl RchConsole {
     }
 
     /// Print error with plain fallback (non-rich-ui version).
-    #[cfg(not(feature = "rich-ui"))]
+    #[cfg(not(all(feature = "rich-ui", unix)))]
     pub fn print_error(&self, title: &str, message: &str) {
         let icon = Icons::cross(self.context);
         eprintln!("{icon} Error: {title}");
@@ -250,7 +250,7 @@ impl RchConsole {
     pub fn print_success(&self, message: &str) {
         let icon = Icons::check(self.context);
 
-        #[cfg(feature = "rich-ui")]
+        #[cfg(all(feature = "rich-ui", unix))]
         if self.context.supports_rich() {
             self.inner
                 .print(&format!("[bold {}]{icon}[/] {message}", RchTheme::SUCCESS));
@@ -266,7 +266,7 @@ impl RchConsole {
     pub fn print_warning(&self, message: &str) {
         let icon = Icons::warning(self.context);
 
-        #[cfg(feature = "rich-ui")]
+        #[cfg(all(feature = "rich-ui", unix))]
         if self.context.supports_rich() {
             self.inner
                 .print(&format!("[bold {}]{icon}[/] {message}", RchTheme::WARNING));
@@ -282,7 +282,7 @@ impl RchConsole {
     pub fn print_info(&self, message: &str) {
         let icon = Icons::info(self.context);
 
-        #[cfg(feature = "rich-ui")]
+        #[cfg(all(feature = "rich-ui", unix))]
         if self.context.supports_rich() {
             self.inner
                 .print(&format!("[bold {}]{icon}[/] {message}", RchTheme::INFO));
@@ -314,7 +314,7 @@ impl RchConsole {
     /// Get the underlying rich_rust Console.
     ///
     /// Use sparingly - prefer the wrapper methods.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[must_use]
     pub fn inner(&self) -> &Console {
         &self.inner
@@ -561,14 +561,14 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[test]
     fn test_print_rich_suppressed_in_machine_mode() {
         let console = RchConsole::with_context(OutputContext::Machine);
         console.print_rich("[bold]test[/]");
     }
 
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[test]
     fn test_print_renderable_suppressed_in_plain_mode() {
         let console = RchConsole::with_context(OutputContext::Plain);
@@ -576,7 +576,7 @@ mod tests {
         console.print_renderable(&panel);
     }
 
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[test]
     fn test_inner_console_access() {
         let console = RchConsole::with_context(OutputContext::Interactive);
@@ -611,7 +611,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[test]
     fn test_rich_paths_interactive() {
         let console = RchConsole::with_context(OutputContext::Interactive);

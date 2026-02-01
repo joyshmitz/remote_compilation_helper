@@ -16,9 +16,9 @@
 use crate::commands::WorkerProbeResult;
 use crate::ui::console::RchConsole;
 
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::prelude::*;
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::renderables::{Column, Row, Table};
 
 use rch_common::ui::{Icons, OutputContext, RchTheme};
@@ -98,7 +98,7 @@ pub enum LatencyCategory {
 
 impl LatencyCategory {
     /// Get the display color for this category.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     pub fn color(&self) -> &'static str {
         match self {
             Self::Excellent => RchTheme::SUCCESS,
@@ -154,7 +154,7 @@ impl<'a> ProbeResultTable<'a> {
             return;
         }
 
-        #[cfg(feature = "rich-ui")]
+        #[cfg(all(feature = "rich-ui", unix))]
         if console.is_rich() {
             self.render_rich(console);
             return;
@@ -164,7 +164,7 @@ impl<'a> ProbeResultTable<'a> {
     }
 
     /// Render rich output using rich_rust.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn render_rich(&self, console: &RchConsole) {
         if self.results.is_empty() {
             self.render_empty_rich(console);
@@ -236,7 +236,7 @@ impl<'a> ProbeResultTable<'a> {
     }
 
     /// Render empty state with rich formatting.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn render_empty_rich(&self, console: &RchConsole) {
         let info = Icons::info(self.context);
         let content = format!(
@@ -251,7 +251,7 @@ impl<'a> ProbeResultTable<'a> {
     }
 
     /// Render errors for failed probes.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn render_errors_rich(&self, console: &RchConsole) {
         let errors: Vec<_> = self
             .results
@@ -283,7 +283,7 @@ impl<'a> ProbeResultTable<'a> {
     }
 
     /// Format status for rich display.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn format_status_rich(&self, result: &DetailedProbeResult) -> String {
         if result.is_success() {
             format!("{} OK", Icons::check(self.context))
@@ -293,7 +293,7 @@ impl<'a> ProbeResultTable<'a> {
     }
 
     /// Format latency for rich display with color coding.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn format_latency_rich(&self, result: &DetailedProbeResult) -> String {
         match result.basic.latency_ms {
             Some(ms) => {
@@ -315,7 +315,7 @@ impl<'a> ProbeResultTable<'a> {
     }
 
     /// Render summary footer.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn render_summary_rich(&self, console: &RchConsole) {
         let (passed, failed) = self.count_results();
         let total = self.results.len();

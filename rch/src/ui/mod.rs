@@ -50,17 +50,22 @@
 //! - Detects color level (16/256/true color)
 
 pub mod adaptive;
+#[cfg(unix)]
 pub mod benchmark;
+#[cfg(unix)]
 pub mod config;
 pub mod console;
 pub mod context;
 pub mod markdown;
+#[cfg(unix)]
 pub mod probe;
 pub mod progress;
+#[cfg(unix)]
 pub mod status;
 pub mod styled;
 pub mod test_utils;
 pub mod theme;
+#[cfg(unix)]
 pub mod workers;
 pub mod writer;
 
@@ -88,19 +93,24 @@ pub use writer::{OutputBuffer, OutputWriter, SharedOutputBuffer};
 // Rich console wrapper (requires rich-ui feature for full functionality)
 pub use console::{RchConsole, console};
 
-// Rich status display
+// Rich status display (Unix only - uses rich_rust)
+#[cfg(unix)]
 pub use status::{StatusTable, render_daemon_offline};
 
-// Rich worker table display
+// Rich worker table display (Unix only)
+#[cfg(unix)]
 pub use workers::WorkerTable;
 
-// Rich probe result display
+// Rich probe result display (Unix only)
+#[cfg(unix)]
 pub use probe::{DetailedProbeResult, LatencyCategory, ProbeResultTable, ProbeSummary};
 
-// Rich benchmark table display
+// Rich benchmark table display (Unix only)
+#[cfg(unix)]
 pub use benchmark::BenchmarkTable;
 
-// Rich config display
+// Rich config display (Unix only)
+#[cfg(unix)]
 pub use config::ConfigDisplay;
 
 // Test utilities are public for integration tests

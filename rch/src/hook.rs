@@ -333,7 +333,7 @@ fn render_compile_summary(
         worker_line, timing_line, sync_line, compile_line, artifact_line, cache_line_plain
     );
 
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     if console.is_rich() {
         let cache_rich = if cache_hit {
             format!("[bold {}]HIT[/]", RchTheme::SUCCESS)
