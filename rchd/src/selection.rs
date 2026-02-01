@@ -116,6 +116,8 @@ pub struct CacheTracker {
     max_projects_per_worker: usize,
     /// Map from project_id -> last successful build info (for fallback).
     last_success_by_project: HashMap<String, LastSuccessEntry>,
+    /// Maximum projects to track in the global success map.
+    max_success_projects: usize,
 }
 
 impl CacheTracker {
@@ -125,6 +127,7 @@ impl CacheTracker {
             workers: HashMap::new(),
             max_projects_per_worker: 50,
             last_success_by_project: HashMap::new(),
+            max_success_projects: 200,
         }
     }
 
@@ -264,6 +267,18 @@ impl CacheTracker {
                 timestamp: now,
             },
         );
+
+        // Evict oldest entries if over limit
+        while self.last_success_by_project.len() > self.max_success_projects {
+            let oldest = self
+                .last_success_by_project
+                .iter()
+                .min_by_key(|(_, entry)| entry.timestamp)
+                .map(|(k, _)| k.clone());
+            if let Some(key) = oldest {
+                self.last_success_by_project.remove(&key);
+            }
+        }
     }
 
     /// Check if a project is pinned to a specific worker within the pin window.

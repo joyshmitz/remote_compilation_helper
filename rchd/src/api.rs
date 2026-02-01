@@ -569,7 +569,19 @@ pub async fn handle_connection(
         Ok(ApiRequest::IngestTelemetry(source)) => {
             metrics::inc_requests("telemetry");
             let mut body = String::new();
-            reader.take(MAX_BODY_SIZE).read_to_string(&mut body).await?;
+            match tokio::time::timeout(
+                Duration::from_secs(10),
+                reader.take(MAX_BODY_SIZE).read_to_string(&mut body),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => return Err(e.into()),
+                Err(_) => {
+                    warn!("Telemetry body read timed out");
+                    return Ok(());
+                }
+            }
             let payload = body.trim();
 
             if payload.is_empty() {
@@ -604,7 +616,19 @@ pub async fn handle_connection(
         Ok(ApiRequest::TestRun) => {
             metrics::inc_requests("test-run");
             let mut body = String::new();
-            reader.take(MAX_BODY_SIZE).read_to_string(&mut body).await?;
+            match tokio::time::timeout(
+                Duration::from_secs(10),
+                reader.take(MAX_BODY_SIZE).read_to_string(&mut body),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => return Err(e.into()),
+                Err(_) => {
+                    warn!("Test run body read timed out");
+                    return Ok(());
+                }
+            }
             let payload = body.trim();
 
             if payload.is_empty() {

@@ -940,23 +940,48 @@ impl TimingHistory {
         }
     }
 
-    /// Save timing history to disk. Silently fails on error.
+    /// Save timing history to disk. Logs warnings on error but does not propagate.
     fn save_to_disk(&self) {
         let Some(path) = timing_history_path() else {
             return;
         };
 
         // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        if let Some(parent) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            warn!(
+                "Failed to create timing history directory {}: {}",
+                parent.display(),
+                e
+            );
+            return;
         }
 
         // Write atomically using temp file
         let temp_path = path.with_extension("tmp");
-        if let Ok(content) = serde_json::to_string_pretty(self)
-            && std::fs::write(&temp_path, &content).is_ok()
-        {
-            let _ = std::fs::rename(temp_path, path);
+        let content = match serde_json::to_string_pretty(self) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Failed to serialize timing history: {}", e);
+                return;
+            }
+        };
+        if let Err(e) = std::fs::write(&temp_path, &content) {
+            warn!(
+                "Failed to write timing history to {}: {}",
+                temp_path.display(),
+                e
+            );
+            return;
+        }
+        if let Err(e) = std::fs::rename(&temp_path, &path) {
+            warn!(
+                "Failed to rename timing history {} -> {}: {}",
+                temp_path.display(),
+                path.display(),
+                e
+            );
         }
     }
 
@@ -1768,7 +1793,10 @@ pub(crate) async fn query_daemon(
             }
             if in_body {
                 if body.len() + line.len() > MAX_RESPONSE_BODY {
-                    return Err(anyhow::anyhow!("Daemon response body exceeded {}KB limit", MAX_RESPONSE_BODY / 1024));
+                    return Err(anyhow::anyhow!(
+                        "Daemon response body exceeded {}KB limit",
+                        MAX_RESPONSE_BODY / 1024
+                    ));
                 }
                 body.push_str(&line);
             } else if line.trim().is_empty() {
@@ -2557,7 +2585,11 @@ async fn send_telemetry(
         return Ok(());
     }
 
-    let stream = UnixStream::connect(socket_path).await?;
+    let stream = match timeout(Duration::from_secs(2), UnixStream::connect(socket_path)).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => return Err(e.into()),
+        Err(_) => return Ok(()), // Timeout connecting — don't block hook
+    };
     let (reader, mut writer) = stream.into_split();
 
     let body = telemetry.to_json()?;
@@ -2572,7 +2604,7 @@ async fn send_telemetry(
 
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
-    reader.read_line(&mut line).await?;
+    let _ = timeout(Duration::from_secs(5), reader.read_line(&mut line)).await;
 
     Ok(())
 }
@@ -2582,7 +2614,11 @@ async fn send_test_run(socket_path: &str, record: &TestRunRecord) -> anyhow::Res
         return Ok(());
     }
 
-    let stream = UnixStream::connect(socket_path).await?;
+    let stream = match timeout(Duration::from_secs(2), UnixStream::connect(socket_path)).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => return Err(e.into()),
+        Err(_) => return Ok(()), // Timeout connecting — don't block hook
+    };
     let (reader, mut writer) = stream.into_split();
 
     let body = record.to_json()?;
@@ -2593,7 +2629,7 @@ async fn send_test_run(socket_path: &str, record: &TestRunRecord) -> anyhow::Res
 
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
-    reader.read_line(&mut line).await?;
+    let _ = timeout(Duration::from_secs(5), reader.read_line(&mut line)).await;
 
     Ok(())
 }
