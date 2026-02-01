@@ -71,8 +71,47 @@ fn start_daemon_with_socket(
     harness.start_daemon(&args)
 }
 
+/// Start daemon with null output streams (for verbose mode tests).
+///
+/// When running with --verbose, the daemon writes lots of output. If piped
+/// stdout/stderr buffers fill up (64KB on Linux), the daemon blocks on write
+/// and can't process requests. Using Stdio::null() avoids this issue.
+fn start_daemon_with_null_output(
+    harness: &TestHarness,
+    socket_path: &std::path::Path,
+    extra_args: &[&str],
+) -> std::io::Result<u32> {
+    use std::process::{Command, Stdio};
+
+    let workers_config = harness.test_dir().join("config").join("workers.toml");
+    let socket_str = socket_path.to_string_lossy().to_string();
+
+    let mut args = vec![
+        "--foreground".to_string(),
+        "--metrics-port".to_string(),
+        "0".to_string(),
+        "--socket".to_string(),
+        socket_str,
+        "--workers-config".to_string(),
+        workers_config.to_string_lossy().to_string(),
+    ];
+    args.extend(extra_args.iter().map(|s| s.to_string()));
+
+    let child = Command::new(&harness.config.rchd_binary)
+        .args(&args)
+        .current_dir(harness.test_dir())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    Ok(child.id())
+}
+
 /// Send a single request to the daemon via Unix socket (no retries).
-fn send_socket_request_once(socket_path: &std::path::Path, request: &str) -> std::io::Result<String> {
+fn send_socket_request_once(
+    socket_path: &std::path::Path,
+    request: &str,
+) -> std::io::Result<String> {
     let mut stream = UnixStream::connect(socket_path)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -665,17 +704,29 @@ fn test_daemon_verbose_mode() {
     let harness = create_daemon_harness("daemon_verbose").unwrap();
     let socket_path = setup_daemon_configs(&harness).unwrap();
 
-    // Start daemon in verbose mode
-    start_daemon_with_socket(&harness, &socket_path, &["--verbose"]).unwrap();
+    // Start daemon in verbose mode with null output streams.
+    // Using Stdio::null() prevents pipe buffer blocking when daemon writes
+    // lots of verbose output - the standard piped approach would cause the
+    // daemon to block on write and become unresponsive.
+    let pid = start_daemon_with_null_output(&harness, &socket_path, &["--verbose"]).unwrap();
 
-    // Wait for daemon to be fully ready (not just socket connectable)
-    // This prevents flaky failures when daemon is still initializing.
-    // Use 30s timeout to handle parallel test execution where system is under load.
-    wait_for_daemon_ready(&socket_path, Duration::from_secs(30)).unwrap();
+    // Wait for daemon to be fully ready
+    wait_for_daemon_ready(&socket_path, Duration::from_secs(10)).unwrap();
 
     // Verify daemon responds correctly
     let response = send_socket_request(&socket_path, "GET /health").unwrap();
     assert!(response.contains("200 OK"), "Got: {}", response);
+
+    // Clean up: request graceful shutdown via API
+    let _ = send_socket_request(&socket_path, "POST /shutdown");
+    // Give daemon time to shut down
+    std::thread::sleep(Duration::from_millis(100));
+
+    // If still running, use process kill command
+    let _ = std::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .output();
 
     harness.mark_passed();
 }
