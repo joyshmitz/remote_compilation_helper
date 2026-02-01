@@ -10,7 +10,7 @@ name = "rch"
 path = "src/main.rs"
 
 [dependencies]
-rch-common = { workspace = true }
+rch-common = { workspace = true, features = ["rich-ui"] }
 rch-telemetry = { path = "../rch-telemetry" }
 serde = { workspace = true }
 serde_json = { workspace = true }

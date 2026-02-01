@@ -11,7 +11,7 @@ path = "src/main.rs"
 required-features = ["unix-sockets"]
 
 [dependencies]
-rch-common = { workspace = true }
+rch-common = { workspace = true, features = ["rich-ui"] }
 rch-telemetry = { path = "../rch-telemetry" }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -67,7 +67,7 @@ unix-sockets = []
 [dev-dependencies]
 tempfile = "3.22.0"
 whoami = "2"
-rch-common = { workspace = true }
+rch-common = { workspace = true, features = ["rich-ui"] }
 proptest = "1.7.0"
 ctor = { workspace = true }
 

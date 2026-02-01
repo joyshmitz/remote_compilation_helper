@@ -40,7 +40,9 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::errors::catalog::ErrorCode;
-use crate::ui::{ErrorPanel, Icons, OutputContext, RchTheme};
+use crate::ui::{ErrorPanel, Icons, OutputContext};
+#[cfg(feature = "rich-ui")]
+use crate::ui::RchTheme;
 
 #[cfg(feature = "rich-ui")]
 use rich_rust::r#box::HEAVY;

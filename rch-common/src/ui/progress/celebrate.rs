@@ -4,7 +4,9 @@
 //! optional "personal best" or milestone callouts. Uses plain ASCII by
 //! default and rich_rust panels when available.
 
-use crate::ui::{Icons, OutputContext, RchTheme};
+use crate::ui::{Icons, OutputContext};
+#[cfg(feature = "rich-ui")]
+use crate::ui::RchTheme;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
