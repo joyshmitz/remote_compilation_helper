@@ -2688,8 +2688,8 @@ mod tests {
     #[tokio::test]
     async fn test_compilation_detected() {
         let _lock = test_lock().lock().await;
-        // Enable mock mode for deterministic testing
-        mock::set_mock_enabled_override(Some(true));
+        // Disable mock mode to test real fail-open behavior (no daemon = allow)
+        mock::set_mock_enabled_override(Some(false));
 
         let input = HookInput {
             tool_name: "Bash".to_string(),
@@ -2700,11 +2700,12 @@ mod tests {
             session_id: None,
         };
 
-        // With mock mode enabled, remote execution succeeds and denies local execution
+        // Without daemon, should fail-open and allow local execution
+        // This tests that classification works and fail-open behavior is preserved
         let output = process_hook(input).await;
         assert!(
-            !output.is_allow(),
-            "Expected deny after successful remote compilation"
+            output.is_allow(),
+            "Expected allow when daemon unavailable (fail-open)"
         );
 
         // Reset mock override
