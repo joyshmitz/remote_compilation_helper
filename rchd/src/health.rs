@@ -1798,7 +1798,9 @@ mod tests {
     #[test]
     fn test_is_mock_transport_disabled() {
         let _guard = test_guard!();
-        clear_mock_overrides();
+        // Note: Don't call clear_mock_overrides() at test start - it breaks the
+        // push/pop semantics of the active_scopes mechanism and causes race
+        // conditions with parallel tests. Instead, just set the override directly.
 
         let worker = WorkerState::new(WorkerConfig {
             id: WorkerId::new("transport-test"),
