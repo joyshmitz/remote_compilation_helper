@@ -5,9 +5,11 @@
 
 use anyhow::{Context, Result};
 use rch_common::{
-    ApiError, ApiResponse, ErrorCode, RequiredRuntime, SshClient, SshOptions, WorkerCapabilities,
+    ApiError, ApiResponse, ErrorCode, RequiredRuntime, WorkerCapabilities,
     WorkerConfig, classify_command_detailed,
 };
+#[cfg(unix)]
+use rch_common::{SshClient, SshOptions};
 use std::path::{Path, PathBuf};
 
 use crate::status_types::{

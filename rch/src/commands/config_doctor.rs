@@ -294,35 +294,51 @@ fn check_daemon_status(diagnostics: &mut Vec<DoctorDiagnostic>) {
     };
 
     let socket_path = PathBuf::from(&config.general.socket_path);
-    if socket_path.exists() {
-        // Socket exists, try a quick connection test
-        match std::os::unix::net::UnixStream::connect(&socket_path) {
-            Ok(_) => {
-                diagnostics.push(DoctorDiagnostic {
-                    severity: DoctorSeverity::Info,
-                    code: "DOC-I060".to_string(),
-                    message: "Daemon is running and accepting connections".to_string(),
-                    detail: None,
-                    remediation: None,
-                });
+
+    #[cfg(unix)]
+    {
+        if socket_path.exists() {
+            // Socket exists, try a quick connection test
+            match std::os::unix::net::UnixStream::connect(&socket_path) {
+                Ok(_) => {
+                    diagnostics.push(DoctorDiagnostic {
+                        severity: DoctorSeverity::Info,
+                        code: "DOC-I060".to_string(),
+                        message: "Daemon is running and accepting connections".to_string(),
+                        detail: None,
+                        remediation: None,
+                    });
+                }
+                Err(e) => {
+                    diagnostics.push(DoctorDiagnostic {
+                        severity: DoctorSeverity::Warning,
+                        code: "DOC-W060".to_string(),
+                        message: "Socket exists but connection failed".to_string(),
+                        detail: Some(e.to_string()),
+                        remediation: Some("Try: rch daemon restart".to_string()),
+                    });
+                }
             }
-            Err(e) => {
-                diagnostics.push(DoctorDiagnostic {
-                    severity: DoctorSeverity::Warning,
-                    code: "DOC-W060".to_string(),
-                    message: "Socket exists but connection failed".to_string(),
-                    detail: Some(e.to_string()),
-                    remediation: Some("Try: rch daemon restart".to_string()),
-                });
-            }
+        } else {
+            diagnostics.push(DoctorDiagnostic {
+                severity: DoctorSeverity::Warning,
+                code: "DOC-W061".to_string(),
+                message: "Daemon does not appear to be running".to_string(),
+                detail: Some(format!("No socket at {}", socket_path.display())),
+                remediation: Some("Start daemon with: rch daemon start".to_string()),
+            });
         }
-    } else {
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = socket_path;
         diagnostics.push(DoctorDiagnostic {
-            severity: DoctorSeverity::Warning,
-            code: "DOC-W061".to_string(),
-            message: "Daemon does not appear to be running".to_string(),
-            detail: Some(format!("No socket at {}", socket_path.display())),
-            remediation: Some("Start daemon with: rch daemon start".to_string()),
+            severity: DoctorSeverity::Info,
+            code: "DOC-I062".to_string(),
+            message: "Daemon status check skipped (Unix sockets not available on this platform)".to_string(),
+            detail: None,
+            remediation: None,
         });
     }
 }

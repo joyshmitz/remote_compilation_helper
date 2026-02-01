@@ -1,6 +1,6 @@
 //! Shared helper functions for RCH commands.
 
-use crate::error::{DaemonError, SshError};
+use crate::error::{DaemonError, PlatformError, SshError};
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use rch_common::{RequiredRuntime, WorkerConfig, WorkerId};
