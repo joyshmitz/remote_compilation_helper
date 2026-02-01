@@ -172,9 +172,17 @@ jobs:
       - name: Clone rich_rust dependency (Unix)
         if: runner.os != 'Windows'
         run: |
-          sudo mkdir -p /dp
-          sudo chown $USER /dp
-          git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
+          # macOS root filesystem is read-only, use /tmp on macOS, /dp on Linux
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            mkdir -p /tmp/dp
+            git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /tmp/dp/rich_rust
+            # Create symlink for compatibility (optional, may fail silently)
+            sudo ln -sf /tmp/dp /dp 2>/dev/null || true
+          else
+            sudo mkdir -p /dp
+            sudo chown $USER /dp
+            git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
+          fi
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-01
@@ -331,9 +339,17 @@ jobs:
       - name: Clone rich_rust dependency (Unix)
         if: runner.os != 'Windows'
         run: |
-          sudo mkdir -p /dp
-          sudo chown $USER /dp
-          git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
+          # macOS root filesystem is read-only, use /tmp on macOS, /dp on Linux
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            mkdir -p /tmp/dp
+            git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /tmp/dp/rich_rust
+            # Create symlink for compatibility (optional, may fail silently)
+            sudo ln -sf /tmp/dp /dp 2>/dev/null || true
+          else
+            sudo mkdir -p /dp
+            sudo chown $USER /dp
+            git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
+          fi
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-01-01
