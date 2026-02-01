@@ -72,20 +72,20 @@ fn try_extract_from_fat<'a, F: FatArch>(
 ) -> Option<&'a [u8]> {
     // First try to find a slice matching our native architecture
     for arch in arches {
-        if arch.architecture() == native_arch {
-            if let Ok(slice) = arch.data(data) {
-                info!("Extracted {:?} slice from fat binary", native_arch);
-                return Some(slice);
-            }
+        if arch.architecture() == native_arch
+            && let Ok(slice) = arch.data(data)
+        {
+            info!("Extracted {:?} slice from fat binary", native_arch);
+            return Some(slice);
         }
     }
 
     // No exact match found, use the first valid slice
-    if let Some(arch) = arches.first() {
-        if let Ok(slice) = arch.data(data) {
-            info!("Using first available slice from fat binary");
-            return Some(slice);
-        }
+    if let Some(arch) = arches.first()
+        && let Ok(slice) = arch.data(data)
+    {
+        info!("Using first available slice from fat binary");
+        return Some(slice);
     }
 
     None

@@ -5,7 +5,7 @@
 //!
 //! Enable mock mode by setting `RCH_MOCK_SSH=1` environment variable.
 
-use crate::ssh::CommandResult;
+use crate::ssh_utils::CommandResult;
 use crate::types::{WorkerConfig, WorkerId};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};

@@ -23,7 +23,9 @@ mod patterns_security_test;
 #[cfg(test)]
 mod proptest_tests;
 pub mod protocol;
+#[cfg(unix)]
 pub mod remote_compilation;
+#[cfg(unix)]
 pub mod remote_verification;
 #[cfg(unix)]
 pub mod ssh;
