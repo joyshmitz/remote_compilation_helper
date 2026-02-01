@@ -607,7 +607,7 @@ fn truncate_to_char_boundary(value: &str, max_len: usize) -> &str {
 
 /// Truncate a command string intelligently for display.
 ///
-/// Preserves important suffixes like --release, -p <package>, --test when possible.
+/// Preserves important suffixes like `--release`, `-p <package>`, `--test` when possible.
 fn truncate_command(cmd: &str, max_len: usize) -> String {
     if cmd.len() <= max_len {
         return cmd.to_string();

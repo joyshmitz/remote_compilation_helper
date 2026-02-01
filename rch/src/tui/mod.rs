@@ -7,8 +7,8 @@
 //!
 //! The TUI module provides shared test utilities for testing components:
 //!
-//! - [`test_harness`]: Test terminal creation, rendering utilities, and assertion helpers
-//! - [`test_data`]: Mock data generators for workers, builds, and state
+//! - `test_harness`: Test terminal creation, rendering utilities, and assertion helpers
+//! - `test_data`: Mock data generators for workers, builds, and state
 //!
 //! These are only compiled when running tests (`#[cfg(test)]`).
 

@@ -42,7 +42,7 @@
 //!
 //! # Standards Compliance
 //!
-//! - Respects `NO_COLOR` environment variable (https://no-color.org/)
+//! - Respects `NO_COLOR` environment variable (<https://no-color.org/>)
 //! - Respects `CLICOLOR_FORCE` for forcing colors
 //! - Respects `TERM=dumb` for plain output
 //! - Detects pipe/redirection to disable colors

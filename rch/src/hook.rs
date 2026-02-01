@@ -775,7 +775,7 @@ fn is_filtered_test_command(command: &str) -> bool {
 
 /// Check if the command has the --ignored flag (for running only ignored tests).
 ///
-/// Tests marked with #[ignore] are typically a small subset, so they need
+/// Tests marked with `#[ignore]` are typically a small subset, so they need
 /// fewer slots. However, --include-ignored runs all tests plus ignored ones.
 fn has_ignored_only_flag(command: &str) -> bool {
     let tokens: Vec<&str> = command.split_whitespace().collect();

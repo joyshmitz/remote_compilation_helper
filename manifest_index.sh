@@ -9,7 +9,7 @@ set -euo pipefail
 
 manifest_entries() {
   cat <<'MANIFEST_EOF'
-3cb9f374d35e531a1fcfbf3a776982c688ffd4333cb38c0a44c5efb03a71013e  .claude/skills/rch/SKILL.md
+c75a92396c85f475c70407daeb701f82941e20f551df446897865389042df127  .claude/skills/rch/SKILL.md
 a1453213c677ea95576dc4694a1322dfc6c36e62123e013791f2f6ceb06b151e  .claude/skills/rch/assets/workers-template.toml
 284b423271685b94c1ad11c30ff2a40e084af2b2b727c553522372b32d623464  .claude/skills/rch/references/COMMANDS.md
 2264a71e3b6aa4bbe8deeccb4fcb0b6c24da7af7280a5d8d69789a195cf2c5ef  .claude/skills/rch/references/HOOKS.md
