@@ -2470,8 +2470,8 @@ mod tests {
     use crate::workers::{WorkerCapabilitiesInfo, WorkerPool, WorkerStateResponse};
     use crate::{benchmark_queue::BenchmarkQueue, events::EventBus};
     use chrono::Duration as ChronoDuration;
-    use rch_common::{SelfTestConfig, WorkerCapabilities};
     use rch_common::test_guard;
+    use rch_common::{SelfTestConfig, WorkerCapabilities};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
