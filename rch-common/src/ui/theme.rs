@@ -3,7 +3,7 @@
 //! Provides a unified theme for consistent visual branding across all RCH commands.
 //! All color constants are valid hex colors that work with `rich_rust`.
 
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::prelude::{Color, Style};
 
 use crate::types::WorkerStatus;
@@ -97,14 +97,14 @@ impl RchTheme {
     // ═══════════════════════════════════════════════════════════════════════
 
     /// Create style for success messages.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[must_use]
     pub fn success() -> Style {
         Style::new().color(Color::parse(Self::SUCCESS).unwrap_or_default())
     }
 
     /// Create style for error messages (bold for emphasis).
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[must_use]
     pub fn error() -> Style {
         Style::new()
@@ -113,28 +113,28 @@ impl RchTheme {
     }
 
     /// Create style for warning messages.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[must_use]
     pub fn warning() -> Style {
         Style::new().color(Color::parse(Self::WARNING).unwrap_or_default())
     }
 
     /// Create style for informational messages.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[must_use]
     pub fn info() -> Style {
         Style::new().color(Color::parse(Self::INFO).unwrap_or_default())
     }
 
     /// Create style for muted/secondary text.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[must_use]
     pub fn muted() -> Style {
         Style::new().color(Color::parse(Self::MUTED).unwrap_or_default())
     }
 
     /// Create style for dim/tertiary text.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[must_use]
     pub fn dim() -> Style {
         Style::new()
@@ -143,28 +143,28 @@ impl RchTheme {
     }
 
     /// Create style for primary brand elements.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[must_use]
     pub fn primary() -> Style {
         Style::new().color(Color::parse(Self::PRIMARY).unwrap_or_default())
     }
 
     /// Create style for secondary brand elements.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[must_use]
     pub fn secondary() -> Style {
         Style::new().color(Color::parse(Self::SECONDARY).unwrap_or_default())
     }
 
     /// Create style for accent/highlight elements.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[must_use]
     pub fn accent() -> Style {
         Style::new().color(Color::parse(Self::ACCENT).unwrap_or_default())
     }
 
     /// Create style for worker status based on string.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[must_use]
     pub fn worker_status_str(status: &str) -> Style {
         let color = match status.to_lowercase().as_str() {
@@ -179,7 +179,7 @@ impl RchTheme {
     }
 
     /// Create style for worker status enum.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[must_use]
     pub fn for_worker_status(status: WorkerStatus) -> Style {
         let color = match status {
@@ -198,7 +198,7 @@ impl RchTheme {
     // ═══════════════════════════════════════════════════════════════════════
 
     /// Style for table headers.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[must_use]
     pub fn table_header() -> Style {
         Style::new()
@@ -207,14 +207,14 @@ impl RchTheme {
     }
 
     /// Style for table borders.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[must_use]
     pub fn table_border() -> Style {
         Style::new().color(Color::parse(Self::PRIMARY).unwrap_or_default())
     }
 
     /// Style for panel titles.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[must_use]
     pub fn panel_title() -> Style {
         Style::new()
@@ -223,14 +223,14 @@ impl RchTheme {
     }
 
     /// Style for command/code text.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[must_use]
     pub fn code() -> Style {
         Style::new().color(Color::parse(Self::SECONDARY).unwrap_or_default())
     }
 
     /// Style for paths/filenames.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[must_use]
     pub fn path() -> Style {
         Style::new()
@@ -239,7 +239,7 @@ impl RchTheme {
     }
 
     /// Style for numbers/metrics.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     #[must_use]
     pub fn number() -> Style {
         Style::new().color(Color::parse(Self::ACCENT).unwrap_or_default())
@@ -507,7 +507,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     mod rich_ui_tests {
         use super::*;
         use rich_rust::prelude::Color;

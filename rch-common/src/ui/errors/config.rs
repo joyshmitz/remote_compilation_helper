@@ -35,12 +35,12 @@ use std::path::PathBuf;
 use crate::errors::catalog::ErrorCode;
 use crate::ui::{ErrorPanel, Icons, OutputContext};
 
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use crate::ui::RchTheme;
 
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::r#box::HEAVY;
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::prelude::*;
 
 /// Location within a configuration file.
@@ -667,7 +667,7 @@ impl ConfigErrorDisplay {
             return;
         }
 
-        #[cfg(feature = "rich-ui")]
+        #[cfg(all(feature = "rich-ui", unix))]
         if ctx.supports_rich() {
             self.render_rich(ctx);
             return;
@@ -677,7 +677,7 @@ impl ConfigErrorDisplay {
     }
 
     /// Render using rich_rust Panel.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn render_rich(&self, ctx: OutputContext) {
         let content = self.build_rich_content(ctx);
         let entry = self.error_code.entry();
@@ -697,7 +697,7 @@ impl ConfigErrorDisplay {
     }
 
     /// Build rich content string.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn build_rich_content(&self, _ctx: OutputContext) -> String {
         let mut lines = Vec::new();
 

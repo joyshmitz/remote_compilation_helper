@@ -40,13 +40,13 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::errors::catalog::ErrorCode;
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use crate::ui::RchTheme;
 use crate::ui::{ErrorPanel, Icons, OutputContext};
 
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::r#box::HEAVY;
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::prelude::*;
 
 /// Worker resource state at the time of error.
@@ -605,7 +605,7 @@ impl BuildErrorDisplay {
             return;
         }
 
-        #[cfg(feature = "rich-ui")]
+        #[cfg(all(feature = "rich-ui", unix))]
         if ctx.supports_rich() {
             self.render_rich(ctx);
             return;
@@ -655,7 +655,7 @@ impl BuildErrorDisplay {
     }
 
     /// Render using rich_rust Panel.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn render_rich(&self, ctx: OutputContext) {
         let content = self.build_rich_content(ctx);
         let entry = self.error_code.entry();
@@ -675,7 +675,7 @@ impl BuildErrorDisplay {
     }
 
     /// Build rich content string.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn build_rich_content(&self, _ctx: OutputContext) -> String {
         let mut lines = Vec::new();
 

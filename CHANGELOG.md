@@ -2,6 +2,146 @@
 
 All notable changes to the Remote Compilation Helper (RCH) project.
 
+---
+
+## [1.1.0] - 2026-02-01
+
+### Cross-Platform Support
+
+**Windows & macOS Compatibility** - RCH now builds and runs on all major platforms:
+
+- **Windows Compilation**: Cross-platform build with proper feature-gating for Unix-only components (`openssh`, daemon socket)
+- **macOS Compatibility**: Platform-specific process detection, handling read-only root filesystem for rich_rust dependencies
+- **Platform-Agnostic Tests**: E2E fixtures use platform-agnostic usernames, binary hash computation works across platforms
+- **Feature-Gated Imports**: Conditional compilation for Unix-specific functionality
+
+---
+
+### Fleet Module Overhaul (Stub Elimination)
+
+**Critical: All fleet operations now perform REAL work** - Previously, fleet commands were stubs that reported success without doing anything. This was a major reliability issue discovered during production testing.
+
+**`run_preflight()` - Real SSH Checks**:
+- Parallel SSH connectivity testing to all workers
+- Real disk space queries via `df -BM`
+- Tool availability verification (rsync, zstd, rustup)
+- rch-wkr version detection on workers
+- Timeout handling (30s per check)
+- Issue collection with actionable remediation
+
+**`get_fleet_status()` - Live Worker Queries**:
+- Concurrent worker status checks (semaphore-limited to 10)
+- Real SSH connectivity testing
+- Actual version detection via `rch-wkr --version`
+- Health check execution via `rch-wkr health`
+- Proper timeout handling for unresponsive workers
+
+**`rollback_workers()` - Binary Restoration**:
+- Backup creation during deployment (stored in `~/.config/rch/backups.json`)
+- Real binary restoration via SSH/SCP
+- Version verification after rollback
+- Parallel rollback with graceful worker lifecycle
+- Backup retention (last 3 per worker)
+- CommandRunner trait for testable backup operations
+
+---
+
+### New Commands
+
+**`rch config doctor`** - Diagnose configuration issues:
+- Validates SSH identity file existence and permissions
+- Tests worker connectivity
+- Checks daemon socket accessibility
+- Provides remediation suggestions for issues
+
+**`rch config edit`** - Edit configuration in default editor:
+- Opens config.toml or workers.toml in `$EDITOR`
+- Validates syntax after save
+- Supports `--workers` flag for workers.toml
+
+**`rch config get`** - Query individual config values:
+- Dot-notation access (e.g., `rch config get general.log_level`)
+- JSON output support
+- Lists available keys with `--list`
+
+---
+
+### Code Architecture Improvements
+
+**Command Modularization** - The 3800+ line commands.rs was split into focused modules:
+
+| Module | Purpose |
+|--------|---------|
+| `commands/daemon.rs` | Daemon lifecycle (start, stop, restart, reload) |
+| `commands/config.rs` | Config show/set/init/get/edit/doctor |
+| `commands/agent.rs` | Agent detection and hook management |
+| `commands/queue.rs` | Build queue inspection |
+| `commands/speedscore.rs` | Worker benchmarking |
+| `commands/workers_deploy.rs` | Binary deployment to workers |
+| `commands/workers_init.rs` | Worker discovery and setup |
+
+**Structured Error Handling** - Converted all bare `bail!()` calls to structured `RchError` with:
+- Error codes (RCH-Exxx)
+- Contextual information
+- Remediation suggestions
+- Machine-parseable format
+
+**Deep Audit Fixes** - Comprehensive security, reliability, and performance review:
+- Removed dead code replaced by single-pass state machine
+- Minor improvements to config, completions, and CLI
+- Fixed formatting and type mismatches
+
+---
+
+### Security Hardening
+
+**Sigstore Verification** - Strict certificate verification for self-update:
+- Enforces `certificate-identity` and `certificate-oidc-issuer` flags
+- Validates GitHub Actions OIDC tokens
+- Rejects unsigned or incorrectly signed releases
+
+**Dependency Updates**:
+- LRU cache updated to 0.16 (security fix)
+
+---
+
+### Bug Fixes
+
+**Bun Test Timeout Wrapper** - Prevents indefinite CPU hangs:
+- External `timeout --signal=KILL` wrapper for bun test/typecheck
+- Configurable via `bun_test_timeout_secs` (default: 600s / 10 minutes)
+- Addresses known Bun defects causing 100% CPU loops
+
+**Cache Affinity Uniqueness**:
+- Path hash added to project names for cache key uniqueness
+- Prevents collisions between projects with same directory name
+
+**Overflow Prevention**:
+- `saturating_mul` for age calculations in cache warmth decay
+
+---
+
+### Testing Improvements
+
+**CI/CD Stability**:
+- Exponential backoff in E2E daemon tests
+- CPU variance tolerance increased for CI environments
+- Daemon test timeouts extended for slower CI runners
+- Tests respect `CARGO_TARGET_DIR` consistently
+
+**Test Infrastructure**:
+- Thread-safe environment variable helpers
+- Proptest regression test cases
+- Feature-gating for true-e2e tests
+- Global test logging initialization
+
+**Test Coverage**:
+- Preflight check unit tests for all worker status types
+- Rollback registry unit tests (CRUD, concurrent writes, shutdown order)
+- Mock SSH executor for isolated unit testing
+
+---
+
 ## [1.0.0] - 2026-01-30
 
 The 1.0.0 release marks RCH as feature-complete for production use. This release represents approximately 3 weeks of intensive development with 827 commits, building the entire system from initial scaffold to a fully functional transparent compilation offloading system.
@@ -139,6 +279,30 @@ rch update check/install/rollback  # Self-update system
 
 **Confirmation Prompts** - Destructive actions require confirmation (can skip with `--yes`).
 
+**Shell Completions** - Tab completion for bash, zsh, and fish:
+- `rch completions bash > ~/.local/share/bash-completion/completions/rch`
+- `rch completions zsh > ~/.zfunc/_rch`
+- `rch completions fish > ~/.config/fish/completions/rch.fish`
+
+---
+
+### Runtime Detection & Toolchain Management
+
+**Automatic Toolchain Detection**:
+- Parses `rust-toolchain.toml` for Rust projects
+- Detects channel (stable/beta/nightly), version, components, targets
+- Forwards toolchain info to workers for environment setup
+
+**Worker Capability Probing**:
+- Workers declare available runtimes (Rust, Bun, Node, GCC/Clang)
+- Runtime filtering prevents routing to incompatible workers
+- Version detection for all supported toolchains
+
+**Toolchain Synchronization**:
+- Auto-installs missing Rust toolchains on workers via rustup
+- Verifies component availability before compilation
+- Graceful local fallback on toolchain failures
+
 ---
 
 ### Terminal UI (TUI)
@@ -164,6 +328,35 @@ rch update check/install/rollback  # Self-update system
 - Slot usage bars with percentage
 
 **Sort Controls** - Build history sortable by time, duration, or worker.
+
+---
+
+### Rich Terminal Output
+
+**Styled Box Rendering**:
+- Configurable borders (rounded, sharp, double, ascii)
+- Padding and margin control
+- Nested box support
+
+**Terminal Hyperlinks**:
+- Clickable links in terminal output (OSC 8 escape sequences)
+- Links to documentation, GitHub issues, worker hosts
+- Graceful fallback for unsupported terminals
+
+**Markdown Rendering**:
+- Basic markdown support in terminal output
+- Code blocks with syntax hints
+- Headers, lists, and emphasis
+
+**Agent Detection**:
+- Automatic detection of Claude Code, Codex CLI, Cursor
+- Context-aware output formatting per agent
+- Machine-readable output for automated agents
+
+**Progress Indicators**:
+- Spinner for long-running operations
+- Progress bars for file transfers
+- Phase indicators for multi-step operations
 
 ---
 
@@ -330,18 +523,21 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/remote_compilatio
 ### Security
 
 - **No unsafe code** - `#![forbid(unsafe_code)]` enforced
-- **Shell escaping** - All user input properly escaped
-- **SSH key validation** - Permissions checked before use
-- **Checksum verification** - All downloads verified
+- **Shell escaping** - All user input properly escaped with shell-words
+- **SSH key validation** - Permissions checked (0600/0400) before use
+- **Checksum verification** - All downloads verified with SHA256
 - **No secrets in config** - Identity files referenced by path
+- **Command classification hardening** - Prevents shell injection via crafted commands
+- **Path sanitization** - All file paths validated before transfer
 
 ---
 
-### Known Limitations
+### Known Limitations (1.0.0)
 
 - Benchmark execution stub (placeholder for rch-benchmark integration)
-- Changelog diff computation in update check (TODO)
-- Rollback simulation (SSH restore not yet implemented)
+- Changelog diff computation in update check
+
+**Note:** Rollback was a stub in 1.0.0 but is now fully implemented in 1.1.0.
 
 ---
 

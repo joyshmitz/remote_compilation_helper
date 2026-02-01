@@ -32,9 +32,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::r#box::HEAVY;
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::prelude::*;
 
 use super::{Icons, OutputContext, RchTheme};
@@ -295,7 +295,7 @@ impl ErrorPanel {
             return;
         }
 
-        #[cfg(feature = "rich-ui")]
+        #[cfg(all(feature = "rich-ui", unix))]
         if ctx.supports_rich() {
             self.render_rich(ctx);
             return;
@@ -305,7 +305,7 @@ impl ErrorPanel {
     }
 
     /// Render using rich_rust Panel.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn render_rich(&self, ctx: OutputContext) {
         let content = self.build_content(ctx, true);
         let icon = self.severity.icon(ctx);
@@ -390,7 +390,7 @@ impl ErrorPanel {
     }
 
     /// Build content string for panel body.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn build_content(&self, ctx: OutputContext, _use_markup: bool) -> String {
         let mut lines = Vec::new();
 

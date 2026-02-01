@@ -5,9 +5,9 @@
 use crate::ui::{Icons, OutputContext, ProgressContext};
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use crate::ui::RchTheme;
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::prelude::{BarStyle, ProgressBar, Style};
 
 const DEFAULT_BYTES_BAR_WIDTH: usize = 18;
@@ -528,7 +528,7 @@ fn parse_size_f64(input: &str) -> Option<f64> {
     Some(value * multiplier)
 }
 
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 fn render_bar(
     ctx: OutputContext,
     current: u64,
@@ -572,7 +572,7 @@ fn render_bar(
     bar.render_plain(width + 2).trim_end().to_string()
 }
 
-#[cfg(not(feature = "rich-ui"))]
+#[cfg(not(all(feature = "rich-ui", unix)))]
 fn render_bar(
     ctx: OutputContext,
     _current: u64,

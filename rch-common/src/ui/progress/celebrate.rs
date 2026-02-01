@@ -4,7 +4,7 @@
 //! optional "personal best" or milestone callouts. Uses plain ASCII by
 //! default and rich_rust panels when available.
 
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use crate::ui::RchTheme;
 use crate::ui::{Icons, OutputContext};
 use chrono::{DateTime, Utc};
@@ -13,9 +13,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::r#box::HEAVY;
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::prelude::*;
 
 const HISTORY_LIMIT: usize = 200;
@@ -142,7 +142,7 @@ impl CompletionCelebration {
     }
 
     fn render(&self, ctx: OutputContext, stats: BuildStats) {
-        #[cfg(feature = "rich-ui")]
+        #[cfg(all(feature = "rich-ui", unix))]
         if ctx.supports_rich() {
             self.render_rich(ctx, stats);
             return;
@@ -151,7 +151,7 @@ impl CompletionCelebration {
         self.render_plain(ctx, stats);
     }
 
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn render_rich(&self, ctx: OutputContext, stats: BuildStats) {
         let title = self.title_line(ctx, &stats);
         let content = self.render_lines(ctx, &stats).join("\n");

@@ -32,13 +32,13 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use crate::errors::catalog::ErrorCode;
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use crate::ui::RchTheme;
 use crate::ui::{ErrorPanel, Icons, OutputContext};
 
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::r#box::HEAVY;
-#[cfg(feature = "rich-ui")]
+#[cfg(all(feature = "rich-ui", unix))]
 use rich_rust::prelude::*;
 
 /// Network connection details for error display.
@@ -585,7 +585,7 @@ impl NetworkErrorDisplay {
             return;
         }
 
-        #[cfg(feature = "rich-ui")]
+        #[cfg(all(feature = "rich-ui", unix))]
         if ctx.supports_rich() {
             self.render_rich(ctx);
             return;
@@ -595,7 +595,7 @@ impl NetworkErrorDisplay {
     }
 
     /// Render using rich_rust Panel with network-specific formatting.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn render_rich(&self, ctx: OutputContext) {
         let content = self.build_rich_content(ctx);
         let entry = self.error_code.entry();
@@ -615,7 +615,7 @@ impl NetworkErrorDisplay {
     }
 
     /// Build rich content string.
-    #[cfg(feature = "rich-ui")]
+    #[cfg(all(feature = "rich-ui", unix))]
     fn build_rich_content(&self, ctx: OutputContext) -> String {
         let mut lines = Vec::new();
 
