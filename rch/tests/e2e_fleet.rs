@@ -2,6 +2,13 @@
 //!
 //! Verifies fleet deploy, rollback, status, and concurrent operations
 //! using the shared E2E test harness.
+//!
+//! **Note:** These tests require pre-built binaries (rch, rchd, rch-wkr).
+//! They are skipped in regular `cargo test` and only run when the
+//! `true-e2e` feature is enabled (e.g., in the e2e CI job).
+
+// Skip these tests unless true-e2e feature is enabled
+#![cfg(feature = "true-e2e")]
 
 use rch_common::e2e::{
     HarnessError, HarnessResult, LogLevel, LogSource, TestHarness, TestHarnessBuilder,
