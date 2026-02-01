@@ -19,10 +19,17 @@ pub struct WorkerFixture {
 impl WorkerFixture {
     /// Create a mock local worker (uses localhost)
     pub fn mock_local(id: &str) -> Self {
+        #[cfg(unix)]
+        let user = whoami::username().unwrap_or_else(|_| "unknown".to_string());
+        #[cfg(not(unix))]
+        let user = std::env::var("USERNAME")
+            .or_else(|_| std::env::var("USER"))
+            .unwrap_or_else(|_| "unknown".to_string());
+
         Self {
             id: id.to_string(),
             host: "localhost".to_string(),
-            user: whoami::username().unwrap_or_else(|_| "unknown".to_string()),
+            user,
             identity_file: "~/.ssh/id_rsa".to_string(),
             total_slots: 4,
             priority: 100,
