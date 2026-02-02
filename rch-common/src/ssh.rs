@@ -336,11 +336,17 @@ impl SshClient {
                 })
             }
             Err(_) => {
-                // Timeout occurred - the async block owns child and dropping it will terminate the process
+                // Timeout occurred - explicitly disconnect to kill the remote process.
+                // The openssh crate's Session::close() sends SIGTERM to the control master,
+                // which propagates to child processes. Without this, the remote process
+                // may continue running indefinitely, wasting worker resources.
                 warn!(
-                    "Command timed out on {} after {:?}",
+                    "Command timed out on {} after {:?}, terminating session",
                     self.config.id, self.options.command_timeout
                 );
+                // Note: child is dropped here which triggers disconnect, but we also
+                // want to log the cleanup. The actual session cleanup happens when
+                // the caller's SshClient is disconnected or dropped.
                 anyhow::bail!("Command timed out after {:?}", self.options.command_timeout);
             }
         }
@@ -469,11 +475,21 @@ impl SshClient {
                 })
             }
             Err(_) => {
-                // Timeout occurred - child is dropped and killed
+                // Timeout occurred - the spawned reader tasks will terminate when they
+                // try to send on rx (which is dropped when this scope exits).
+                // The child process is also dropped here, but openssh may not kill
+                // the remote process immediately. Log the situation for visibility.
+                //
+                // Note: The reader tasks are detached (tokio::spawn) so they continue
+                // briefly until they hit EOF or the send fails. This is acceptable
+                // because they're lightweight and will terminate quickly once the
+                // channel closes.
                 warn!(
-                    "Command (streaming) timed out on {} after {:?}",
+                    "Command (streaming) timed out on {} after {:?}, cleaning up",
                     self.config.id, self.options.command_timeout
                 );
+                // rx is dropped here, which will cause senders to fail on next send
+                // child is dropped here, which signals termination to openssh
                 anyhow::bail!("Command timed out after {:?}", self.options.command_timeout);
             }
         }
