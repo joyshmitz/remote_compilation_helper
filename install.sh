@@ -2109,6 +2109,47 @@ print_summary() {
             fi
             echo ""
         fi
+
+        # Critical reminder about restarting Claude Code session
+        if $USE_GUM; then
+            gum style \
+                --border double \
+                --border-foreground 196 \
+                --padding "1 3" \
+                --align center \
+                "⚠️  IMPORTANT: Restart Required  ⚠️" \
+                "" \
+                "You MUST start a NEW Claude Code session" \
+                "for the RCH hook to be active." \
+                "" \
+                "Exit your current session and run 'claude' again."
+        else
+            echo ""
+            if $USE_COLOR; then
+                echo -e "${BOLD}${RED}╔══════════════════════════════════════════════════════════════╗${NC}"
+                echo -e "${BOLD}${RED}║${NC}        ${BOLD}⚠️  IMPORTANT: Restart Required  ⚠️${NC}                  ${BOLD}${RED}║${NC}"
+                echo -e "${BOLD}${RED}╠══════════════════════════════════════════════════════════════╣${NC}"
+                echo -e "${BOLD}${RED}║${NC}                                                              ${BOLD}${RED}║${NC}"
+                echo -e "${BOLD}${RED}║${NC}   You ${BOLD}MUST${NC} start a ${BOLD}NEW${NC} Claude Code session                  ${BOLD}${RED}║${NC}"
+                echo -e "${BOLD}${RED}║${NC}   for the RCH hook to be active.                            ${BOLD}${RED}║${NC}"
+                echo -e "${BOLD}${RED}║${NC}                                                              ${BOLD}${RED}║${NC}"
+                echo -e "${BOLD}${RED}║${NC}   ${YELLOW}Exit your current session and run 'claude' again.${NC}        ${BOLD}${RED}║${NC}"
+                echo -e "${BOLD}${RED}║${NC}                                                              ${BOLD}${RED}║${NC}"
+                echo -e "${BOLD}${RED}╚══════════════════════════════════════════════════════════════╝${NC}"
+            else
+                echo "╔══════════════════════════════════════════════════════════════╗"
+                echo "║        IMPORTANT: Restart Required                           ║"
+                echo "╠══════════════════════════════════════════════════════════════╣"
+                echo "║                                                              ║"
+                echo "║   You MUST start a NEW Claude Code session                   ║"
+                echo "║   for the RCH hook to be active.                             ║"
+                echo "║                                                              ║"
+                echo "║   Exit your current session and run 'claude' again.          ║"
+                echo "║                                                              ║"
+                echo "╚══════════════════════════════════════════════════════════════╝"
+            fi
+        fi
+        echo ""
     fi
 }
 
