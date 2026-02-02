@@ -603,11 +603,12 @@ impl TransferPipeline {
 
         // Check size threshold
         if let Some(max_mb) = max_mb {
-            let estimated_mb = estimate.bytes / (1024 * 1024);
-            if estimated_mb > max_mb {
+            let max_bytes = max_mb.saturating_mul(1024 * 1024);
+            if estimate.bytes > max_bytes {
+                let estimated_mb = estimate.bytes as f64 / (1024.0 * 1024.0);
                 return Some(format!(
-                    "Transfer size ({} MB) exceeds threshold ({} MB)",
-                    estimated_mb, max_mb
+                    "Transfer size ({:.2} MB) exceeds threshold ({:.2} MB)",
+                    estimated_mb, max_mb as f64
                 ));
             }
         }

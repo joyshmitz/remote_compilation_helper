@@ -1110,7 +1110,7 @@ fn estimate_cores_for_command(
     let check_default = config.check_slots.max(1);
 
     // Slot reduction for filtered tests (fewer tests = fewer slots needed)
-    let filtered_test_slots = (test_default / 2).max(2);
+    let filtered_test_slots = (test_default / 2).max(2).min(test_default);
 
     match kind {
         Some(
@@ -4867,6 +4867,27 @@ mod tests {
             &config,
         );
         assert!(filtered >= 2, "Filtered slots should be at least 2");
+    }
+
+    #[test]
+    fn test_estimate_cores_filtered_never_exceeds_default() {
+        let _guard = test_guard!();
+        let config = rch_common::CompilationConfig {
+            build_slots: 6,
+            test_slots: 1, // Single-slot environment
+            check_slots: 3,
+            ..Default::default()
+        };
+
+        let filtered = estimate_cores_for_command(
+            Some(CompilationKind::CargoTest),
+            "cargo test my_test",
+            &config,
+        );
+        assert_eq!(
+            filtered, 1,
+            "Filtered tests should not request more slots than test_slots"
+        );
     }
 
     #[test]
