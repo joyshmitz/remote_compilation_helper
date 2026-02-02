@@ -905,6 +905,7 @@ impl WorkerSelector {
         selected_id: Option<&str>,
     ) -> Vec<WorkerScoreBreakdown> {
         let cache = self.cache_tracker.read().await;
+        let (min_priority, max_priority) = Self::priority_range(workers).await;
         let mut breakdowns = Vec::with_capacity(workers.len());
 
         for (worker, circuit_state) in workers {
@@ -919,7 +920,8 @@ impl WorkerSelector {
                 0.0
             };
             let cache_affinity = cache.estimate_warmth(&worker_id, &request.project, cache_use);
-            let priority_score = 1.0 / (config.priority as f64 + 1.0); // Lower priority number = higher score
+            let priority_score =
+                Self::normalize_priority(config.priority, min_priority, max_priority);
 
             // Check if this worker can actually take the job
             let skip_reason = if *circuit_state == CircuitState::Open {

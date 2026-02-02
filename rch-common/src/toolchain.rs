@@ -111,7 +111,7 @@ pub fn wrap_command_with_color(command: &str, color_mode: ColorMode) -> String {
             // - FORCE_COLOR: Node.js/JS ecosystem standard (used by Bun, chalk, etc.)
             // - NO_COLOR: Ensure it's unset (some tools check this first)
             format!(
-                "unset NO_COLOR; CARGO_TERM_COLOR=always RUST_LOG_STYLE=always CLICOLOR_FORCE=1 FORCE_COLOR=1 {}",
+                "env -u NO_COLOR CARGO_TERM_COLOR=always RUST_LOG_STYLE=always CLICOLOR_FORCE=1 FORCE_COLOR=1 {}",
                 command
             )
         }
@@ -399,7 +399,7 @@ mod tests {
         assert!(wrapped.contains("RUST_LOG_STYLE=always"));
         assert!(wrapped.contains("CLICOLOR_FORCE=1"));
         assert!(wrapped.contains("FORCE_COLOR=1"));
-        assert!(wrapped.contains("unset NO_COLOR"));
+        assert!(wrapped.contains("env -u NO_COLOR"));
         assert!(wrapped.contains("cargo test"));
     }
 

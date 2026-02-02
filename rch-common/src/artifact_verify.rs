@@ -211,11 +211,19 @@ pub fn verify_artifacts(
             continue;
         }
 
-        // Skip if file is too large
-        if expected.size > max_size {
+        // Skip if file is too large (based on actual size to avoid manifest spoofing)
+        let actual_size = match std::fs::metadata(&full_path) {
+            Ok(meta) => meta.len(),
+            Err(e) => {
+                warn!("Skipping verification of {}: {}", rel_path, e);
+                result.skipped.push(rel_path.clone());
+                continue;
+            }
+        };
+        if actual_size > max_size {
             debug!(
                 "Skipping verification of large file: {} ({} bytes > {} max)",
-                rel_path, expected.size, max_size
+                rel_path, actual_size, max_size
             );
             result.skipped.push(rel_path.clone());
             continue;
