@@ -929,9 +929,13 @@ fn classify_full(cmd: &str) -> Classification {
         return Classification::compilation(CompilationKind::Make, 0.85, "make build");
     }
 
-    // CMake build
-    if cmd.contains("cmake") && cmd.contains("--build") {
-        return Classification::compilation(CompilationKind::CmakeBuild, 0.90, "cmake --build");
+    // CMake build (only when cmake is the invoked command)
+    if cmd.starts_with("cmake ") || cmd == "cmake" {
+        let mut tokens = cmd.split_whitespace();
+        let _ = tokens.next(); // "cmake"
+        if tokens.any(|token| token == "--build" || token.starts_with("--build=")) {
+            return Classification::compilation(CompilationKind::CmakeBuild, 0.90, "cmake --build");
+        }
     }
 
     // Ninja
@@ -942,9 +946,21 @@ fn classify_full(cmd: &str) -> Classification {
         return Classification::compilation(CompilationKind::Ninja, 0.90, "ninja build");
     }
 
-    // Meson
-    if cmd.contains("meson") && cmd.contains("compile") {
-        return Classification::compilation(CompilationKind::Meson, 0.85, "meson compile");
+    // Meson (only when meson is the invoked command)
+    if cmd.starts_with("meson ") || cmd == "meson" {
+        let mut tokens = cmd.split_whitespace();
+        let _ = tokens.next(); // "meson"
+        let mut subcommand = None;
+        for token in tokens {
+            if token.starts_with('-') {
+                continue;
+            }
+            subcommand = Some(token);
+            break;
+        }
+        if matches!(subcommand, Some("compile")) {
+            return Classification::compilation(CompilationKind::Meson, 0.85, "meson compile");
+        }
     }
 
     // Bun commands
@@ -1314,6 +1330,28 @@ mod tests {
         let result = classify_command("make clean");
         assert!(!result.is_compilation);
         assert!(result.reason.contains("make maintenance command"));
+    }
+
+    #[test]
+    fn test_cmake_build_requires_cmake_command() {
+        let _guard = test_guard!();
+        let result = classify_command("echo cmake --build .");
+        assert!(!result.is_compilation);
+    }
+
+    #[test]
+    fn test_cmake_build_with_equals_flag() {
+        let _guard = test_guard!();
+        let result = classify_command("cmake --build=build");
+        assert!(result.is_compilation);
+        assert_eq!(result.kind, Some(CompilationKind::CmakeBuild));
+    }
+
+    #[test]
+    fn test_meson_compile_requires_meson_command() {
+        let _guard = test_guard!();
+        let result = classify_command("echo meson compile");
+        assert!(!result.is_compilation);
     }
 
     #[test]

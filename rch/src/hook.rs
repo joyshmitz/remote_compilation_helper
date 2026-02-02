@@ -2173,7 +2173,7 @@ async fn execute_remote_compilation(
 
     // Create transfer pipeline with color mode, command timeout, and compilation kind
     let command_timeout = compilation_config.timeout_for_kind(kind);
-    let pipeline = TransferPipeline::new(
+    let mut pipeline = TransferPipeline::new(
         project_root.clone(),
         project_id.clone(),
         project_hash,

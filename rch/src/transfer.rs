@@ -188,6 +188,10 @@ pub struct TransferPipeline {
     /// Provides configurable external timeout values per command type and
     /// the ability to enable/disable timeout wrapping entirely.
     compilation_config: rch_common::CompilationConfig,
+    /// Optional estimated transfer size (bytes) for adaptive compression.
+    ///
+    /// Populated by `should_skip_transfer` when estimation is performed.
+    estimated_transfer_bytes: Option<u64>,
 }
 
 /// Validate a project hash for safe use in file paths.
@@ -263,6 +267,7 @@ impl TransferPipeline {
             env_overrides: None,
             compilation_kind: None,
             compilation_config: rch_common::CompilationConfig::default(),
+            estimated_transfer_bytes: None,
         }
     }
 
@@ -324,6 +329,12 @@ impl TransferPipeline {
         self
     }
 
+    #[cfg(test)]
+    pub fn with_estimated_transfer_bytes(mut self, bytes: Option<u64>) -> Self {
+        self.estimated_transfer_bytes = bytes;
+        self
+    }
+
     fn build_env_prefix(&self) -> EnvPrefix {
         build_env_prefix(&self.env_allowlist, |key| {
             if let Some(ref overrides) = self.env_overrides
@@ -364,6 +375,11 @@ impl TransferPipeline {
         }
 
         excludes
+    }
+
+    fn compression_level_for_transfer(&self) -> u32 {
+        self.transfer_config
+            .select_compression_level(self.estimated_transfer_bytes)
     }
 
     /// Get the remote project path on the worker.
@@ -562,12 +578,15 @@ impl TransferPipeline {
     ///
     /// Returns `Some(reason)` if transfer should be skipped, `None` if it should proceed.
     #[allow(dead_code)]
-    pub async fn should_skip_transfer(&self, worker: &WorkerConfig) -> Option<String> {
+    pub async fn should_skip_transfer(&mut self, worker: &WorkerConfig) -> Option<String> {
         // Check if any thresholds are configured
         let max_mb = self.transfer_config.max_transfer_mb;
         let max_time_ms = self.transfer_config.max_transfer_time_ms;
 
-        if max_mb.is_none() && max_time_ms.is_none() {
+        let needs_estimate =
+            self.transfer_config.adaptive_compression || max_mb.is_some() || max_time_ms.is_some();
+
+        if !needs_estimate {
             return None; // No thresholds configured
         }
 
@@ -575,10 +594,12 @@ impl TransferPipeline {
         let estimate = match self.estimate_transfer_size(worker).await {
             Some(e) => e,
             None => {
+                self.estimated_transfer_bytes = None;
                 debug!("Transfer estimation failed, proceeding with transfer (fail-open)");
                 return None;
             }
         };
+        self.estimated_transfer_bytes = Some(estimate.bytes);
 
         // Check size threshold
         if let Some(max_mb) = max_mb {
@@ -636,12 +657,10 @@ impl TransferPipeline {
         }
 
         // Add zstd compression if available (rsync 3.2.3+)
-        if self.transfer_config.compression_level > 0 {
+        let compression_level = self.compression_level_for_transfer();
+        if compression_level > 0 {
             cmd.arg("--compress-choice=zstd");
-            cmd.arg(format!(
-                "--compress-level={}",
-                self.transfer_config.compression_level
-            ));
+            cmd.arg(format!("--compress-level={}", compression_level));
         }
 
         // Add bandwidth limit if configured (bd-3hho)
@@ -838,12 +857,10 @@ impl TransferPipeline {
         }
 
         // Add zstd compression if available (rsync 3.2.3+)
-        if self.transfer_config.compression_level > 0 {
+        let compression_level = self.compression_level_for_transfer();
+        if compression_level > 0 {
             cmd.arg("--compress-choice=zstd");
-            cmd.arg(format!(
-                "--compress-level={}",
-                self.transfer_config.compression_level
-            ));
+            cmd.arg(format!("--compress-level={}", compression_level));
         }
 
         // Add bandwidth limit if configured (bd-3hho)
@@ -1024,12 +1041,10 @@ impl TransferPipeline {
             .arg(ssh_command);
 
         // Add zstd compression
-        if self.transfer_config.compression_level > 0 {
+        let compression_level = self.compression_level_for_transfer();
+        if compression_level > 0 {
             cmd.arg("--compress-choice=zstd");
-            cmd.arg(format!(
-                "--compress-level={}",
-                self.transfer_config.compression_level
-            ));
+            cmd.arg(format!("--compress-level={}", compression_level));
         }
 
         // Add bandwidth limit if configured (bd-3hho)
@@ -1264,12 +1279,10 @@ impl TransferPipeline {
             .arg(ssh_command);
 
         // Add zstd compression
-        if self.transfer_config.compression_level > 0 {
+        let compression_level = self.compression_level_for_transfer();
+        if compression_level > 0 {
             cmd.arg("--compress-choice=zstd");
-            cmd.arg(format!(
-                "--compress-level={}",
-                self.transfer_config.compression_level
-            ));
+            cmd.arg(format!("--compress-level={}", compression_level));
         }
 
         // Add bandwidth limit if configured (bd-3hho)
@@ -2216,6 +2229,52 @@ mod tests {
         assert!(ssh_arg.contains("ControlPath="));
         assert!(ssh_arg.contains("rch-rsync-%C"));
         assert!(ssh_arg.contains("ControlPersist=60s"));
+    }
+
+    #[test]
+    fn test_build_sync_command_adaptive_compression_uses_estimate() {
+        let _guard = test_guard!();
+        let transfer_config = TransferConfig {
+            adaptive_compression: true,
+            compression_level: 3,
+            min_compression_level: 1,
+            max_compression_level: 9,
+            ..TransferConfig::default()
+        };
+
+        let pipeline = TransferPipeline::new(
+            PathBuf::from("/tmp/test"),
+            "test-project".to_string(),
+            "abc123".to_string(),
+            transfer_config,
+        )
+        .with_estimated_transfer_bytes(Some(500_000_000));
+
+        let worker = WorkerConfig {
+            id: WorkerId::new("mock-worker"),
+            host: "mock://worker".to_string(),
+            user: "mockuser".to_string(),
+            identity_file: "~/.ssh/mock".to_string(),
+            total_slots: 4,
+            priority: 100,
+            tags: vec![],
+        };
+
+        let cmd = pipeline.build_sync_command(
+            &worker,
+            "mockuser@mock://worker:/tmp/rch/test-project/abc123",
+            "/tmp/rch/test-project/abc123",
+            &[],
+        );
+
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+
+        assert!(args.iter().any(|arg| arg == "--compress-choice=zstd"));
+        assert!(args.iter().any(|arg| arg == "--compress-level=7"));
     }
 
     #[test]
