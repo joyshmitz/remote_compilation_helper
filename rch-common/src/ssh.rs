@@ -211,6 +211,21 @@ impl SshClient {
                     "Failed to create SSH control directory {:?}: {}",
                     control_dir, e
                 );
+            } else {
+                // Set restrictive permissions (0700) to prevent symlink attacks
+                // and unauthorized access to SSH control sockets
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Err(e) =
+                        std::fs::set_permissions(&control_dir, std::fs::Permissions::from_mode(0o700))
+                    {
+                        warn!(
+                            "Failed to set permissions on SSH control directory {:?}: {}",
+                            control_dir, e
+                        );
+                    }
+                }
             }
             builder.control_directory(&control_dir);
         }

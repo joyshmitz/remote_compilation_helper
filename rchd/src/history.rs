@@ -135,7 +135,7 @@ impl BuildHistory {
 
         // Update memory state under lock
         {
-            let mut records = self.records.write().unwrap();
+            let mut records = self.records.write().unwrap_or_else(|e| e.into_inner());
 
             // Evict oldest if at capacity
             if records.len() >= self.capacity {
@@ -181,7 +181,7 @@ impl BuildHistory {
             location,
         };
 
-        let mut active = self.active.write().unwrap();
+        let mut active = self.active.write().unwrap_or_else(|e| e.into_inner());
         active.insert(id, state.clone());
         state
     }
@@ -196,7 +196,7 @@ impl BuildHistory {
         timing: Option<CommandTimingBreakdown>,
     ) -> Option<BuildRecord> {
         let state = {
-            let mut active = self.active.write().unwrap();
+            let mut active = self.active.write().unwrap_or_else(|e| e.into_inner());
             active.remove(&build_id)
         }?;
 
@@ -227,7 +227,7 @@ impl BuildHistory {
         bytes_transferred: Option<u64>,
     ) -> Option<BuildRecord> {
         let state = {
-            let mut active = self.active.write().unwrap();
+            let mut active = self.active.write().unwrap_or_else(|e| e.into_inner());
             active.remove(&build_id)
         }?;
 
@@ -252,12 +252,12 @@ impl BuildHistory {
 
     /// Get a specific active build by ID.
     pub fn active_build(&self, build_id: u64) -> Option<ActiveBuildState> {
-        self.active.read().unwrap().get(&build_id).cloned()
+        self.active.read().unwrap_or_else(|e| e.into_inner()).get(&build_id).cloned()
     }
 
     /// Get all active builds.
     pub fn active_builds(&self) -> Vec<ActiveBuildState> {
-        self.active.read().unwrap().values().cloned().collect()
+        self.active.read().unwrap_or_else(|e| e.into_inner()).values().cloned().collect()
     }
 
     // =========================================================================
@@ -279,7 +279,7 @@ impl BuildHistory {
         hook_pid: u32,
         slots_needed: u32,
     ) -> Option<QueuedBuildState> {
-        let mut queue = self.queued.write().unwrap();
+        let mut queue = self.queued.write().unwrap_or_else(|e| e.into_inner());
 
         // Check queue depth limit
         if self.max_queue_depth > 0 && queue.len() >= self.max_queue_depth {
@@ -320,7 +320,7 @@ impl BuildHistory {
     ///
     /// Called when a worker becomes available.
     pub fn dequeue_build(&self) -> Option<QueuedBuildState> {
-        let mut queue = self.queued.write().unwrap();
+        let mut queue = self.queued.write().unwrap_or_else(|e| e.into_inner());
         let state = queue.pop_front()?;
         debug!(
             "Build dequeued: id={}, waited {:?}, project={}",
@@ -333,21 +333,21 @@ impl BuildHistory {
 
     /// Remove a specific queued build by ID (e.g., for cancellation).
     pub fn remove_queued_build(&self, queue_id: u64) -> Option<QueuedBuildState> {
-        let mut queue = self.queued.write().unwrap();
+        let mut queue = self.queued.write().unwrap_or_else(|e| e.into_inner());
         let pos = queue.iter().position(|b| b.id == queue_id)?;
         queue.remove(pos)
     }
 
     /// Remove a queued build by hook PID.
     pub fn remove_queued_build_by_pid(&self, hook_pid: u32) -> Option<QueuedBuildState> {
-        let mut queue = self.queued.write().unwrap();
+        let mut queue = self.queued.write().unwrap_or_else(|e| e.into_inner());
         let pos = queue.iter().position(|b| b.hook_pid == hook_pid)?;
         queue.remove(pos)
     }
 
     /// Get all queued builds (in queue order).
     pub fn queued_builds(&self) -> Vec<QueuedBuildState> {
-        self.queued.read().unwrap().iter().cloned().collect()
+        self.queued.read().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect()
     }
 
     /// Get a specific queued build by ID.
@@ -372,12 +372,12 @@ impl BuildHistory {
 
     /// Get the current queue depth.
     pub fn queue_depth(&self) -> usize {
-        self.queued.read().unwrap().len()
+        self.queued.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// Check if the queue is empty.
     pub fn queue_is_empty(&self) -> bool {
-        self.queued.read().unwrap().is_empty()
+        self.queued.read().unwrap_or_else(|e| e.into_inner()).is_empty()
     }
 
     /// Update estimated start times for all queued builds.
@@ -385,9 +385,9 @@ impl BuildHistory {
     /// Uses average build duration from history and active build state.
     pub fn update_queue_estimates(&self) {
         let avg_duration = self.stats().avg_duration_ms;
-        let active_count = self.active.read().unwrap().len();
+        let active_count = self.active.read().unwrap_or_else(|e| e.into_inner()).len();
 
-        let mut queue = self.queued.write().unwrap();
+        let mut queue = self.queued.write().unwrap_or_else(|e| e.into_inner());
 
         // Estimate when each queued build will start
         let now = Utc::now();
@@ -410,19 +410,19 @@ impl BuildHistory {
 
     /// Get recent builds (most recent first).
     pub fn recent(&self, limit: usize) -> Vec<BuildRecord> {
-        let records = self.records.read().unwrap();
+        let records = self.records.read().unwrap_or_else(|e| e.into_inner());
         records.iter().rev().take(limit).cloned().collect()
     }
 
     /// Get all builds (most recent first).
     pub fn all(&self) -> Vec<BuildRecord> {
-        let records = self.records.read().unwrap();
+        let records = self.records.read().unwrap_or_else(|e| e.into_inner());
         records.iter().rev().cloned().collect()
     }
 
     /// Get builds by worker (most recent first).
     pub fn by_worker(&self, worker_id: &str, limit: usize) -> Vec<BuildRecord> {
-        let records = self.records.read().unwrap();
+        let records = self.records.read().unwrap_or_else(|e| e.into_inner());
         records
             .iter()
             .rev()
@@ -434,7 +434,7 @@ impl BuildHistory {
 
     /// Get builds by project (most recent first).
     pub fn by_project(&self, project_id: &str, limit: usize) -> Vec<BuildRecord> {
-        let records = self.records.read().unwrap();
+        let records = self.records.read().unwrap_or_else(|e| e.into_inner());
         records
             .iter()
             .rev()
@@ -446,7 +446,7 @@ impl BuildHistory {
 
     /// Get aggregate statistics.
     pub fn stats(&self) -> BuildStats {
-        let records = self.records.read().unwrap();
+        let records = self.records.read().unwrap_or_else(|e| e.into_inner());
         let total = records.len();
 
         if total == 0 {
@@ -479,7 +479,7 @@ impl BuildHistory {
     pub fn saved_time_stats(&self) -> SavedTimeStats {
         const DEFAULT_SPEEDUP: f64 = 2.0;
 
-        let records = self.records.read().unwrap();
+        let records = self.records.read().unwrap_or_else(|e| e.into_inner());
         let now = Utc::now();
         let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
         let week_start = today_start - ChronoDuration::days(7);
@@ -565,18 +565,18 @@ impl BuildHistory {
 
     /// Get the number of builds in history.
     pub fn len(&self) -> usize {
-        self.records.read().unwrap().len()
+        self.records.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// Check if history is empty.
     pub fn is_empty(&self) -> bool {
-        self.records.read().unwrap().is_empty()
+        self.records.read().unwrap_or_else(|e| e.into_inner()).is_empty()
     }
 
     /// Clear all build records.
     #[allow(dead_code)] // May be used for testing or admin operations
     pub fn clear(&self) {
-        let mut records = self.records.write().unwrap();
+        let mut records = self.records.write().unwrap_or_else(|e| e.into_inner());
         records.clear();
     }
 
@@ -644,7 +644,7 @@ impl BuildHistory {
             return Ok(());
         };
 
-        let records = self.records.read().unwrap();
+        let records = self.records.read().unwrap_or_else(|e| e.into_inner());
         let temp_path = path.with_extension("tmp");
 
         {
