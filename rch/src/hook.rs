@@ -2643,6 +2643,7 @@ mod tests {
     };
     use rch_common::test_guard;
     use rch_common::{SelectionReason, ToolInput};
+    use serial_test::serial;
     use std::sync::OnceLock;
     use tokio::io::BufReader as TokioBufReader;
     use tokio::net::UnixListener;
@@ -3342,6 +3343,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(mock_global)]
     async fn test_process_hook_remote_success_mocked() {
         let _lock = test_lock().lock().await;
         let socket_path = format!(
@@ -3399,6 +3401,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(mock_global)]
     async fn test_force_local_allows_even_when_remote_available() {
         let _lock = test_lock().lock().await;
         let socket_path = format!(
@@ -3459,6 +3462,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(mock_global)]
     async fn test_force_remote_bypasses_confidence_threshold() {
         let _lock = test_lock().lock().await;
         let socket_path = format!(
@@ -3525,6 +3529,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(mock_global)]
     async fn test_process_hook_remote_sync_failure_allows() {
         let _lock = test_lock().lock().await;
         let socket_path = format!(
@@ -3580,6 +3585,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(mock_global)]
     async fn test_process_hook_remote_nonzero_exit_denies() {
         let _lock = test_lock().lock().await;
         let socket_path = format!(
@@ -4150,6 +4156,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(mock_global)]
     async fn test_cargo_test_remote_success() {
         let _lock = test_lock().lock().await;
         let socket_path = format!(
@@ -4227,6 +4234,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(mock_global)]
     async fn test_cargo_test_remote_test_failures() {
         let _lock = test_lock().lock().await;
         let socket_path = format!(
@@ -4295,6 +4303,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(mock_global)]
     async fn test_cargo_test_remote_build_failure() {
         let _lock = test_lock().lock().await;
         let socket_path = format!(
@@ -4355,6 +4364,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(mock_global)]
     async fn test_cargo_test_with_filter() {
         let _lock = test_lock().lock().await;
         let socket_path = format!(
@@ -4410,6 +4420,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(mock_global)]
     async fn test_cargo_test_with_test_threads() {
         let _lock = test_lock().lock().await;
         let socket_path = format!(
@@ -4465,6 +4476,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(mock_global)]
     async fn test_cargo_test_signal_killed() {
         let _lock = test_lock().lock().await;
         let socket_path = format!(
@@ -4524,6 +4536,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(mock_global)]
     async fn test_cargo_test_toolchain_fallback() {
         let _lock = test_lock().lock().await;
         let socket_path = format!(

@@ -1757,6 +1757,7 @@ mod tests {
     use rch_common::WorkerId;
     use rch_common::mock::Phase;
     use rch_common::test_guard;
+    use serial_test::serial;
 
     #[test]
     fn test_remote_path() {
@@ -2297,6 +2298,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(mock_global)]
     fn test_execute_remote_applies_env_allowlist() {
         let _guard = test_guard!();
         mock::clear_global_invocations();
