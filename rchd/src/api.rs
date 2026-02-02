@@ -1940,8 +1940,37 @@ async fn handle_select_worker(
     );
 
     const QUEUE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+    let queue_timeout = Duration::from_secs(ctx.queue_timeout_secs);
 
     loop {
+        // Check if the queue wait has timed out
+        if queued.queued_at_mono.elapsed() > queue_timeout {
+            let _ = ctx.history.remove_queued_build(queued.id);
+            ctx.history.update_queue_estimates();
+            if !cfg!(test) {
+                metrics::set_build_queue_depth(ctx.history.queue_depth());
+            }
+            ctx.events.emit(
+                "build_queue_removed",
+                &serde_json::json!({
+                    "queue_id": queued.id,
+                    "project_id": queued.project_id,
+                    "reason": "timeout",
+                    "waited_secs": queued.queued_at_mono.elapsed().as_secs(),
+                }),
+            );
+            warn!(
+                "Queue timeout after {}s for project {}, falling back to local",
+                queued.queued_at_mono.elapsed().as_secs(),
+                queued.project_id
+            );
+            return Ok(SelectionResponse {
+                worker: None,
+                reason: SelectionReason::SelectionError("queue_timeout".to_string()),
+                build_id: None,
+            });
+        }
+
         // Only the head-of-line build attempts selection (simple FIFO).
         if ctx.history.queue_position(queued.id) != Some(1) {
             tokio::time::sleep(QUEUE_POLL_INTERVAL).await;
@@ -2501,6 +2530,7 @@ mod tests {
             socket_path: "/tmp/test.sock".to_string(),
             version: "0.1.0",
             pid: 1234,
+            queue_timeout_secs: 300,
         }
     }
 

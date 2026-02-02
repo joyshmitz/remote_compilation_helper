@@ -953,6 +953,7 @@ mod tests {
             socket_path: rch_common::default_socket_path(),
             version: "0.1.0",
             pid: 1234,
+            queue_timeout_secs: 300,
         };
 
         // Wait a small amount
@@ -999,6 +1000,7 @@ mod tests {
             socket_path: rch_common::default_socket_path(),
             version: "0.1.0",
             pid: 1234,
+            queue_timeout_secs: 300,
         };
 
         assert_eq!(context.pool.len(), 5);
