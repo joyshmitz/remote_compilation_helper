@@ -336,17 +336,16 @@ impl SshClient {
                 })
             }
             Err(_) => {
-                // Timeout occurred - explicitly disconnect to kill the remote process.
-                // The openssh crate's Session::close() sends SIGTERM to the control master,
-                // which propagates to child processes. Without this, the remote process
-                // may continue running indefinitely, wasting worker resources.
+                // Timeout occurred. The inner future (which owns `child`) is dropped,
+                // but dropping an openssh RemoteChild does NOT kill the remote process
+                // if a ControlMaster is active. The remote process will only terminate
+                // when the caller disconnects the SshClient (closing the Session/
+                // ControlMaster). Callers should ensure disconnect() is called after
+                // a timeout to avoid leaked remote processes.
                 warn!(
-                    "Command timed out on {} after {:?}, terminating session",
+                    "Command timed out on {} after {:?}",
                     self.config.id, self.options.command_timeout
                 );
-                // Note: child is dropped here which triggers disconnect, but we also
-                // want to log the cleanup. The actual session cleanup happens when
-                // the caller's SshClient is disconnected or dropped.
                 anyhow::bail!("Command timed out after {:?}", self.options.command_timeout);
             }
         }

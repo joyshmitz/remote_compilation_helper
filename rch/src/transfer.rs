@@ -739,24 +739,24 @@ impl TransferPipeline {
         // Verify transfer completed successfully by checking for partial transfer indicators.
         // rsync can exit with code 0 even if interrupted mid-file in some edge cases.
         // Look for warning signs in stderr that indicate incomplete transfer.
-        let partial_indicators = [
-            "partial transfer",
-            "connection unexpectedly closed",
-            "write error",
-            "read error",
-            "truncated file",
-        ];
-        for indicator in partial_indicators {
-            if stderr.to_lowercase().contains(indicator) {
+        if !stderr.is_empty() {
+            let stderr_lower = stderr.to_lowercase();
+            let partial_indicators = [
+                "partial transfer",
+                "connection unexpectedly closed",
+                "write error",
+                "read error",
+                "truncated file",
+            ];
+            if let Some(indicator) = partial_indicators
+                .iter()
+                .find(|ind| stderr_lower.contains(*ind))
+            {
                 warn!(
-                    "rsync reported potential partial transfer: {}",
-                    stderr
-                        .lines()
-                        .find(|l| l.to_lowercase().contains(indicator))
-                        .unwrap_or(&stderr)
+                    "rsync reported potential partial transfer (matched '{}'): {}",
+                    indicator,
+                    stderr.lines().next().unwrap_or(&stderr)
                 );
-                // Don't fail here as rsync exited successfully - just warn for visibility.
-                // The caller can decide if they need to verify file integrity.
             }
         }
 
@@ -892,9 +892,11 @@ impl TransferPipeline {
         if use_mock_transport(worker) {
             let mut client = MockSshClient::new(worker.clone(), MockConfig::from_env());
             client.connect().await?;
-            let result = client.execute(&wrapped_command).await?;
-            client.disconnect().await?;
-            return Ok(result);
+            let result = client.execute(&wrapped_command).await;
+            if let Err(e) = client.disconnect().await {
+                warn!("Failed to disconnect mock SSH client: {}", e);
+            }
+            return result;
         }
 
         // Mask sensitive data (API keys, tokens) before logging
@@ -917,9 +919,16 @@ impl TransferPipeline {
             let mut client = SshClient::new(worker.clone(), self.ssh_options.clone());
             client.connect().await?;
 
-            let result = client.execute(&wrapped_command).await?;
+            // Always disconnect after execution, even on error (e.g., timeout).
+            // Without this, a timed-out command would leak the SSH session and
+            // the remote process would continue running indefinitely.
+            let result = client.execute(&wrapped_command).await;
 
-            client.disconnect().await?;
+            if let Err(e) = client.disconnect().await {
+                warn!("Failed to disconnect SSH client after execution: {}", e);
+            }
+
+            let result = result?;
 
             if result.success() {
                 info!("Command succeeded in {}ms", result.duration_ms);
@@ -958,9 +967,11 @@ impl TransferPipeline {
             client.connect().await?;
             let result = client
                 .execute_streaming(&wrapped_command, on_stdout, on_stderr)
-                .await?;
-            client.disconnect().await?;
-            return Ok(result);
+                .await;
+            if let Err(e) = client.disconnect().await {
+                warn!("Failed to disconnect mock SSH client: {}", e);
+            }
+            return result;
         }
 
         #[cfg(not(unix))]
@@ -976,13 +987,18 @@ impl TransferPipeline {
             let mut client = SshClient::new(worker.clone(), self.ssh_options.clone());
             client.connect().await?;
 
+            // Always disconnect after execution, even on error (e.g., timeout).
+            // Without this, a timed-out command would leak the SSH session and
+            // the remote process would continue running indefinitely.
             let result = client
                 .execute_streaming(&wrapped_command, on_stdout, on_stderr)
-                .await?;
+                .await;
 
-            client.disconnect().await?;
+            if let Err(e) = client.disconnect().await {
+                warn!("Failed to disconnect SSH client after streaming: {}", e);
+            }
 
-            Ok(result)
+            result
         }
     }
 
@@ -1325,9 +1341,13 @@ impl TransferPipeline {
 
             let result = client
                 .execute(&format!("rm -rf {}", escaped_remote_path))
-                .await?;
+                .await;
 
-            client.disconnect().await?;
+            if let Err(e) = client.disconnect().await {
+                warn!("Failed to disconnect SSH client after cleanup: {}", e);
+            }
+
+            let result = result?;
 
             if !result.success() {
                 warn!("Cleanup failed: {}", result.stderr);

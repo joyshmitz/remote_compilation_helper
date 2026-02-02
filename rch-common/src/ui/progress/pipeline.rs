@@ -310,10 +310,8 @@ impl PipelineProgress {
             return None;
         }
 
+        // Safe: completed is non-empty so len() >= 1; try_into maps any usize >= 1 to u32 >= 1.
         let completed_count: u32 = completed.len().try_into().unwrap_or(u32::MAX);
-        if completed_count == 0 {
-            return None;
-        }
         let avg_duration: Duration = completed.iter().sum::<Duration>() / completed_count;
 
         let remaining_count: u32 = self
