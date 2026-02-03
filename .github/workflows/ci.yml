@@ -366,8 +366,6 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
       - name: Build release (Unix)
         if: runner.os != 'Windows'
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
         run: cargo build --release --target ${{ matrix.target }}
       - name: Build release (Windows - skip rich-ui)
         if: runner.os == 'Windows'
