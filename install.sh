@@ -401,6 +401,21 @@ detect_platform() {
     fi
 
     TARGET="${os}-${arch}"
+
+    # Map to release target triples used by GitHub Actions artifacts
+    RELEASE_ARCHIVE_EXT="tar.gz"
+    RELEASE_TARGET=""
+    case "${os}-${arch}" in
+        linux-x86_64)  RELEASE_TARGET="x86_64-unknown-linux-musl" ;;
+        linux-aarch64) RELEASE_TARGET="aarch64-unknown-linux-gnu" ;;
+        darwin-x86_64) RELEASE_TARGET="x86_64-apple-darwin" ;;
+        darwin-aarch64) RELEASE_TARGET="aarch64-apple-darwin" ;;
+        windows-x86_64) RELEASE_TARGET="x86_64-pc-windows-msvc"; RELEASE_ARCHIVE_EXT="zip" ;;
+    esac
+    if [[ -z "$RELEASE_TARGET" ]]; then
+        RELEASE_TARGET="$TARGET"
+    fi
+
     success "Platform: $TARGET"
 }
 
@@ -629,65 +644,109 @@ download_binaries() {
 
     info "Checking for pre-built binaries..."
 
-    # Check if there are assets for our platform
-    local asset_name="rch-${TARGET}.tar.gz"
-    local latest_url="https://github.com/${GITHUB_REPO}/releases/latest/download/${asset_name}"
+    # Prefer versioned GH Actions artifacts (matches release workflow)
+    local asset_name=""
+    local checksum_url=""
     local downloaded=false
+    local release_info=""
+    local tag_name=""
+    local asset_ext="${RELEASE_ARCHIVE_EXT}"
 
     TEMP_DIR=$(mktemp -d)
     trap 'rm -rf "$TEMP_DIR"; cleanup_lock' EXIT
 
-    info "Downloading $asset_name from latest release..."
-    if curl -fsSL $PROXY_ARGS "$latest_url" -o "$TEMP_DIR/$asset_name" 2>/dev/null; then
-        downloaded=true
+    if [[ -n "${VERSION:-}" ]]; then
+        tag_name="v${VERSION#v}"
+    else
+        local release_url="${GITHUB_API}/releases/latest"
+        release_info=$(curl -sL --connect-timeout 10 $PROXY_ARGS "$release_url" 2>/dev/null || echo "")
+        if [[ -n "$release_info" ]] && echo "$release_info" | grep -q '"tag_name"'; then
+            tag_name=$(echo "$release_info" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
+        fi
     fi
 
-    if [[ "$downloaded" != "true" && -n "${VERSION:-}" ]]; then
-        local version_tag="v${VERSION#v}"
-        local version_url="https://github.com/${GITHUB_REPO}/releases/download/${version_tag}/${asset_name}"
-        info "Downloading $asset_name from $version_tag..."
-        if curl -fsSL $PROXY_ARGS "$version_url" -o "$TEMP_DIR/$asset_name" 2>/dev/null; then
+    if [[ -n "$tag_name" && -n "$RELEASE_TARGET" ]]; then
+        local versioned_asset="rch-${tag_name}-${RELEASE_TARGET}.${asset_ext}"
+        local versioned_url="https://github.com/${GITHUB_REPO}/releases/download/${tag_name}/${versioned_asset}"
+        info "Downloading $versioned_asset from $tag_name..."
+        if curl -fsSL $PROXY_ARGS "$versioned_url" -o "$TEMP_DIR/$versioned_asset" 2>/dev/null; then
             downloaded=true
+            asset_name="$versioned_asset"
+            checksum_url="https://github.com/${GITHUB_REPO}/releases/download/${tag_name}/${versioned_asset}.sha256"
         fi
     fi
 
     if [[ "$downloaded" != "true" ]]; then
-        # Try to fetch the latest release via API (fallback)
-        local release_url="${GITHUB_API}/releases/latest"
-        local release_info
-        release_info=$(curl -sL --connect-timeout 10 $PROXY_ARGS "$release_url" 2>/dev/null || echo "")
-
-        if [[ -z "$release_info" ]] || ! echo "$release_info" | grep -q '"tag_name"'; then
-            warn "No pre-built binaries available yet"
-            info "Falling back to building from source..."
-            rm -rf "$TEMP_DIR"  # Clean up before fallback to avoid leak
-            clone_and_build_from_source
-            return
+        local unversioned_asset="rch-${TARGET}.${asset_ext}"
+        local latest_url="https://github.com/${GITHUB_REPO}/releases/latest/download/${unversioned_asset}"
+        info "Downloading $unversioned_asset from latest release..."
+        if curl -fsSL $PROXY_ARGS "$latest_url" -o "$TEMP_DIR/$unversioned_asset" 2>/dev/null; then
+            downloaded=true
+            asset_name="$unversioned_asset"
         fi
+    fi
 
-        # Download and install the binary from the resolved tag
-        local tag_name
-        tag_name=$(echo "$release_info" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
-        local download_url="https://github.com/${GITHUB_REPO}/releases/download/${tag_name}/${asset_name}"
+    if [[ "$downloaded" != "true" && -n "${VERSION:-}" ]]; then
+        local version_tag="v${VERSION#v}"
+        local unversioned_asset="rch-${TARGET}.${asset_ext}"
+        local version_url="https://github.com/${GITHUB_REPO}/releases/download/${version_tag}/${unversioned_asset}"
+        info "Downloading $unversioned_asset from $version_tag..."
+        if curl -fsSL $PROXY_ARGS "$version_url" -o "$TEMP_DIR/$unversioned_asset" 2>/dev/null; then
+            downloaded=true
+            asset_name="$unversioned_asset"
+        fi
+    fi
 
-        info "Downloading $asset_name from $tag_name..."
-        if ! curl -fsSL $PROXY_ARGS "$download_url" -o "$TEMP_DIR/$asset_name" 2>/dev/null; then
-            warn "Download failed"
-            info "Falling back to building from source..."
-            rm -rf "$TEMP_DIR"  # Clean up before fallback to avoid leak
-            clone_and_build_from_source
-            return
+    if [[ "$downloaded" != "true" ]]; then
+        warn "No pre-built binaries available for ${TARGET}"
+        info "Falling back to building from source..."
+        rm -rf "$TEMP_DIR"  # Clean up before fallback to avoid leak
+        clone_and_build_from_source
+        return
+    fi
+
+    if [[ -n "$checksum_url" ]]; then
+        info "Verifying checksum..."
+        local expected=""
+        expected=$(curl -fsSL $PROXY_ARGS "$checksum_url" 2>/dev/null | cut -d' ' -f1 || true)
+        if [[ -n "$expected" ]]; then
+            local actual=""
+            if command -v sha256sum >/dev/null 2>&1; then
+                actual=$(sha256sum "$TEMP_DIR/$asset_name" | cut -d' ' -f1)
+            else
+                actual=$(shasum -a 256 "$TEMP_DIR/$asset_name" | cut -d' ' -f1)
+            fi
+            if [[ "$expected" != "$actual" ]]; then
+                warn "Checksum verification failed"
+                info "Falling back to building from source..."
+                rm -rf "$TEMP_DIR"  # Clean up before fallback to avoid leak
+                clone_and_build_from_source
+                return
+            fi
+            success "Checksum verified"
+        else
+            warn "Checksum file not found for $asset_name"
         fi
     fi
 
     # Extract and install
     info "Extracting binaries..."
-    if ! tar -xzf "$TEMP_DIR/$asset_name" -C "$TEMP_DIR"; then
-        warn "Failed to extract tarball"
-        info "Falling back to building from source..."
-        rm -rf "$TEMP_DIR"  # Clean up before fallback to avoid leak
-        clone_and_build_from_source
-        return
+    if [[ "$asset_ext" == "zip" ]]; then
+        if ! unzip -q "$TEMP_DIR/$asset_name" -d "$TEMP_DIR"; then
+            warn "Failed to extract zip"
+            info "Falling back to building from source..."
+            rm -rf "$TEMP_DIR"  # Clean up before fallback to avoid leak
+            clone_and_build_from_source
+            return
+        fi
+    else
+        if ! tar -xzf "$TEMP_DIR/$asset_name" -C "$TEMP_DIR"; then
+            warn "Failed to extract tarball"
+            info "Falling back to building from source..."
+            rm -rf "$TEMP_DIR"  # Clean up before fallback to avoid leak
+            clone_and_build_from_source
+            return
+        fi
     fi
 
     if [[ "$MODE" == "worker" ]]; then
