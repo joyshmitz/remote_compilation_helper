@@ -34,8 +34,8 @@ set -euo pipefail
 # Configuration
 # ============================================================================
 
-INSTALLER_VERSION="1.0.4"
-VERSION=""  # Set dynamically based on install mode
+INSTALLER_VERSION="1.0.6"
+VERSION="${VERSION:-}"  # Set dynamically based on install mode
 REPO_URL="https://github.com/Dicklesworthstone/remote_compilation_helper"
 GITHUB_REPO="Dicklesworthstone/remote_compilation_helper"
 GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}"
@@ -53,13 +53,11 @@ WORKER_BIN="rch-wkr"
 # State variables
 USE_COLOR=true
 USE_GUM=false
-IS_WSL=false
 TEMP_DIR=""
-TARBALL_PATH=""
-PROXY_ARGS=""
+PROXY_ARGS=()
 
 # Default color values (set properly by setup_ui)
-RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' CYAN='' BOLD='' DIM='' NC=''
+RED='' GREEN='' YELLOW='' BLUE='' CYAN='' BOLD='' DIM='' NC=''
 
 # ============================================================================
 # Terminal Detection and UI Setup
@@ -86,13 +84,12 @@ setup_ui() {
         GREEN='\033[0;32m'
         YELLOW='\033[1;33m'
         BLUE='\033[0;34m'
-        MAGENTA='\033[0;35m'
         CYAN='\033[0;36m'
         BOLD='\033[1m'
         DIM='\033[2m'
         NC='\033[0m' # No Color
     else
-        RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' CYAN='' BOLD='' DIM='' NC=''
+        RED='' GREEN='' YELLOW='' BLUE='' CYAN='' BOLD='' DIM='' NC=''
     fi
 }
 
@@ -393,7 +390,6 @@ detect_platform() {
 
     # WSL detection
     if [[ "$os" == "linux" ]] && grep -qi microsoft /proc/version 2>/dev/null; then
-        IS_WSL=true
         warn "WSL detected. Some features may require additional configuration:"
         echo "  - SSH agent forwarding may need special setup"
         echo "  - File permissions between Windows/Linux may cause issues"
@@ -424,12 +420,12 @@ detect_platform() {
 # ============================================================================
 
 setup_proxy() {
-    PROXY_ARGS=""
+    PROXY_ARGS=()
     if [[ -n "${HTTPS_PROXY:-}" ]]; then
-        PROXY_ARGS="--proxy $HTTPS_PROXY"
+        PROXY_ARGS=(--proxy "$HTTPS_PROXY")
         info "Using HTTPS proxy: $HTTPS_PROXY"
     elif [[ -n "${HTTP_PROXY:-}" ]]; then
-        PROXY_ARGS="--proxy $HTTP_PROXY"
+        PROXY_ARGS=(--proxy "$HTTP_PROXY")
         info "Using HTTP proxy: $HTTP_PROXY"
     fi
 }
@@ -659,7 +655,7 @@ download_binaries() {
         tag_name="v${VERSION#v}"
     else
         local release_url="${GITHUB_API}/releases/latest"
-        release_info=$(curl -sL --connect-timeout 10 $PROXY_ARGS "$release_url" 2>/dev/null || echo "")
+        release_info=$(curl -sL --connect-timeout 10 "${PROXY_ARGS[@]}" "$release_url" 2>/dev/null || echo "")
         if [[ -n "$release_info" ]] && echo "$release_info" | grep -q '"tag_name"'; then
             tag_name=$(echo "$release_info" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
         fi
@@ -669,7 +665,7 @@ download_binaries() {
         local versioned_asset="rch-${tag_name}-${RELEASE_TARGET}.${asset_ext}"
         local versioned_url="https://github.com/${GITHUB_REPO}/releases/download/${tag_name}/${versioned_asset}"
         info "Downloading $versioned_asset from $tag_name..."
-        if curl -fsSL $PROXY_ARGS "$versioned_url" -o "$TEMP_DIR/$versioned_asset" 2>/dev/null; then
+        if curl -fsSL "${PROXY_ARGS[@]}" "$versioned_url" -o "$TEMP_DIR/$versioned_asset" 2>/dev/null; then
             downloaded=true
             asset_name="$versioned_asset"
             checksum_url="https://github.com/${GITHUB_REPO}/releases/download/${tag_name}/${versioned_asset}.sha256"
@@ -680,7 +676,7 @@ download_binaries() {
         local unversioned_asset="rch-${TARGET}.${asset_ext}"
         local latest_url="https://github.com/${GITHUB_REPO}/releases/latest/download/${unversioned_asset}"
         info "Downloading $unversioned_asset from latest release..."
-        if curl -fsSL $PROXY_ARGS "$latest_url" -o "$TEMP_DIR/$unversioned_asset" 2>/dev/null; then
+        if curl -fsSL "${PROXY_ARGS[@]}" "$latest_url" -o "$TEMP_DIR/$unversioned_asset" 2>/dev/null; then
             downloaded=true
             asset_name="$unversioned_asset"
         fi
@@ -691,7 +687,7 @@ download_binaries() {
         local unversioned_asset="rch-${TARGET}.${asset_ext}"
         local version_url="https://github.com/${GITHUB_REPO}/releases/download/${version_tag}/${unversioned_asset}"
         info "Downloading $unversioned_asset from $version_tag..."
-        if curl -fsSL $PROXY_ARGS "$version_url" -o "$TEMP_DIR/$unversioned_asset" 2>/dev/null; then
+        if curl -fsSL "${PROXY_ARGS[@]}" "$version_url" -o "$TEMP_DIR/$unversioned_asset" 2>/dev/null; then
             downloaded=true
             asset_name="$unversioned_asset"
         fi
@@ -708,7 +704,7 @@ download_binaries() {
     if [[ -n "$checksum_url" ]]; then
         info "Verifying checksum..."
         local expected=""
-        expected=$(curl -fsSL $PROXY_ARGS "$checksum_url" 2>/dev/null | cut -d' ' -f1 || true)
+        expected=$(curl -fsSL "${PROXY_ARGS[@]}" "$checksum_url" 2>/dev/null | cut -d' ' -f1 || true)
         if [[ -n "$expected" ]]; then
             local actual=""
             if command -v sha256sum >/dev/null 2>&1; then
@@ -859,7 +855,7 @@ install_rust_toolchain() {
 
     info "Installing Rust via rustup..."
     # Note: rustup respects HTTPS_PROXY/HTTP_PROXY environment variables automatically
-    if curl --proto '=https' --tlsv1.2 -sSf $PROXY_ARGS https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly; then
+    if curl --proto '=https' --tlsv1.2 -sSf "${PROXY_ARGS[@]}" https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly; then
         # Source cargo env for current session
         if [[ -f "$HOME/.cargo/env" ]]; then
             source "$HOME/.cargo/env"
@@ -991,7 +987,6 @@ check_existing_install() {
         local current
         current=$("$INSTALL_DIR/rch" --version 2>/dev/null | head -1 | sed 's/rch //' || echo "")
         if [[ -n "$current" ]]; then
-            EXISTING_VERSION="$current"
             if $USE_GUM; then
                 gum style \
                     --border rounded \
@@ -1009,7 +1004,6 @@ check_existing_install() {
             return 0
         fi
     fi
-    EXISTING_VERSION=""
     return 1
 }
 
@@ -1032,7 +1026,7 @@ verify_sigstore_bundle() {
     local bundle_file="${file}.sigstore.json"
 
     info "Downloading Sigstore bundle..."
-    if ! curl -fsSL $PROXY_ARGS "$bundle_url" -o "$bundle_file" 2>/dev/null; then
+    if ! curl -fsSL "${PROXY_ARGS[@]}" "$bundle_url" -o "$bundle_file" 2>/dev/null; then
         warn "Could not download Sigstore bundle; skipping signature verification"
         return 0
     fi
@@ -1072,7 +1066,7 @@ install_skill() {
     local skill_url="https://github.com/${GITHUB_REPO}/releases/latest/download/skill.tar.gz"
     local skill_temp="${TEMP_DIR:-/tmp}/skill.tar.gz"
 
-    if curl -fsSL $PROXY_ARGS "$skill_url" -o "$skill_temp" 2>/dev/null; then
+    if curl -fsSL "${PROXY_ARGS[@]}" "$skill_url" -o "$skill_temp" 2>/dev/null; then
         # Install to Claude skills folder
         if tar -xzf "$skill_temp" -C "$HOME/.claude/skills" 2>/dev/null; then
             installed_claude=true
