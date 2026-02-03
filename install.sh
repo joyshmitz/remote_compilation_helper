@@ -1900,6 +1900,8 @@ detect_agents() {
     if [[ $agents_found -eq 0 ]]; then
         warn "No AI coding agents detected"
     fi
+
+    return 0
 }
 
 # ============================================================================
