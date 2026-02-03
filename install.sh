@@ -1863,12 +1863,23 @@ run_doctor() {
 detect_agents() {
     info "Detecting AI coding agents..."
 
+    local errexit_enabled=false
+    case "$-" in
+        *e*) errexit_enabled=true; set +e ;;
+    esac
+    restore_errexit() {
+        if $errexit_enabled; then
+            set -e
+        fi
+    }
+
     local rch_bin="$INSTALL_DIR/$HOOK_BIN"
     if [[ -x "$rch_bin" ]]; then
         local detect_output=""
         if detect_output=$("$rch_bin" agents detect 2>&1); then
             [[ -n "$detect_output" ]] && echo "$detect_output"
-            return
+            restore_errexit
+            return 0
         fi
 
         if echo "$detect_output" | grep -qi "unrecognized subcommand"; then
@@ -1901,6 +1912,7 @@ detect_agents() {
         warn "No AI coding agents detected"
     fi
 
+    restore_errexit
     return 0
 }
 
