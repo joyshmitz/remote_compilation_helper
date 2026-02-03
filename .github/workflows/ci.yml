@@ -40,7 +40,7 @@ jobs:
           git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-01-01
+          toolchain: nightly-2025-11-01
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -81,7 +81,7 @@ jobs:
           git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-01-01
+          toolchain: nightly-2025-11-01
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -99,7 +99,7 @@ jobs:
           git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-01-01
+          toolchain: nightly-2025-11-01
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
@@ -135,7 +135,7 @@ jobs:
           git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-01-01
+          toolchain: nightly-2025-11-01
       - uses: Swatinem/rust-cache@v2
       - name: Build documentation
         env:
@@ -188,7 +188,7 @@ jobs:
           fi
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-01-01
+          toolchain: nightly-2025-11-01
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-${{ matrix.name }}
@@ -222,7 +222,7 @@ jobs:
           git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-01-01
+          toolchain: nightly-2025-11-01
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -278,7 +278,7 @@ jobs:
           git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-01-01
+          toolchain: nightly-2025-11-01
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: benchmark
@@ -355,7 +355,7 @@ jobs:
           fi
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-01-01
+          toolchain: nightly-2025-11-01
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
@@ -399,7 +399,7 @@ jobs:
           git clone --depth 1 https://github.com/Dicklesworthstone/rich_rust.git /dp/rich_rust
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-01-01
+          toolchain: nightly-2025-11-01
           components: llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2

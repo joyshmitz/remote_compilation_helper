@@ -102,9 +102,7 @@ pub fn hook_install(ctx: &OutputContext) -> Result<()> {
     if let Some(idx) = bash_matcher_idx {
         // Bash matcher exists - add rch to its hooks if not already present
         let bash_entry = &mut pre_tool_use_arr[idx];
-        let hooks_arr = bash_entry
-            .get_mut("hooks")
-            .and_then(|h| h.as_array_mut());
+        let hooks_arr = bash_entry.get_mut("hooks").and_then(|h| h.as_array_mut());
 
         if let Some(hooks) = hooks_arr {
             // Check if rch is already in the hooks
@@ -245,14 +243,14 @@ pub fn hook_uninstall(skip_confirm: bool, ctx: &OutputContext) -> Result<()> {
         "settings.json.bak.{}",
         Utc::now().format("%Y%m%d%H%M%S")
     ));
-    if let Err(e) = std::fs::copy(&settings_path, &backup_path) {
-        if !ctx.is_json() {
-            println!(
-                "  {} Could not create backup: {}",
-                StatusIndicator::Warning.display(style),
-                e
-            );
-        }
+    if let Err(e) = std::fs::copy(&settings_path, &backup_path)
+        && !ctx.is_json()
+    {
+        println!(
+            "  {} Could not create backup: {}",
+            StatusIndicator::Warning.display(style),
+            e
+        );
     }
 
     let content = std::fs::read_to_string(&settings_path)?;
@@ -261,45 +259,44 @@ pub fn hook_uninstall(skip_confirm: bool, ctx: &OutputContext) -> Result<()> {
     // SAFE REMOVAL: Only remove rch hook, preserve other hooks (like dcg)
     let mut removed = false;
 
-    if let Some(hooks) = settings.get_mut("hooks") {
-        if let Some(hooks_obj) = hooks.as_object_mut() {
-            if let Some(pre_tool_use) = hooks_obj.get_mut("PreToolUse") {
-                if let Some(pre_tool_use_arr) = pre_tool_use.as_array_mut() {
-                    // Find the Bash matcher
-                    for entry in pre_tool_use_arr.iter_mut() {
-                        if entry.get("matcher").and_then(|m| m.as_str()) == Some("Bash") {
-                            if let Some(hooks_arr) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) {
-                                // Remove rch from hooks
-                                let original_len = hooks_arr.len();
-                                hooks_arr.retain(|h| {
-                                    !h.get("command")
-                                        .and_then(|c| c.as_str())
-                                        .map(|c| c.contains("rch"))
-                                        .unwrap_or(false)
-                                });
-                                removed = hooks_arr.len() < original_len;
-                            }
-                        }
-                    }
-
-                    // Clean up: remove empty Bash matchers
-                    pre_tool_use_arr.retain(|entry| {
-                        if entry.get("matcher").and_then(|m| m.as_str()) == Some("Bash") {
-                            entry.get("hooks")
-                                .and_then(|h| h.as_array())
-                                .map(|a| !a.is_empty())
-                                .unwrap_or(false)
-                        } else {
-                            true // Keep non-Bash matchers
-                        }
-                    });
-
-                    // Clean up: remove PreToolUse if completely empty
-                    if pre_tool_use_arr.is_empty() {
-                        hooks_obj.remove("PreToolUse");
-                    }
-                }
+    if let Some(hooks) = settings.get_mut("hooks")
+        && let Some(hooks_obj) = hooks.as_object_mut()
+        && let Some(pre_tool_use) = hooks_obj.get_mut("PreToolUse")
+        && let Some(pre_tool_use_arr) = pre_tool_use.as_array_mut()
+    {
+        // Find the Bash matcher
+        for entry in pre_tool_use_arr.iter_mut() {
+            if entry.get("matcher").and_then(|m| m.as_str()) == Some("Bash")
+                && let Some(hooks_arr) = entry.get_mut("hooks").and_then(|h| h.as_array_mut())
+            {
+                // Remove rch from hooks
+                let original_len = hooks_arr.len();
+                hooks_arr.retain(|h| {
+                    !h.get("command")
+                        .and_then(|c| c.as_str())
+                        .map(|c| c.contains("rch"))
+                        .unwrap_or(false)
+                });
+                removed = hooks_arr.len() < original_len;
             }
+        }
+
+        // Clean up: remove empty Bash matchers
+        pre_tool_use_arr.retain(|entry| {
+            if entry.get("matcher").and_then(|m| m.as_str()) == Some("Bash") {
+                entry
+                    .get("hooks")
+                    .and_then(|h| h.as_array())
+                    .map(|a| !a.is_empty())
+                    .unwrap_or(false)
+            } else {
+                true // Keep non-Bash matchers
+            }
+        });
+
+        // Clean up: remove PreToolUse if completely empty
+        if pre_tool_use_arr.is_empty() {
+            hooks_obj.remove("PreToolUse");
         }
     }
 
