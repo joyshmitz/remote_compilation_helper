@@ -254,12 +254,14 @@ jobs:
           shared-key: release-windows-x86_64
       - name: Build
         # Windows: skip rich-ui feature (rich_rust not available)
+        # Note: rchd is not built on Windows (requires unix-sockets feature)
         run: cargo build --release --no-default-features --target x86_64-pc-windows-msvc
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist
-          Compress-Archive -Path target/x86_64-pc-windows-msvc/release/rch.exe,target/x86_64-pc-windows-msvc/release/rchd.exe,target/x86_64-pc-windows-msvc/release/rch-wkr.exe -DestinationPath dist/rch-${{ needs.plan.outputs.tag }}-x86_64-pc-windows-msvc.zip
+          # Note: rchd.exe is not available on Windows (requires unix-sockets)
+          Compress-Archive -Path target/x86_64-pc-windows-msvc/release/rch.exe,target/x86_64-pc-windows-msvc/release/rch-wkr.exe -DestinationPath dist/rch-${{ needs.plan.outputs.tag }}-x86_64-pc-windows-msvc.zip
           $hash = (Get-FileHash dist/rch-${{ needs.plan.outputs.tag }}-x86_64-pc-windows-msvc.zip -Algorithm SHA256).Hash.ToLower()
           "$hash  rch-${{ needs.plan.outputs.tag }}-x86_64-pc-windows-msvc.zip" | Out-File -FilePath dist/rch-${{ needs.plan.outputs.tag }}-x86_64-pc-windows-msvc.zip.sha256 -Encoding ascii -NoNewline
       - uses: actions/upload-artifact@v4
