@@ -632,12 +632,26 @@ download_binaries() {
     # Check if there are assets for our platform
     local asset_name="rch-${TARGET}.tar.gz"
     local latest_url="https://github.com/${GITHUB_REPO}/releases/latest/download/${asset_name}"
+    local downloaded=false
 
     TEMP_DIR=$(mktemp -d)
     trap 'rm -rf "$TEMP_DIR"; cleanup_lock' EXIT
 
     info "Downloading $asset_name from latest release..."
-    if ! curl -fsSL $PROXY_ARGS "$latest_url" -o "$TEMP_DIR/$asset_name" 2>/dev/null; then
+    if curl -fsSL $PROXY_ARGS "$latest_url" -o "$TEMP_DIR/$asset_name" 2>/dev/null; then
+        downloaded=true
+    fi
+
+    if [[ "$downloaded" != "true" && -n "${VERSION:-}" ]]; then
+        local version_tag="v${VERSION#v}"
+        local version_url="https://github.com/${GITHUB_REPO}/releases/download/${version_tag}/${asset_name}"
+        info "Downloading $asset_name from $version_tag..."
+        if curl -fsSL $PROXY_ARGS "$version_url" -o "$TEMP_DIR/$asset_name" 2>/dev/null; then
+            downloaded=true
+        fi
+    fi
+
+    if [[ "$downloaded" != "true" ]]; then
         # Try to fetch the latest release via API (fallback)
         local release_url="${GITHUB_API}/releases/latest"
         local release_info
