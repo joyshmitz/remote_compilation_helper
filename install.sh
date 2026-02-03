@@ -219,6 +219,53 @@ draw_box() {
     echo ""
 }
 
+# Draw a Unicode double-line box with auto-calculated width
+# Usage: draw_double_box "color_code" "line1" "line2" ...
+draw_double_box() {
+    local color="$1"
+    shift
+    local lines=("$@")
+    local max_len=0
+
+    for line in "${lines[@]}"; do
+        local len=${#line}
+        [[ $len -gt $max_len ]] && max_len=$len
+    done
+
+    local width=$((max_len + 4))
+    local inner_width=$((width - 2))
+
+    local tl="╔" tr="╗" bl="╚" br="╝" h="═" v="║"
+
+    local top_border="${tl}"
+    for ((i=0; i<inner_width; i++)); do top_border+="${h}"; done
+    top_border+="${tr}"
+
+    local bottom_border="${bl}"
+    for ((i=0; i<inner_width; i++)); do bottom_border+="${h}"; done
+    bottom_border+="${br}"
+
+    if $USE_COLOR; then
+        echo -e "\033[${color}m${top_border}\033[0m"
+        for line in "${lines[@]}"; do
+            local padding=$((inner_width - ${#line} - 2))
+            local pad_str=""
+            for ((i=0; i<padding; i++)); do pad_str+=" "; done
+            echo -e "\033[${color}m${v}\033[0m ${line}${pad_str} \033[${color}m${v}\033[0m"
+        done
+        echo -e "\033[${color}m${bottom_border}\033[0m"
+    else
+        echo "${top_border}"
+        for line in "${lines[@]}"; do
+            local padding=$((inner_width - ${#line} - 2))
+            local pad_str=""
+            for ((i=0; i<padding; i++)); do pad_str+=" "; done
+            echo "${v} ${line}${pad_str} ${v}"
+        done
+        echo "${bottom_border}"
+    fi
+}
+
 # Header display with full branding
 show_header() {
     echo ""
@@ -2125,29 +2172,13 @@ print_summary() {
                 "Exit your current session and run 'claude' again."
         else
             echo ""
-            if $USE_COLOR; then
-                echo -e "${BOLD}${RED}╔══════════════════════════════════════════════════════════════╗${NC}"
-                echo -e "${BOLD}${RED}║${NC}        ${BOLD}⚠️  IMPORTANT: Restart Required  ⚠️${NC}                  ${BOLD}${RED}║${NC}"
-                echo -e "${BOLD}${RED}╠══════════════════════════════════════════════════════════════╣${NC}"
-                echo -e "${BOLD}${RED}║${NC}                                                              ${BOLD}${RED}║${NC}"
-                echo -e "${BOLD}${RED}║${NC}   You ${BOLD}MUST${NC} start a ${BOLD}NEW${NC} Claude Code session                  ${BOLD}${RED}║${NC}"
-                echo -e "${BOLD}${RED}║${NC}   for the RCH hook to be active.                            ${BOLD}${RED}║${NC}"
-                echo -e "${BOLD}${RED}║${NC}                                                              ${BOLD}${RED}║${NC}"
-                echo -e "${BOLD}${RED}║${NC}   ${YELLOW}Exit your current session and run 'claude' again.${NC}        ${BOLD}${RED}║${NC}"
-                echo -e "${BOLD}${RED}║${NC}                                                              ${BOLD}${RED}║${NC}"
-                echo -e "${BOLD}${RED}╚══════════════════════════════════════════════════════════════╝${NC}"
-            else
-                echo "╔══════════════════════════════════════════════════════════════╗"
-                echo "║        IMPORTANT: Restart Required                           ║"
-                echo "╠══════════════════════════════════════════════════════════════╣"
-                echo "║                                                              ║"
-                echo "║   You MUST start a NEW Claude Code session                   ║"
-                echo "║   for the RCH hook to be active.                             ║"
-                echo "║                                                              ║"
-                echo "║   Exit your current session and run 'claude' again.          ║"
-                echo "║                                                              ║"
-                echo "╚══════════════════════════════════════════════════════════════╝"
-            fi
+            draw_double_box "1;31" \
+                "IMPORTANT: Restart Required" \
+                "" \
+                "You MUST start a NEW Claude Code session" \
+                "for the RCH hook to be active." \
+                "" \
+                "Exit your current session and run 'claude' again."
         fi
         echo ""
     fi
