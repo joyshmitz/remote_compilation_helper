@@ -4,6 +4,22 @@ All notable changes to the Remote Compilation Helper (RCH) project.
 
 ---
 
+## [1.0.5] - 2026-02-02
+
+### Bug Fixes
+
+**Hook Installation Safety** - Fixed critical bug where `rch hook install` would wipe out existing hooks (like dcg) instead of merging with them.
+
+- **Safe Merge**: Hook installation now properly merges with existing PreToolUse hooks instead of replacing them
+- **Idempotent**: Running `rch hook install` multiple times is now safe and returns early if already installed
+- **Backup Creation**: Both install and uninstall now create timestamped backups before modifying settings
+- **Safe Uninstall**: Hook uninstall now only removes rch from the Bash matcher, preserving other hooks (like dcg)
+- **Append Position**: rch hook is added at the END of the hooks array (after safety guards like dcg)
+
+This matches the robust approach used by the dcg (Destructive Command Guard) installer.
+
+---
+
 ## [1.1.0] - 2026-02-01
 
 ### Cross-Platform Support

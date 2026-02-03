@@ -4,6 +4,7 @@
 //! the RCH hook for AI coding agents like Claude Code.
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use rch_common::{ApiError, ApiResponse, ErrorCode};
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -20,6 +21,9 @@ use super::types::HookActionResponse;
 // =============================================================================
 
 /// Install the Claude Code hook.
+///
+/// This function is idempotent and safe - it merges the rch hook with existing
+/// hooks rather than replacing them. It also creates a backup before modifying.
 pub fn hook_install(ctx: &OutputContext) -> Result<()> {
     let style = ctx.theme();
 
@@ -36,6 +40,30 @@ pub fn hook_install(ctx: &OutputContext) -> Result<()> {
 
     // Find the rch binary path
     let rch_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("rch"));
+    let rch_path_str = rch_path.to_string_lossy().to_string();
+
+    // Create backup before modifying (if file exists)
+    if settings_path.exists() {
+        let backup_path = claude_config_dir.join(format!(
+            "settings.json.bak.{}",
+            Utc::now().format("%Y%m%d%H%M%S")
+        ));
+        if let Err(e) = std::fs::copy(&settings_path, &backup_path) {
+            if !ctx.is_json() {
+                println!(
+                    "  {} Could not create backup: {}",
+                    StatusIndicator::Warning.display(style),
+                    e
+                );
+            }
+        } else if !ctx.is_json() {
+            println!(
+                "  {} Backup created: {}",
+                StatusIndicator::Info.display(style),
+                backup_path.display()
+            );
+        }
+    }
 
     // Create or update settings.json
     let mut settings: serde_json::Value = if settings_path.exists() {
@@ -55,18 +83,73 @@ pub fn hook_install(ctx: &OutputContext) -> Result<()> {
 
     let hooks_obj = hooks.as_object_mut().context("Hooks must be an object")?;
 
-    // Add PreToolUse hook for Bash (new array format with matchers)
-    // Note: rch runs as hook when invoked without a subcommand, so no args needed
-    // matcher: "Bash" matches the Bash tool name
-    hooks_obj.insert(
-        "PreToolUse".to_string(),
-        serde_json::json!([
-            {
-                "matcher": "Bash",
-                "hooks": [{"type": "command", "command": rch_path.to_string_lossy()}]
+    // SAFE MERGE: Get existing PreToolUse hooks or create empty array
+    let pre_tool_use = hooks_obj
+        .entry("PreToolUse")
+        .or_insert(serde_json::json!([]));
+
+    let pre_tool_use_arr = pre_tool_use
+        .as_array_mut()
+        .context("PreToolUse must be an array")?;
+
+    // Find existing Bash matcher or create one
+    let bash_matcher_idx = pre_tool_use_arr
+        .iter()
+        .position(|entry| entry.get("matcher").and_then(|m| m.as_str()) == Some("Bash"));
+
+    let rch_hook = serde_json::json!({"type": "command", "command": rch_path_str});
+
+    if let Some(idx) = bash_matcher_idx {
+        // Bash matcher exists - add rch to its hooks if not already present
+        let bash_entry = &mut pre_tool_use_arr[idx];
+        let hooks_arr = bash_entry
+            .get_mut("hooks")
+            .and_then(|h| h.as_array_mut());
+
+        if let Some(hooks) = hooks_arr {
+            // Check if rch is already in the hooks
+            let rch_exists = hooks.iter().any(|h| {
+                h.get("command")
+                    .and_then(|c| c.as_str())
+                    .map(|c| c.contains("rch"))
+                    .unwrap_or(false)
+            });
+
+            if rch_exists {
+                // Already installed - return early without modifying the file
+                if ctx.is_json() {
+                    let _ = ctx.json(&ApiResponse::ok(
+                        "hook install",
+                        HookActionResponse {
+                            action: "install".to_string(),
+                            success: true,
+                            settings_path: settings_path.display().to_string(),
+                            message: Some("Hook already installed".to_string()),
+                        },
+                    ));
+                } else {
+                    println!(
+                        "{} RCH hook already installed in {}",
+                        StatusIndicator::Success.display(style),
+                        style.highlight(&settings_path.display().to_string())
+                    );
+                }
+                return Ok(());
+            } else {
+                // Add rch at the END (after other hooks like dcg for safety)
+                hooks.push(rch_hook);
             }
-        ]),
-    );
+        } else {
+            // No hooks array - create one with rch
+            bash_entry["hooks"] = serde_json::json!([rch_hook]);
+        }
+    } else {
+        // No Bash matcher - create one with rch
+        pre_tool_use_arr.push(serde_json::json!({
+            "matcher": "Bash",
+            "hooks": [rch_hook]
+        }));
+    }
 
     // Write back to file
     let new_content = serde_json::to_string_pretty(&settings)?;
@@ -102,6 +185,9 @@ pub fn hook_install(ctx: &OutputContext) -> Result<()> {
 }
 
 /// Uninstall the Claude Code hook.
+///
+/// This function is safe - it only removes the rch hook while preserving other
+/// hooks like dcg. It creates a backup before modifying.
 ///
 /// If `skip_confirm` is false, prompts for confirmation before uninstalling.
 pub fn hook_uninstall(skip_confirm: bool, ctx: &OutputContext) -> Result<()> {
@@ -154,18 +240,68 @@ pub fn hook_uninstall(skip_confirm: bool, ctx: &OutputContext) -> Result<()> {
         }
     }
 
+    // Create backup before modifying
+    let backup_path = claude_config_dir.join(format!(
+        "settings.json.bak.{}",
+        Utc::now().format("%Y%m%d%H%M%S")
+    ));
+    if let Err(e) = std::fs::copy(&settings_path, &backup_path) {
+        if !ctx.is_json() {
+            println!(
+                "  {} Could not create backup: {}",
+                StatusIndicator::Warning.display(style),
+                e
+            );
+        }
+    }
+
     let content = std::fs::read_to_string(&settings_path)?;
     let mut settings: serde_json::Value = serde_json::from_str(&content)?;
 
-    let removed = if let Some(hooks) = settings.get_mut("hooks") {
+    // SAFE REMOVAL: Only remove rch hook, preserve other hooks (like dcg)
+    let mut removed = false;
+
+    if let Some(hooks) = settings.get_mut("hooks") {
         if let Some(hooks_obj) = hooks.as_object_mut() {
-            hooks_obj.remove("PreToolUse").is_some()
-        } else {
-            false
+            if let Some(pre_tool_use) = hooks_obj.get_mut("PreToolUse") {
+                if let Some(pre_tool_use_arr) = pre_tool_use.as_array_mut() {
+                    // Find the Bash matcher
+                    for entry in pre_tool_use_arr.iter_mut() {
+                        if entry.get("matcher").and_then(|m| m.as_str()) == Some("Bash") {
+                            if let Some(hooks_arr) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) {
+                                // Remove rch from hooks
+                                let original_len = hooks_arr.len();
+                                hooks_arr.retain(|h| {
+                                    !h.get("command")
+                                        .and_then(|c| c.as_str())
+                                        .map(|c| c.contains("rch"))
+                                        .unwrap_or(false)
+                                });
+                                removed = hooks_arr.len() < original_len;
+                            }
+                        }
+                    }
+
+                    // Clean up: remove empty Bash matchers
+                    pre_tool_use_arr.retain(|entry| {
+                        if entry.get("matcher").and_then(|m| m.as_str()) == Some("Bash") {
+                            entry.get("hooks")
+                                .and_then(|h| h.as_array())
+                                .map(|a| !a.is_empty())
+                                .unwrap_or(false)
+                        } else {
+                            true // Keep non-Bash matchers
+                        }
+                    });
+
+                    // Clean up: remove PreToolUse if completely empty
+                    if pre_tool_use_arr.is_empty() {
+                        hooks_obj.remove("PreToolUse");
+                    }
+                }
+            }
         }
-    } else {
-        false
-    };
+    }
 
     if removed {
         let new_content = serde_json::to_string_pretty(&settings)?;
