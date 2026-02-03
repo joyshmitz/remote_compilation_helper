@@ -357,126 +357,7 @@ jobs:
 
       - name: Create shell installer (Unix)
         run: |
-          cat > artifacts/install.sh << 'INSTALLER_EOF'
-          #!/bin/sh
-          # RCH Installer - Remote Compilation Helper
-          # Usage: curl -fsSL https://github.com/Dicklesworthstone/remote_compilation_helper/releases/latest/download/install.sh | sh
-          set -e
-
-          REPO="Dicklesworthstone/remote_compilation_helper"
-          INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-
-          # Color output helpers
-          red() { printf '\033[31m%s\033[0m\n' "$*"; }
-          green() { printf '\033[32m%s\033[0m\n' "$*"; }
-          yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
-
-          # Detect platform
-          OS="$(uname -s)"
-          ARCH="$(uname -m)"
-
-          case "$OS" in
-              Linux)
-                  case "$ARCH" in
-                      x86_64)
-                          # Prefer musl for maximum compatibility
-                          TARGET="x86_64-unknown-linux-musl"
-                          ;;
-                      aarch64|arm64)
-                          TARGET="aarch64-unknown-linux-gnu"
-                          ;;
-                      *)
-                          red "Unsupported architecture: $ARCH"
-                          exit 1
-                          ;;
-                  esac
-                  ;;
-              Darwin)
-                  case "$ARCH" in
-                      x86_64)
-                          TARGET="x86_64-apple-darwin"
-                          ;;
-                      arm64)
-                          TARGET="aarch64-apple-darwin"
-                          ;;
-                      *)
-                          red "Unsupported architecture: $ARCH"
-                          exit 1
-                          ;;
-                  esac
-                  ;;
-              *)
-                  red "Unsupported OS: $OS"
-                  red "For Windows, use install.ps1 instead"
-                  exit 1
-                  ;;
-          esac
-
-          # Get version (from env or fetch latest)
-          if [ -z "$VERSION" ]; then
-              yellow "Fetching latest release version..."
-              VERSION=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | cut -d'"' -f4)
-              if [ -z "$VERSION" ]; then
-                  red "Failed to determine latest version"
-                  exit 1
-              fi
-          fi
-
-          green "Installing RCH $VERSION for $TARGET..."
-
-          # Create install directory
-          mkdir -p "$INSTALL_DIR"
-
-          # Download and extract
-          ARCHIVE="rch-${VERSION}-${TARGET}.tar.gz"
-          URL="https://github.com/$REPO/releases/download/${VERSION}/${ARCHIVE}"
-          CHECKSUM_URL="https://github.com/$REPO/releases/download/${VERSION}/${ARCHIVE}.sha256"
-
-          TEMP_DIR=$(mktemp -d)
-          trap 'rm -rf "$TEMP_DIR"' EXIT
-
-          yellow "Downloading $URL..."
-          curl -fsSL "$URL" -o "$TEMP_DIR/$ARCHIVE"
-
-          # Verify checksum
-          yellow "Verifying checksum..."
-          EXPECTED=$(curl -fsSL "$CHECKSUM_URL" | cut -d' ' -f1)
-          if command -v sha256sum >/dev/null 2>&1; then
-              ACTUAL=$(sha256sum "$TEMP_DIR/$ARCHIVE" | cut -d' ' -f1)
-          else
-              ACTUAL=$(shasum -a 256 "$TEMP_DIR/$ARCHIVE" | cut -d' ' -f1)
-          fi
-
-          if [ "$EXPECTED" != "$ACTUAL" ]; then
-              red "Checksum verification failed!"
-              red "Expected: $EXPECTED"
-              red "Actual:   $ACTUAL"
-              exit 1
-          fi
-          green "Checksum verified."
-
-          # Extract
-          tar -xzf "$TEMP_DIR/$ARCHIVE" -C "$INSTALL_DIR"
-
-          green "Successfully installed RCH $VERSION to $INSTALL_DIR"
-          echo ""
-          echo "Installed binaries:"
-          echo "  - $INSTALL_DIR/rch     (client CLI)"
-          echo "  - $INSTALL_DIR/rchd    (daemon)"
-          echo "  - $INSTALL_DIR/rch-wkr (worker)"
-          echo ""
-
-          # Check if in PATH
-          case ":$PATH:" in
-              *":$INSTALL_DIR:"*) ;;
-              *)
-                  yellow "Add $INSTALL_DIR to your PATH:"
-                  echo ""
-                  echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
-                  echo ""
-                  ;;
-          esac
-          INSTALLER_EOF
+          cp install.sh artifacts/install.sh
           chmod +x artifacts/install.sh
 
       - name: Create PowerShell installer (Windows)
@@ -508,6 +389,7 @@ jobs:
           $Url = "https://github.com/$Repo/releases/download/$Version/$Archive"
           $ChecksumUrl = "https://github.com/$Repo/releases/download/$Version/$Archive.sha256"
           $TempFile = Join-Path $env:TEMP $Archive
+          $ChecksumFile = Join-Path $env:TEMP "$Archive.sha256"
 
           # Download
           Write-Host "Downloading $Url..." -ForegroundColor Yellow
@@ -515,7 +397,8 @@ jobs:
 
           # Verify checksum
           Write-Host "Verifying checksum..." -ForegroundColor Yellow
-          $ExpectedHash = ((Invoke-WebRequest -Uri $ChecksumUrl).Content -split '\s+')[0].Trim()
+          Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumFile
+          $ExpectedHash = (Get-Content -Raw $ChecksumFile -ErrorAction Stop).Split()[0].Trim()
           $ActualHash = (Get-FileHash $TempFile -Algorithm SHA256).Hash.ToLower()
 
           if ($ExpectedHash -ne $ActualHash) {
