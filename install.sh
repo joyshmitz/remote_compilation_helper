@@ -22,6 +22,8 @@
 #   RCH_INSTALL_DIR     Where to install binaries (default: ~/.local/bin)
 #   RCH_CONFIG_DIR      Where to store config (default: ~/.config/rch)
 #   RCH_NO_HOOK         Skip Claude Code hook setup if set
+#   RCH_SKIP_FLEET_SYNC Skip worker deploy/health checks after install
+#   RCH_SKIP_DAEMON_RESTART Skip rchd restart after install
 #   RCH_NO_COLOR        Disable colored output
 #   RCH_SKIP_DOCTOR     Skip post-install doctor check
 #   HTTP_PROXY          HTTP proxy URL
@@ -1910,6 +1912,100 @@ run_doctor() {
 }
 
 # ============================================================================
+# Post-Install Worker Harmonization
+# ============================================================================
+
+restart_daemon_if_needed() {
+    if [[ "${RCH_SKIP_DAEMON_RESTART:-}" == "1" ]]; then
+        info "Skipping daemon restart (RCH_SKIP_DAEMON_RESTART=1)"
+        return 0
+    fi
+
+    if [[ "$MODE" == "worker" ]]; then
+        return 0
+    fi
+
+    local rch_bin="$INSTALL_DIR/$HOOK_BIN"
+    if [[ ! -x "$rch_bin" ]]; then
+        warn "Cannot restart daemon: rch binary not found"
+        return 0
+    fi
+
+    info "Restarting rchd to apply updates..."
+    if "$rch_bin" daemon restart 2>&1; then
+        success "rchd restarted"
+        return 0
+    fi
+
+    warn "rch daemon restart failed; trying service manager fallback"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user restart rchd.service 2>/dev/null && {
+            success "rchd restarted via systemd"
+            return 0
+        }
+    fi
+    if command -v launchctl >/dev/null 2>&1; then
+        local plist="$HOME/Library/LaunchAgents/com.rch.daemon.plist"
+        if [[ -f "$plist" ]]; then
+            launchctl unload "$plist" 2>/dev/null || true
+            if launchctl load "$plist" 2>/dev/null; then
+                success "rchd restarted via launchctl"
+                return 0
+            fi
+        fi
+    fi
+    warn "Could not restart rchd automatically"
+}
+
+harmonize_workers() {
+    if [[ "${RCH_SKIP_FLEET_SYNC:-}" == "1" ]]; then
+        info "Skipping worker fleet sync (RCH_SKIP_FLEET_SYNC=1)"
+        return 0
+    fi
+
+    if [[ "$MODE" == "worker" ]]; then
+        return 0
+    fi
+
+    local rch_bin="$INSTALL_DIR/$HOOK_BIN"
+    if [[ ! -x "$rch_bin" ]]; then
+        warn "Cannot sync workers: rch binary not found"
+        return 0
+    fi
+
+    local workers_config="$CONFIG_DIR/workers.toml"
+    if [[ ! -f "$workers_config" ]]; then
+        info "No workers config found; skipping fleet sync"
+        return 0
+    fi
+
+    if ! grep -q '^\s*\[\[workers\]\]' "$workers_config"; then
+        warn "No workers defined in $workers_config; skipping fleet sync"
+        return 0
+    fi
+
+    info "Upgrading worker fleet (rch-wkr)..."
+    if "$rch_bin" fleet deploy --all 2>&1; then
+        success "Worker fleet deployed"
+    else
+        warn "Fleet deploy failed (workers may be offline or misconfigured)"
+    fi
+
+    info "Running worker health checks..."
+    if "$rch_bin" fleet preflight --all 2>&1; then
+        success "Worker preflight passed"
+        return 0
+    fi
+
+    warn "Fleet preflight failed; falling back to workers probe"
+    if "$rch_bin" workers probe --all 2>&1; then
+        success "Worker probe passed"
+    else
+        warn "Worker probe reported issues"
+    fi
+}
+
+# ============================================================================
 # Easy Mode: Agent Detection
 # ============================================================================
 
@@ -2305,6 +2401,8 @@ Environment:
   RCH_NO_HOOK          Skip Claude Code hook setup if set
   RCH_NO_COLOR         Disable colored output
   RCH_SKIP_DOCTOR      Skip post-install doctor check
+  RCH_SKIP_DAEMON_RESTART  Skip rchd restart after install
+  RCH_SKIP_FLEET_SYNC  Skip worker deploy/health checks after install
   HTTP_PROXY           HTTP proxy URL
   HTTPS_PROXY          HTTPS proxy URL
   NO_PROXY             Hosts to bypass proxy
@@ -2469,6 +2567,8 @@ main() {
     # Easy mode extras
     if [[ "$EASY_MODE" == "true" ]]; then
         detect_agents
+        restart_daemon_if_needed
+        harmonize_workers
         run_doctor
     fi
 
