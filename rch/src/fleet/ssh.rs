@@ -552,24 +552,13 @@ impl<'a> SshExecutor<'a> {
             "Copying file via SCP"
         );
 
-        // Validate remote_path doesn't contain dangerous characters for SCP
-        // Note: SCP remote path parsing differs from shell, but escaping is still prudent
-        let escaped_remote =
-            shell_escape_path_with_home(remote_path).ok_or_else(|| FleetSshError::ScpFailed {
-                host: self.worker.host.clone(),
-                reason: format!(
-                    "Invalid remote path contains control characters: {}",
-                    remote_path
-                ),
-            })?;
+        let scp_remote = self.normalize_scp_remote_path(remote_path).await?;
 
         let start = Instant::now();
         let mut cmd = Command::new("scp");
         self.build_scp_args(&mut cmd);
         cmd.arg(local_path);
-        // For SCP, the remote path after the colon is interpreted by the remote shell,
-        // so we need to escape it properly
-        cmd.arg(format!("{}:{}", self.destination(), escaped_remote));
+        cmd.arg(format!("{}:{}", self.destination(), scp_remote));
 
         let output = match tokio::time::timeout(self.scp_timeout, cmd.output()).await {
             Ok(Ok(output)) => output,
@@ -624,6 +613,47 @@ impl<'a> SshExecutor<'a> {
         );
 
         Ok(())
+    }
+
+    async fn normalize_scp_remote_path(&self, remote_path: &str) -> Result<String, FleetSshError> {
+        if remote_path.contains('\n') || remote_path.contains('\r') || remote_path.contains('\0') {
+            return Err(FleetSshError::ScpFailed {
+                host: self.worker.host.clone(),
+                reason: format!(
+                    "Invalid remote path contains control characters: {}",
+                    remote_path
+                ),
+            });
+        }
+
+        if remote_path == "~" {
+            let home = self.resolve_home_dir().await?;
+            if home.is_empty() {
+                return Err(FleetSshError::ScpFailed {
+                    host: self.worker.host.clone(),
+                    reason: "Remote HOME is empty".to_string(),
+                });
+            }
+            return Ok(home);
+        }
+
+        if let Some(suffix) = remote_path.strip_prefix("~/") {
+            let home = self.resolve_home_dir().await?;
+            if home.is_empty() {
+                return Err(FleetSshError::ScpFailed {
+                    host: self.worker.host.clone(),
+                    reason: "Remote HOME is empty".to_string(),
+                });
+            }
+            return Ok(format!("{}/{}", home, suffix));
+        }
+
+        Ok(remote_path.to_string())
+    }
+
+    async fn resolve_home_dir(&self) -> Result<String, FleetSshError> {
+        let output = self.run_command_raw("printf %s \"$HOME\"").await?;
+        Ok(output.trim().to_string())
     }
 }
 
