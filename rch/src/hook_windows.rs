@@ -23,6 +23,24 @@ pub async fn run_hook() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Execute a compilation command locally.
+///
+/// On non-Unix platforms we do not support daemon-based offloading, so `rch exec`
+/// simply runs the provided command via the local shell.
+pub async fn run_exec(command_parts: Vec<String>) -> anyhow::Result<()> {
+    let command = command_parts.join(" ");
+    if command.is_empty() {
+        anyhow::bail!("No command provided to exec");
+    }
+
+    let status = std::process::Command::new("cmd")
+        .arg("/C")
+        .arg(&command)
+        .status()?;
+
+    std::process::exit(status.code().unwrap_or(1));
+}
+
 /// Query the daemon for a worker.
 ///
 /// On non-Unix platforms this returns an error, which upstream treats as
