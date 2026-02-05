@@ -186,6 +186,42 @@ pub fn shell_escape_value(value: &str) -> Option<String> {
     Some(escaped)
 }
 
+/// Escape a path for use in a shell command, allowing `~` to expand to `$HOME`.
+///
+/// For paths that start with `~/` or are exactly `~`, this returns a double-quoted
+/// string that expands `$HOME` while escaping special characters inside the suffix.
+/// For all other paths, this defers to `shell_escape_value`.
+pub fn shell_escape_path_with_home(path: &str) -> Option<String> {
+    if path.contains('\n') || path.contains('\r') || path.contains('\0') {
+        return None;
+    }
+
+    if path == "~" {
+        return Some("\"$HOME\"".to_string());
+    }
+
+    if let Some(suffix) = path.strip_prefix("~/") {
+        let escaped_suffix = escape_for_double_quotes(suffix);
+        return Some(format!("\"$HOME/{}\"", escaped_suffix));
+    }
+
+    shell_escape_value(path)
+}
+
+fn escape_for_double_quotes(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '$' => escaped.push_str("\\$"),
+            '`' => escaped.push_str("\\`"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,6 +299,20 @@ mod tests {
         assert!(shell_escape_value("line1\nline2").is_none());
         assert!(shell_escape_value("line1\rline2").is_none());
         assert!(shell_escape_value("line1\0line2").is_none());
+    }
+
+    #[test]
+    fn test_shell_escape_path_with_home() {
+        let _guard = test_guard!();
+        assert_eq!(
+            shell_escape_path_with_home("~/.local/bin"),
+            Some("\"$HOME/.local/bin\"".to_string())
+        );
+        assert_eq!(shell_escape_path_with_home("~"), Some("\"$HOME\"".to_string()));
+        assert_eq!(
+            shell_escape_path_with_home("/usr/local/bin"),
+            Some("'/usr/local/bin'".to_string())
+        );
     }
 
     #[test]
