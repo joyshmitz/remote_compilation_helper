@@ -621,13 +621,16 @@ build_from_source() {
             die "Worker binary not found: $target_dir/$WORKER_BIN"
         fi
     else
-        # Local mode: install hook and daemon
-        for binary in "$HOOK_BIN" "$DAEMON_BIN"; do
+        # Local mode: install hook, daemon, and worker binary (needed for fleet deploy)
+        for binary in "$HOOK_BIN" "$DAEMON_BIN" "$WORKER_BIN"; do
             if [[ -f "$target_dir/$binary" ]]; then
                 cp "$target_dir/$binary" "$INSTALL_DIR/"
                 chmod +x "$INSTALL_DIR/$binary"
                 success "Installed $binary"
             else
+                if [[ "$binary" == "$WORKER_BIN" ]]; then
+                    die "Worker binary not found: $target_dir/$binary (required for fleet deploy)"
+                fi
                 die "Binary not found: $target_dir/$binary"
             fi
         done
@@ -759,7 +762,7 @@ download_binaries() {
             return
         fi
     else
-        for binary in "$HOOK_BIN" "$DAEMON_BIN"; do
+        for binary in "$HOOK_BIN" "$DAEMON_BIN" "$WORKER_BIN"; do
             if [[ -f "$TEMP_DIR/$binary" ]]; then
                 install -m 755 "$TEMP_DIR/$binary" "$INSTALL_DIR/$binary"
                 success "Installed $binary"
@@ -834,11 +837,14 @@ clone_and_build_from_source() {
             die "Worker binary not found after build"
         fi
     else
-        for binary in "$HOOK_BIN" "$DAEMON_BIN"; do
+        for binary in "$HOOK_BIN" "$DAEMON_BIN" "$WORKER_BIN"; do
             if [[ -f "$target_dir/$binary" ]]; then
                 install -m 755 "$target_dir/$binary" "$INSTALL_DIR/$binary"
                 success "Installed $binary"
             else
+                if [[ "$binary" == "$WORKER_BIN" ]]; then
+                    die "Worker binary not found after build (required for fleet deploy)"
+                fi
                 die "Binary not found after build: $binary"
             fi
         done
@@ -1351,6 +1357,17 @@ install_from_tarball() {
                 warn "$binary not found in tarball"
             fi
         done
+
+        if [[ -f "$TEMP_DIR/$WORKER_BIN" ]]; then
+            install -m 755 "$TEMP_DIR/$WORKER_BIN" "$INSTALL_DIR/$WORKER_BIN"
+            success "Installed $WORKER_BIN"
+        else
+            if [[ "${RCH_SKIP_FLEET_SYNC:-}" == "1" ]]; then
+                warn "Worker binary not found in tarball (fleet sync disabled)"
+            else
+                die "Worker binary not found in tarball (required for fleet deploy)"
+            fi
+        fi
     fi
 
     success "Offline installation complete"
@@ -2137,6 +2154,19 @@ verify_installation() {
             fi
         done
 
+        if [[ -x "$INSTALL_DIR/$WORKER_BIN" ]]; then
+            local worker_version
+            worker_version=$("$INSTALL_DIR/$WORKER_BIN" --version 2>/dev/null | head -1 || echo "unknown")
+            success "$WORKER_BIN: $worker_version"
+        else
+            if [[ "${RCH_SKIP_FLEET_SYNC:-}" == "1" ]]; then
+                warn "$WORKER_BIN: not installed (fleet sync disabled)"
+            else
+                error "$WORKER_BIN: not found or not executable"
+                ((failed++))
+            fi
+        fi
+
         if [[ ! -f "$CONFIG_DIR/daemon.toml" ]]; then
             error "Daemon config not found"
             ((failed++))
@@ -2186,8 +2216,9 @@ print_summary() {
         echo "  🔧 Worker binary: $INSTALL_DIR/$WORKER_BIN"
     else
         echo "  📦 Installed:"
-        echo "      • rch     (hook CLI)"
-        echo "      • rchd    (daemon)"
+        echo "      • rch      (hook CLI)"
+        echo "      • rchd     (daemon)"
+        echo "      • rch-wkr  (worker)"
         echo ""
 
         if [[ "${ENABLE_SERVICE:-true}" == "true" ]] && [[ "${NO_SERVICE:-}" != "true" ]]; then
