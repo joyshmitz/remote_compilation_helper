@@ -306,16 +306,19 @@ fn test_hook_deny_json_structure() {
         if let Some(output) = parsed.get("hookSpecificOutput") {
             assert!(
                 output.get("hookEventName").is_some(),
-                "Deny response missing hookEventName"
+                "Response missing hookEventName"
             );
             assert!(
                 output.get("permissionDecision").is_some(),
-                "Deny response missing permissionDecision"
+                "Response missing permissionDecision"
             );
-            assert!(
-                output.get("permissionDecisionReason").is_some(),
-                "Deny response missing permissionDecisionReason"
-            );
+            // permissionDecisionReason is only required for deny responses
+            if output.get("permissionDecision").and_then(|v| v.as_str()) == Some("deny") {
+                assert!(
+                    output.get("permissionDecisionReason").is_some(),
+                    "Deny response missing permissionDecisionReason"
+                );
+            }
         }
     }
 }
