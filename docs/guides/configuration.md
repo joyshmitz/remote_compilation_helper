@@ -88,7 +88,9 @@ remote_speedup_threshold = 1.2
 
 [transfer]
 compression_level = 3
-exclude_patterns = ["target/", "node_modules/"]
+# Any explicit exclude_patterns list replaces the built-in defaults entirely.
+# Use `rch config init` or `rch config show` to get the canonical list first,
+# then append project-specific excludes to that generated list.
 ssh_server_alive_interval_secs = 30
 ssh_control_persist_secs = 60
 

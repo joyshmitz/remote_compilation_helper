@@ -143,15 +143,10 @@ cat ~/.config/rch/config.toml | grep exclude
 # Add additional exclusions for your project
 # In ~/.config/rch/config.toml:
 [transfer]
-exclude_patterns = [
-    "target/",
-    ".git/objects/",
-    "node_modules/",
-    "*.rlib",
-    "*.rmeta",
-    "vendor/",           # Add project-specific
-    "test_data/large/",  # Add project-specific
-]
+# Any explicit exclude_patterns list replaces the built-in defaults entirely.
+# Start from the generated list in `rch config init`, then append entries like:
+#   "vendor/"
+#   "test_data/large/"
 ```
 
 ### 5. Build Succeeds on Worker but Fails Locally

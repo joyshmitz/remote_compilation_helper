@@ -6,6 +6,7 @@ use directories::ProjectDirs;
 use rch_common::types::validate_remote_base;
 use rch_common::{
     ConfigValueSource, OutputVisibility, RchConfig, SelfTestFailureAction, SelfTestWorkers,
+    TransferConfig,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -1850,7 +1851,10 @@ pub fn load_workers_config(path: Option<&Path>) -> Result<WorkersConfig> {
 /// Generate an example project config.
 #[allow(dead_code)] // Used by future CLI scaffolding
 pub fn example_project_config() -> String {
-    r#"# RCH Project Configuration
+    let default_excludes = format_default_exclude_patterns_for_toml("    ");
+
+    format!(
+        r#"# RCH Project Configuration
 # Place this file at .rch/config.toml in your project root
 
 [general]
@@ -1871,14 +1875,10 @@ check_slots = 2
 [transfer]
 # zstd compression level (1-19)
 compression_level = 3
-# Additional patterns to exclude from transfer
+# Any explicit exclude_patterns list replaces the built-in defaults.
+# Start from the generated defaults below, then append project-specific paths.
 exclude_patterns = [
-    "target/",
-    ".git/objects/",
-    "node_modules/",
-    ".beads/",
-    "*.rlib",
-    "*.rmeta",
+{default_excludes}
 ]
 
 [environment]
@@ -1891,7 +1891,16 @@ allowlist = ["RUSTFLAGS", "CARGO_TARGET_DIR"]
 # Hook output visibility: none, summary, verbose
 visibility = "none"
 "#
-    .to_string()
+    )
+}
+
+pub(crate) fn format_default_exclude_patterns_for_toml(indent: &str) -> String {
+    TransferConfig::default()
+        .exclude_patterns
+        .iter()
+        .map(|pattern| format!(r#"{indent}"{pattern}","#))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Generate an example workers config.
@@ -1978,6 +1987,20 @@ mod tests {
         let toml_str = example_project_config();
         let _: RchConfig = toml::from_str(&toml_str).expect("Example project config should parse");
         info!("PASS: Example project config parses successfully");
+    }
+
+    #[test]
+    fn test_example_project_config_includes_default_security_excludes() {
+        let _guard = test_guard!();
+        info!("TEST: test_example_project_config_includes_default_security_excludes");
+        let toml_str = example_project_config();
+
+        assert!(toml_str.contains(r#""target/""#));
+        assert!(toml_str.contains(r#""*.rlib""#));
+        assert!(toml_str.contains(r#""*.pem""#));
+        assert!(toml_str.contains(r#""credentials.json""#));
+        assert!(toml_str.contains("replaces the built-in defaults"));
+        info!("PASS: Example project config includes full default excludes");
     }
 
     #[test]

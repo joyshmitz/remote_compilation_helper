@@ -172,14 +172,9 @@ compression_level = 3  # Default: 3 (1-19, lower = faster)
 ```toml
 # ~/.config/rch/config.toml
 [transfer]
-exclude_patterns = [
-    "target/",
-    ".git/objects/",
-    "node_modules/",
-    "*.rlib",
-    "*.rmeta",
-    "benches/data/",  # Add project-specific excludes
-]
+# Any explicit exclude_patterns list replaces the built-in defaults entirely.
+# Keep the generated defaults from `rch config init`, then append entries like:
+#   "benches/data/"
 ```
 
 ### Increase Parallelism

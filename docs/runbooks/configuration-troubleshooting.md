@@ -181,11 +181,9 @@ min_local_time_ms = 2000     # Skip if local < 2s
 
 [transfer]
 compression_level = 3        # zstd level 1-19
-exclude_patterns = [
-    "target/",
-    ".git/objects/",
-    "node_modules/",
-]
+# Any explicit exclude_patterns list replaces the built-in defaults entirely.
+# Start from the generated list in `rch config init`, then append project-specific
+# excludes rather than replacing it with a shortened example.
 
 [selection]
 slot_weight = 0.4
@@ -218,15 +216,14 @@ tags = ["fast", "ssd"]
 enabled = true
 preferred_workers = ["worker1"]
 
-[transfer]
-exclude_patterns = [
-    "benches/data/",
-    "test_fixtures/",
-]
-
 [environment]
 RUSTFLAGS = "-C target-cpu=native"
 ```
+
+If you need project-specific transfer excludes, copy the current inherited/default
+`exclude_patterns` list first and then append entries like `benches/data/` or
+`test_fixtures/`. A project-local `exclude_patterns` list replaces the inherited
+defaults entirely.
 
 ## Validation Steps
 
