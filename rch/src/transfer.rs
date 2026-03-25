@@ -2622,6 +2622,27 @@ mod tests {
         assert_eq!(pipeline.remote_path(), "/tmp/rch/test-project/abc123");
     }
 
+    fn basename_matches_any(patterns: &[String], basename: &str) -> bool {
+        patterns.iter().any(|pattern| {
+            glob::Pattern::new(pattern)
+                .expect("default exclude pattern should be valid glob")
+                .matches(basename)
+        })
+    }
+
+    #[test]
+    fn test_default_secret_excludes_do_not_match_rust_source_files() {
+        let _guard = test_guard!();
+        let patterns = TransferConfig::default().exclude_patterns;
+
+        assert!(basename_matches_any(&patterns, ".secrets.dev"));
+        assert!(basename_matches_any(&patterns, "secrets.json"));
+        assert!(basename_matches_any(&patterns, "secrets.production.yaml"));
+        assert!(basename_matches_any(&patterns, "secrets.local"));
+        assert!(!basename_matches_any(&patterns, "secrets.rs"));
+        assert!(!patterns.iter().any(|pattern| pattern == "secrets.*"));
+    }
+
     #[test]
     fn test_transfer_pipeline_defaults_to_plain_ssh_sessions() {
         let _guard = test_guard!();

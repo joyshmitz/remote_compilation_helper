@@ -2220,7 +2220,9 @@ fn default_excludes() -> Vec<String> {
         // Coverage reports (generated during tests)
         "coverage/".to_string(),
         ".nyc_output/".to_string(),
-        // Credentials and secrets (must never be transferred to workers)
+        // Credentials and secrets (must never be transferred to workers).
+        // Keep these patterns narrow enough to avoid excluding source files such
+        // as `secrets.rs`.
         ".cargo/credentials".to_string(),
         ".cargo/credentials.toml".to_string(),
         ".env".to_string(),
@@ -2228,7 +2230,15 @@ fn default_excludes() -> Vec<String> {
         "*.pem".to_string(),
         "*.key".to_string(),
         "credentials.json".to_string(),
-        "secrets.*".to_string(),
+        ".secrets".to_string(),
+        ".secrets.*".to_string(),
+        "secrets".to_string(),
+        "secrets*.env".to_string(),
+        "secrets*.json".to_string(),
+        "secrets*.local".to_string(),
+        "secrets*.toml".to_string(),
+        "secrets*.yaml".to_string(),
+        "secrets*.yml".to_string(),
     ]
 }
 
@@ -3978,6 +3988,20 @@ mod tests {
         let _guard = test_guard!();
         let config = TransferConfig::default();
         assert_eq!(config.remote_base, "/tmp/rch");
+    }
+
+    #[test]
+    fn test_transfer_config_default_uses_narrow_secret_excludes() {
+        let _guard = test_guard!();
+        let config = TransferConfig::default();
+        let patterns = &config.exclude_patterns;
+
+        assert!(!patterns.iter().any(|pattern| pattern == "secrets.*"));
+        assert!(patterns.iter().any(|pattern| pattern == ".secrets.*"));
+        assert!(patterns.iter().any(|pattern| pattern == "secrets*.json"));
+        assert!(patterns.iter().any(|pattern| pattern == "secrets*.toml"));
+        assert!(patterns.iter().any(|pattern| pattern == "secrets*.yaml"));
+        assert!(patterns.iter().any(|pattern| pattern == "secrets*.yml"));
     }
 
     // ========================================================================
