@@ -268,13 +268,10 @@ Tips to minimize initial sync:
 ```toml
 # ~/.config/rch/config.toml
 [transfer]
-exclude_patterns = [
-    "target/",
-    ".git/objects/",
-    "node_modules/",
-    "benches/data/",
-    "test_fixtures/large/",
-]
+# Any explicit exclude_patterns list replaces the built-in defaults entirely.
+# Keep the generated defaults from `rch config init`, then append entries like:
+#   "benches/data/"
+#   "test_fixtures/large/"
 ```
 
 ### Adjust Compression

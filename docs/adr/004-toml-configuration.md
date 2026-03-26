@@ -52,11 +52,9 @@ min_local_time_ms = 2000
 
 [transfer]
 compression_level = 3
-exclude_patterns = [
-    "target/",
-    ".git/objects/",
-    "node_modules/",
-]
+# Any explicit exclude_patterns list replaces the built-in defaults entirely.
+# Generated examples should keep the full default list and only append
+# project-specific excludes.
 
 [output]
 stream_mode = "realtime"
@@ -90,11 +88,12 @@ priority = 50
 [general]
 enabled = true
 preferred_workers = ["fast-server"]
-
-[transfer]
-exclude_patterns = ["benches/data/"]
 include_patterns = ["generated/*.rs"]
 ```
+
+If a project needs custom `exclude_patterns`, it must start from the current
+default/inherited list and append project-specific entries. A minimal list like
+`["benches/data/"]` would replace the defaults entirely.
 
 ## Consequences
 
